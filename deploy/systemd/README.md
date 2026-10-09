@@ -1,6 +1,6 @@
 # Run Gravity Studio with systemd
 
-This template runs the API and production web application as a **user service** on the GPU host. Install it under the account that owns the repository and data directory. It does not start or modify ComfyUI workers.
+This template runs the API and production web application as a **user service** on the GPU host. Install it under the account that owns the repository and data directory. The owner can prepare ComfyUI workers through the studio's setup interface; starting this unit alone does not create them.
 
 ## Prepare the application
 
@@ -14,7 +14,7 @@ pnpm build
 
 Keep an existing `.env` when updating. Set `GRAVITY_DATA_DIR` to an absolute persistent directory. Both processes bind to loopback by default. For a reverse proxy, set `GRAVITY_ALLOWED_ORIGINS` to the exact browser origin, including its scheme and any nonstandard port. For direct LAN access, also set `GRAVITY_STUDIO_HOST` to the intended interface address. Keep the API and ComfyUI ports private.
 
-The launcher reads the repository's `.env`; an `EnvironmentFile` directive is unnecessary. The runtime CLI does **not** load that file, so give it the same data directory explicitly, for example `pnpm runtime plan --engine podman --data-dir /absolute/path/to/data`.
+The launcher and runtime CLI read the repository's `.env`; an `EnvironmentFile` directive is unnecessary. An explicit CLI `--data-dir` overrides `GRAVITY_DATA_DIR`. Optional `HF_TOKEN` belongs in this private environment file when model downloads require Hugging Face authentication.
 
 ## Install the user service
 
@@ -26,7 +26,8 @@ cp deploy/systemd/gravity-studio.service ~/.config/systemd/user/
 Edit the copied unit before starting it:
 
 - Replace every `/absolute/path` placeholder with the actual repository and Node installation paths. `command -v node` identifies the executable used by your current shell.
-- Set `PATH` to include that Node installation and any GPU inventory utilities, such as `amd-smi`. systemd does not run your interactive shell or initialize its version manager.
+- Set `PATH` to include that Node installation, the container engine, and GPU utilities such as `amd-smi` or `nvidia-ctk`. systemd does not run your interactive shell or initialize its version manager.
+- Ensure the service account can access its Docker or Podman engine and GPU device nodes. Automatic setup uses those same account permissions.
 - Keep the full repository, installed dependencies and production build available. The launcher does not use Next.js's standalone bundle.
 
 If paths contain spaces, quote the complete `WorkingDirectory` value and each path argument in `ExecStart`. Then load and start the service:
@@ -39,7 +40,7 @@ journalctl --user -u gravity-studio.service -n 50 --no-pager
 curl --fail http://127.0.0.1:4321/api/health
 ```
 
-Adjust the health-check URL if you changed the web address or port. Open the studio and create its owner using `setup.key` in the configured data directory.
+Adjust the health-check URL if you changed the web address or port. Open the studio and create its owner using `setup.key` in the configured data directory. Select GPUs in **Hardware & setup**, run **Set up generation**, then download or activate a model from **Models**.
 
 ## Start after boot
 

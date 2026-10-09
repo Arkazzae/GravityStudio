@@ -1,6 +1,6 @@
 # Studio API
 
-The web application proxies `/api/*` to the API process. All image, model and job operations require an owner session or a bearer token created in **Hardware & setup → API access**.
+The web application proxies `/api/*` to the API process. Generation, catalog and image operations require an owner session or a bearer token created in **Hardware & setup → Advanced settings → API access**. Runtime configuration and model downloads require the owner's browser session.
 
 The examples below use `GRAVITY_TOKEN` from your environment. Tokens are displayed once when created; the server stores only their hashes.
 
@@ -42,6 +42,22 @@ If the worker has lost the generation after a restart, the owner can choose **Cl
 This administrative action is `POST /api/jobs/:id/resolve` with `{ "acknowledge": true }`. It requires the owner's browser session and an allowed Origin; bearer tokens and MCP tools cannot perform it.
 
 Progress messages can describe a single sampler node. They are not an overall completion percentage.
+
+## Runtime setup and model library
+
+The studio interface uses these administrative endpoints. All require the owner's browser session; mutations also require an allowed `Origin`. Bearer tokens and MCP clients cannot install runtimes or download models.
+
+| Method | Path | Request or result |
+| --- | --- | --- |
+| GET | `/api/runtime` | Setup phase, selected worker count and errors |
+| POST | `/api/runtime` | Start setup with `{ "gpuIds": ["detected-device-id"] }`; returns HTTP 202 |
+| GET | `/api/models/library` | Catalog, imported checkpoints and current download progress |
+| POST | `/api/models/download` | Download `{ "modelId": "sdxl-base" }`, or import `{ "url": "https://huggingface.co/owner/repository/resolve/main/model.safetensors", "name": "My checkpoint", "familyId": "sdxl" }`; returns HTTP 202 |
+| POST | `/api/models/activate` | Verify and activate installed files with `{ "modelId": "sdxl-base" }` |
+
+Setup detects the available container engine, preserves existing worker assignments and ports, adds newly selected GPUs, tests them and saves the selected workers in studio settings. Generations and configuration changes are blocked while setup is running. Poll `GET /api/runtime` until `busy` is false.
+
+Downloads run on the server and continue when the browser page closes. The library accepts Hugging Face safetensors files, checks sizes and file structure, and verifies catalog checksums when available. Imports currently support complete SDXL / Illustrious checkpoints; other families use their catalog's complete artifact set. Imported files receive a recorded SHA-256 digest. Completed downloads are activated when a configured managed worker can see the files; otherwise activate them after setting up generation. For gated models, accept the model license and configure `HF_TOKEN` on the server.
 
 ## MCP
 

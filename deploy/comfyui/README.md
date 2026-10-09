@@ -12,35 +12,42 @@ Successful image generations covered WAI Illustrious through the SDXL recipe, FL
 
 These results cover that installation and those workloads. Other AMD configurations and physical NVIDIA execution remain unverified. They do not establish model quality, maximum resolution, peak memory or performance guarantees; the project remains a development preview.
 
-## Review and start
+## Set up from the studio
 
-Run these commands from the repository on the GPU host, under the account that owns Gravity's storage:
+Run the studio directly on the GPU host. In **Hardware & setup**, select the GPU checkboxes and choose **Set up generation**. The server checks Docker and Podman with their GPU prerequisites, prefers Podman when both are ready, chooses free loopback ports and builds the runtime. After each selected GPU passes its smoke test, its worker is connected automatically.
+
+Use **Models** to download catalog weights or import a Hugging Face SDXL / Illustrious checkpoint. These files are shared by all managed workers. Runtime setup itself downloads only the image and Python dependencies.
+
+Changing the selection preserves existing workers and their ports. Selecting a new GPU adds a worker; deselecting one disables its use by the studio without removing its container or files. Existing generations must finish or be cancelled before changing the selection.
+
+## Optional command-line controls
+
+Run commands from the repository on the GPU host, under the account that owns Gravity's storage. A separate planning step is unnecessary:
+
+```sh
+pnpm runtime up
+```
+
+Automatic engine selection checks actual GPU prerequisites, including NVIDIA container integration or AMD device access. A saved plan retains its engine, GPU assignments, ports and worker options. New deployments choose an available consecutive range beginning at port `8188` or higher. Occupied ports belonging to another process are never taken over.
+
+For diagnostics or an explicit engine choice:
 
 ```sh
 pnpm doctor
-node scripts/runtime.ts plan
-node scripts/runtime.ts prepare
-node scripts/runtime.ts up
+pnpm runtime plan --json
+pnpm runtime up --engine podman --data-dir /srv/gravity
 ```
 
-`plan` probes hardware and prerequisites and prints the proposed deployment. It does not write files or start containers. `prepare` creates the empty storage directories and saves the plan and Compose JSON. `up` builds the images, creates or reuses matching containers, starts them and runs real GPU smoke tests. The first build downloads the pinned runtime and Python dependencies; it does not download model weights.
+`plan` is a read-only preview. `prepare` saves a successful plan and creates its storage directories without building or starting containers. `up` prepares, builds, starts or reuses matching workers, then runs GPU smoke tests. Failed prerequisites do not replace a saved plan.
 
-Select an engine, storage path, GPUs or the first loopback port when needed:
+The CLI loads the repository's `.env`; the default data directory is `GRAVITY_DATA_DIR`, or `./storage`. For a new deployment, repeat `--gpu ID` to select IDs from the hardware report, or use `--port` to request a specific initial port. Omitted options reuse the saved configuration. CLI overrides that would change an existing deployment are rejected; the studio's GPU selection can safely add workers while retaining the original ones.
 
-```sh
-pnpm doctor --podman
-node scripts/runtime.ts plan --engine podman --data-dir /srv/gravity --json
-node scripts/runtime.ts up --engine podman --data-dir /srv/gravity
-```
-
-Repeat `--gpu ID` to select particular IDs from the hardware report. Repeat the same selection and storage options for `prepare` and `up`. The default data directory is `GRAVITY_DATA_DIR`, or `./storage`.
-
-Each worker listens only on a host loopback port, starting at `8188`. The saved deployment includes its endpoint and device ID. Add that endpoint as a local worker in Studio and enable it after verification. A Studio server on another machine needs a separately configured authenticated connection or tunnel; these APIs are not published on the LAN automatically.
+Each worker listens only on a host loopback port. The UI setup registers its endpoint automatically. If using only the CLI, use the saved endpoints in Studio's **Advanced settings**. A Studio server on another machine needs a separately configured authenticated connection or tunnel; worker APIs are not published on the LAN automatically.
 
 ```sh
-node scripts/runtime.ts connections
-node scripts/runtime.ts smoke
-node scripts/runtime.ts stop
+pnpm runtime connections
+pnpm runtime smoke
+pnpm runtime stop
 ```
 
 `connections` exports a worker-settings proposal compatible with Studio's worker fields. It leaves workers disabled and does not overwrite Studio settings. The same proposal is saved as `storage/runtime/workers.json`. `smoke` checks the saved deployment, confirms an idle queue, performs GPU matrix multiplication, attention and convolution, and records the runtime revision, immutable image ID and observed physical GPU. It does not establish model quality, maximum resolution or peak memory. `stop` requires empty worker queues and retains models and outputs.
@@ -66,11 +73,11 @@ The pinned CUDA image contains CUDA 12.8.1. This installer requires **Linux NVID
 - **Podman + NVIDIA:** NVIDIA CDI entries must exist for the detected GPU UUIDs. The doctor checks `nvidia-ctk cdi list`. See [NVIDIA CDI support](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
 - **AMD:** `/dev/kfd` and `/dev/dri` must be accessible. Docker receives their numeric supplemental group IDs. Rootless Podman uses `crun` and `keep-groups`; the host account must already have device access. `ROCR_VISIBLE_DEVICES` selects the GPU by UUID. The exposed render-device directory provides runtime placement rather than isolation from untrusted code.
 
-Rootless Podman uses `--userns keep-id`, so the worker's configured UID can write the private host-owned state directories. The generated Compose configuration carries the same mapping. The web application needs no container socket. Run the installer directly on the GPU host. It refuses known nested-container environments and containers whose ownership or deployment labels differ from the reviewed plan. Changes to an existing deployment require draining and explicitly recreating affected containers; `up` will not silently replace them.
+Rootless Podman uses `--userns keep-id`, so the worker's configured UID can write the private host-owned state directories. The generated Compose configuration carries the same mapping. Run the studio and installer directly on the GPU host with engine and GPU permissions. The installer refuses known nested-container environments and containers whose ownership or deployment labels differ from the saved plan. Replacing an existing worker's runtime or configuration requires draining and explicitly recreating that container; `up` will not silently replace it.
 
 ## Storage
 
-All workers mount `storage/models` read-only. Place licensed model files in the matching ComfyUI folders:
+All workers mount `storage/models` read-only. The model library downloads into these folders; existing licensed files can also be placed there directly:
 
 | Folder | Contents |
 | --- | --- |

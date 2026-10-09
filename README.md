@@ -8,7 +8,8 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 
 - The Image workspace: model and aspect ratio selection, advanced sampling settings, reference images, generation queue and persistent gallery.
 - Family recipes for SDXL / Illustrious, FLUX.2 Klein and Krea 2. The initial catalog includes SDXL Base, WAI Illustrious v17, Klein 4B and Krea 2 Turbo.
-- AMD and NVIDIA detection, a setup wizard, individual GPU assignments and configurable RAM / VRAM reserves.
+- AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
+- A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 
@@ -29,25 +30,29 @@ Open **http://127.0.0.1:4321**. Create the owner account using the key in `stora
 
 For development, use `pnpm dev` instead of the build/start commands. The web application and API run as two processes; neither needs its own container. Stop both with Ctrl+C.
 
-### Connect ComfyUI
+### Set up generation
 
-You can connect an existing ComfyUI installation in **Hardware & setup**, or prepare managed workers on Linux x86_64:
+In **Hardware & setup**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
+
+Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Downloads are checked before activation. Models requiring Hugging Face access need their license accepted and `HF_TOKEN` configured on the server. Catalog entries without a download source can use files already placed in the shared model directory.
+
+Change the GPU checkboxes later and apply the selection. Existing worker identities and ports are retained; newly selected GPUs get additional workers. Finish or cancel queued generations before changing the selection. An existing ComfyUI installation can be connected through **Advanced settings**.
+
+For terminal use, runtime setup is also available as one command:
 
 ```sh
-pnpm doctor
-pnpm runtime plan --engine docker
-pnpm runtime up --engine docker
+pnpm runtime up
 ```
 
-`plan` checks prerequisites and shows device assignments. `up` downloads and builds the pinned runtime images, starts workers and runs GPU smoke tests. Use `--engine podman` for Podman. These commands do not download model weights.
+`pnpm runtime plan` is an optional preview, and `--engine docker` or `--engine podman` overrides automatic engine selection. The CLI reads `.env` and reuses a saved deployment. It handles the runtime; model downloads and automatic studio registration are available through the interface.
 
-The installer builds one shared image per backend, CUDA or ROCm, and starts one worker per selected GPU. All workers read `storage/models/`. Their endpoints start at `http://127.0.0.1:8188`; the command prints the exact GPU-to-port mapping. Add those endpoints in the wizard, select the matching physical GPU, test the connection, and enable the models whose files are installed.
+The installer builds one shared image per backend, CUDA or ROCm, and starts one worker per selected GPU. All workers read `storage/models/`. Compatible checkpoints use the same workers.
 
 See [runtime installation](deploy/comfyui/README.md) for device permissions, selecting GPUs, verification and stopping workers. See [model files and recipes](packages/inference/README.md) for the required weights and their sources.
 
 ### Different hardware
 
-Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Set these limits in Hardware & setup.
+Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Adjust these limits under **Hardware & setup → Advanced settings**.
 
 Model memory budgets start as editable estimates. A successful connection confirms the ComfyUI API and required files/nodes; it does not certify model speed, image quality or fit on a particular card. The runtime smoke test separately checks actual GPU execution. GPU fixtures cover dual R9700, triple RTX 3090, B100 and mixed-vendor configurations.
 
@@ -55,7 +60,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 ## API and MCP
 
-Create a token under **Hardware & setup → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; server configuration requires an owner browser session.
+Create a token under **Hardware & setup → Advanced settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an owner browser session.
 
 The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model listing, image submission, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its generation.
 
@@ -65,7 +70,7 @@ See [API usage](apps/server/README.md) for requests and response behavior.
 
 `storage/` contains the database, owner credentials, session/token hashes, private inputs and outputs, and managed worker state. Model weights live in `storage/models/`. These directories and `.env` are excluded from Git. Back up the entire data directory while the studio is stopped; keep model weights separately if preferred.
 
-Both application processes bind to localhost by default. For access from other machines, put the web application behind your HTTPS reverse proxy and set `GRAVITY_ALLOWED_ORIGINS` to its exact origin. `GRAVITY_STUDIO_HOST` controls the web bind address. Keep the API and ComfyUI worker ports private. The application does not mount a Docker socket or install custom nodes from the web interface.
+Both application processes bind to localhost by default. For access from other machines, put the web application behind your HTTPS reverse proxy and set `GRAVITY_ALLOWED_ORIGINS` to its exact origin. `GRAVITY_STUDIO_HOST` controls the web bind address. Keep the API and ComfyUI worker ports private. Automatic setup runs the host's container CLI under the studio service account; that account needs engine and GPU access. The application does not install custom nodes from the web interface.
 
 ## Development checks
 

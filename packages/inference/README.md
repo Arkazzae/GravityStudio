@@ -43,7 +43,9 @@ Artifact URLs and expected SHA-256 digests are in [catalog.ts](./catalog.ts). Th
 sha256sum /models/checkpoints/sd_xl_base_1.0.safetensors
 ```
 
-The studio does not download weights automatically. Discovery checks filenames and node capabilities through the worker API. It reports `integrity: "filenames-only"`: the standard ComfyUI API does not verify the bytes of installed weights. If you override an artifact filename, the server removes the catalog's expected digest from that resolved artifact.
+The Models panel downloads weights from Hugging Face when requested, verifies their SHA-256 and safetensors structure, and activates them after checking worker capabilities. Imported SDXL / Illustrious checkpoints use the same family recipe and receive their own persisted manifest.
+
+Worker discovery checks filenames and node capabilities through the ComfyUI API. It reports `integrity: "filenames-only"`: the standard API does not verify bytes on a remote worker. Library downloads are verified separately on the studio host. If you override an artifact filename in advanced settings, the server removes the catalog's expected digest from that resolved artifact.
 
 ## Add a fine-tune
 
