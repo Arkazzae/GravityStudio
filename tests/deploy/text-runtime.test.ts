@@ -104,7 +104,11 @@ test("AMD startup selects only its UUID and keeps model and API key private", as
   assert.equal(create.program, "podman");
   assert.ok(create.args.includes("ROCR_VISIBLE_DEVICES=GPU-000000000009700b"));
   for (const flag of ["--read-only", "no-new-privileges", "keep-groups", "--no-webui", "--no-mmproj", "--jinja"]) assert.ok(create.args.includes(flag));
-  for (const [flag, expected] of [["--restart", "no"], ["--parallel", "1"], ["--fit", "off"], ["--ctx-size", "8192"], ["--sleep-idle-seconds", "-1"], ["--reasoning", "off"], ["--chat-template-kwargs", '{"enable_thinking":false}']]) assert.equal(create.args[create.args.indexOf(flag) + 1], expected);
+  for (const [flag, expected] of [["--restart", "no"], ["--parallel", "1"], ["--fit", "off"], ["--ctx-size", "8192"], ["--sleep-idle-seconds", "-1"], ["--reasoning", "off"], ["--log-verbosity", "4"], ["--chat-template-kwargs", '{"enable_thinking":false}']]) assert.equal(create.args[create.args.indexOf(flag) + 1], expected);
+  // Pinned llama.cpp emits allocation INFO at trace4; debug5 and --verbose
+  // expose request bodies. Keep the production allocation probe below that.
+  for (const flag of ["--verbose", "--log-verbose", "-v", "--verbose-prompt", "--log-file", "--prompt-log-dir"]) assert.ok(!create.args.includes(flag));
+  assert.ok(f.calls.some(command => command.args[1] === "logs" && command.args[command.args.indexOf("--tail") + 1] === "1000"));
   assert.ok(create.args.some(arg => arg === `type=bind,src=${f.modelPath},dst=/models/model.gguf,readonly`));
   const serialized = JSON.stringify(f.calls) + await readFile(join(f.directory, "runtime", "text", "plan.json"), "utf8");
   assert.ok(!serialized.includes(result.apiKey));

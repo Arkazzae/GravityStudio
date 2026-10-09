@@ -242,7 +242,10 @@ export class ManagedTextContainer {
       const serverArgs = ["--model", "/models/model.gguf", "--alias", MODEL_ID, "--host", "0.0.0.0", "--port", "8080",
         "--api-key-file", "/run/gravity/api-key", "--ctx-size", "8192", "--parallel", "1", "--n-gpu-layers", "999", "--split-mode", "none", "--fit", "off",
         "--jinja", "--chat-template-kwargs", '{"enable_thinking":false}', "--reasoning", "off", "--reasoning-format", "deepseek", "--no-mmproj", "--no-webui",
-        "--sleep-idle-seconds", "-1", "--no-context-shift"];
+        "--sleep-idle-seconds", "-1", "--no-context-shift",
+        // This pin maps backend allocation INFO to trace (4). Debug (5) also
+        // prints request bodies and prompt tokens, so never enable --verbose.
+        "--log-verbosity", "4"];
       const image = lock.profiles[backend(gpu)].image;
       const plan: SavedPlan = { version: 1, engine: prepared.engine, containerName: this.#name, workspace: this.#workspace,
         planHash: hash({ args, serverArgs, image, imageId: prepared.imageId }), gpuId: gpu.id, image, port };
@@ -274,7 +277,7 @@ export class ManagedTextContainer {
         }
         let allocatedVramBytes = 0;
         try {
-          const logs = await this.#run({ program: prepared.engine, args: ["container", "logs", "--tail", "200", created.Id] }, { signal });
+          const logs = await this.#run({ program: prepared.engine, args: ["container", "logs", "--tail", "1000", created.Id] }, { signal });
           allocatedVramBytes = textModelAllocation(`${logs.stdout}\n${logs.stderr}`, backend(gpu));
         } catch { signal?.throwIfAborted(); }
         const ready = await this.#existing(plan);
