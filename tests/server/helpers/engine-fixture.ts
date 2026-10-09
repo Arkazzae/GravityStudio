@@ -36,7 +36,7 @@ export async function engineFixture(options: { count?: number; location?: "local
   const owner = store.createOwner("owner", "fixture-only-password-hash");
   const settings = settingsView(store);
   settings.policy = { ramReserveBytes: 2 * GiB, vramReserveBytes: GiB, maxConcurrentJobs: options.maxConcurrent ?? 3, idleUnloadSeconds: 0 };
-  settings.workers = workers.map((worker, index): WorkerSettings => ({ id: `worker-${index}`, name: `Worker ${index}`, baseUrl: worker.url, enabled: true, location: options.location ?? "remote", deviceIds: [(options.location ?? "remote") === "local" ? `gpu-${index === 1 ? 2 : index}` : `remote-gpu-${index}`], maxConcurrentJobs: 1 }));
+  settings.workers = workers.map((worker, index): WorkerSettings => ({ id: `worker-${index}`, name: `Worker ${index}`, baseUrl: worker.url, enabled: true, location: options.location ?? "remote", deviceIds: [(options.location ?? "remote") === "local" ? `gpu-${[0, 2, 1][index] ?? index}` : `remote-gpu-${index}`], maxConcurrentJobs: 1 }));
   const sdxl = settings.modelConfigurations.find(model => model.modelId === "sdxl-base")!;
   sdxl.enabled = true; sdxl.workerIds = settings.workers.map(worker => worker.id); sdxl.memory = { ramBytes: 8 * GiB, vramBytes: 6 * GiB, source: "estimate" };
   store.saveSettings(settings);

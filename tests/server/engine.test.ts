@@ -4,6 +4,26 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { completed, PNG } from "../inference/fake-comfy.ts";
 import { engineFixture, GiB, until } from "./helpers/engine-fixture.ts";
+import type { ExecutionSnapshot, WorkflowGraph } from "../../packages/inference/index.ts";
+
+const secondModel = "wai-illustrious-v17";
+async function warmBothWorkers(fixture: Awaited<ReturnType<typeof engineFixture>>) {
+  const settings = fixture.store.settings();
+  const model = settings.modelConfigurations.find(item => item.modelId === secondModel)!;
+  model.enabled = true; model.workerIds = settings.workers.map(worker => worker.id);
+  model.memory = { ramBytes: 8 * GiB, vramBytes: 6 * GiB, source: "estimate" };
+  fixture.store.saveSettings(settings);
+  await fixture.engine.catalog();
+  assert.deepEqual(fixture.workers.map(worker => worker.state.submissions.length), [0, 0], "Catalog discovery does not preload models");
+  const first = await fixture.queue(); const second = await fixture.queue({ modelId: secondModel });
+  await fixture.engine.tick();
+  await until(() => fixture.store.job(first.id).status === "running" && fixture.store.job(second.id).status === "running");
+  assert.equal(fixture.store.job(first.id).workerId, "worker-0");
+  assert.equal(fixture.store.job(second.id).workerId, "worker-1");
+  fixture.complete(0, first.id); fixture.complete(1, second.id);
+  await until(() => fixture.store.job(first.id).status === "succeeded" && fixture.store.job(second.id).status === "succeeded");
+  return { first, second };
+}
 
 test("generation through Engine, SQLite and Comfy HTTP saves the actual output once", async t => {
   const fixture = await engineFixture(); t.after(fixture.close);
@@ -132,7 +152,7 @@ test("remote total RAM shortfall fails, while current RAM pressure waits", async
   assert.equal(fixture.store.job(waiting.id).status, "queued");
   assert.match(fixture.store.job(waiting.id).stage, /RAM|memory/);
   assert.equal(fixture.workers[0].state.submissions.length, 0);
-  fixture.stats[0].system.ram_free = 64 * GiB; await fixture.engine.tick();
+  fixture.stats[0].system.ram_free = 64 * GiB; await delay(1050); await fixture.engine.tick();
   await until(() => fixture.store.job(waiting.id).status === "running");
 });
 
@@ -145,6 +165,8 @@ test("idle cached models are released safely and admission uses a fresh measurem
     return original?.(path);
   };
   const job = await fixture.queue(); await fixture.engine.tick();
+  assert.equal(fixture.store.job(job.id).status, "queued", "The /free acknowledgement does not immediately release the endpoint for dispatch");
+  await delay(1050); await fixture.engine.tick();
   await until(() => fixture.store.job(job.id).status === "running");
   assert.equal(fixture.workers[0].state.frees, 1);
   assert.equal(fixture.workers[0].state.submissions.length, 1);
@@ -157,7 +179,7 @@ test("external GPU usage stays queued when idle release cannot recover enough me
   assert.equal(fixture.store.job(job.id).status, "queued");
   assert.equal(fixture.workers[0].state.frees, 1);
   assert.equal(fixture.workers[0].state.submissions.length, 0);
-  fixture.stats[0].devices[0].vram_free = 16 * GiB; await fixture.engine.tick();
+  fixture.stats[0].devices[0].vram_free = 16 * GiB; await delay(1050); await fixture.engine.tick();
   await until(() => fixture.store.job(job.id).status === "running");
 });
 
@@ -171,7 +193,7 @@ test("different GPUs on one remote host share a RAM reservation budget", async t
   assert.equal(fixture.workers[1].state.submissions.length, 0);
   fixture.complete(0, first.id);
   await until(() => fixture.store.job(first.id).status === "succeeded");
-  await fixture.engine.tick(); await until(() => fixture.store.job(second.id).status === "running");
+  await delay(1050); await fixture.engine.tick(); await until(() => fixture.store.job(second.id).status === "running");
 });
 
 test("an unidentified remote GPU serializes with every other endpoint on its host", async t => {
@@ -222,4 +244,225 @@ test("the configured idle timeout unloads a completed worker without stopping it
   await until(() => fixture.workers[0].state.frees === 1, "idle model release");
   assert.equal(fixture.store.job(job.id).status, "succeeded");
   assert.equal(fixture.workers[0].state.submissions.length, 1);
+});
+
+test("different models run in parallel, then prefer their previous worker without waiting for a busy GPU", async t => {
+  const fixture = await engineFixture({ count: 2, location: "local" }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  assert.deepEqual(fixture.workers.map(worker => (worker.state.submissions[0].prompt as WorkflowGraph).checkpoint.inputs.ckpt_name), ["sd_xl_base_1.0.safetensors", "waiIllustriousSDXL_v170.safetensors"]);
+  const warm = await fixture.queue({ modelId: secondModel, prompt: "A new composition", seed: 987 });
+  await fixture.engine.tick(); await until(() => fixture.store.job(warm.id).status === "running");
+  assert.equal(fixture.store.job(warm.id).workerId, "worker-1", "Prompt and seed changes do not discard model affinity");
+  const concurrent = await fixture.queue({ modelId: secondModel, prompt: "Use the other GPU while the preferred one is busy" });
+  await fixture.engine.tick(); await until(() => fixture.store.job(concurrent.id).status === "running");
+  assert.equal(fixture.store.job(concurrent.id).workerId, "worker-0");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [0, 0]);
+});
+
+test("admission checks the other GPU before evicting an idle candidate's cache", async t => {
+  const fixture = await engineFixture({ count: 2, location: "local" }); t.after(fixture.close);
+  fixture.hardware.gpus[0].memory.usedBytes = 13 * GiB;
+  const previous = fixture.workers[0].state.responseOverride;
+  fixture.workers[0].state.responseOverride = path => { if (path === "/free") fixture.hardware.gpus[0].memory.usedBytes = 0; return previous?.(path); };
+  const job = await fixture.queue(); await fixture.engine.tick();
+  await until(() => fixture.store.job(job.id).status === "running");
+  assert.equal(fixture.store.job(job.id).workerId, "worker-1");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [0, 0], "An already available GPU wins before any cache release");
+});
+
+test("affinity cannot bypass a memory budget and is cleared when its worker releases models", async t => {
+  const fixture = await engineFixture({ count: 2 }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  let settings = fixture.store.settings(); settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-1"]; fixture.store.saveSettings(settings);
+  fixture.stats[1].devices[0].vram_free = 2 * GiB;
+  const blocked = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+  assert.equal(fixture.store.job(blocked.id).status, "queued", "Previously used weights are not evidence of free or owned VRAM");
+  assert.equal(fixture.workers[1].state.frees, 1);
+  assert.equal(fixture.workers[1].state.submissions.length, 1);
+  fixture.engine.cancel(fixture.owner.id, blocked.id);
+  fixture.stats[1].devices[0].vram_free = 16 * GiB;
+  settings = fixture.store.settings(); settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-0", "worker-1"]; fixture.store.saveSettings(settings);
+  const next = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+  await until(() => fixture.store.job(next.id).status === "running");
+  assert.equal(fixture.store.job(next.id).workerId, "worker-0", "A freed worker has no retained affinity");
+});
+
+test("queued model artifacts and budgets stay immutable, while new artifacts do not inherit old affinity", async t => {
+  const fixture = await engineFixture({ count: 2 }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  const queued = await fixture.queue({ modelId: secondModel });
+  const settings = fixture.store.settings();
+  const configuration = settings.modelConfigurations.find(item => item.modelId === secondModel)!;
+  configuration.artifacts.checkpoint = "sd_xl_base_1.0.safetensors"; configuration.memory.vramBytes = 7 * GiB;
+  fixture.store.saveSettings(settings);
+  await fixture.engine.tick(); await until(() => fixture.store.job(queued.id).status === "running");
+  assert.equal(fixture.store.job(queued.id).workerId, "worker-1");
+  assert.equal(fixture.store.job(queued.id).placements[0].memory.vramBytes, 6 * GiB);
+  assert.equal((fixture.store.job(queued.id).snapshot as ExecutionSnapshot).graph.checkpoint.inputs.ckpt_name, "waiIllustriousSDXL_v170.safetensors");
+  fixture.complete(1, queued.id); await until(() => fixture.store.job(queued.id).status === "succeeded");
+  const changed = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+  await until(() => fixture.store.job(changed.id).status === "running");
+  assert.equal(fixture.store.job(changed.id).workerId, "worker-0");
+  assert.equal((fixture.workers[0].state.submissions.at(-1)!.prompt as WorkflowGraph).checkpoint.inputs.ckpt_name, "sd_xl_base_1.0.safetensors");
+  assert.equal(fixture.store.job(changed.id).placements[0].memory.vramBytes, 7 * GiB);
+});
+
+test("disconnects, changed endpoints and failed loads invalidate affinity", async t => {
+  for (const cause of ["disconnect", "endpoint", "failed-load"] as const) await t.test(cause, async t => {
+    const fixture = await engineFixture({ count: 2 }); t.after(fixture.close);
+    await warmBothWorkers(fixture);
+    if (cause === "disconnect") {
+      const previous = fixture.workers[1].state.responseOverride;
+      fixture.workers[1].state.responseOverride = path => path === "/system_stats" ? { status: 503, body: "Unavailable" } : previous?.(path);
+      await fixture.engine.refreshWorkers(true);
+      fixture.workers[1].state.responseOverride = previous;
+      await fixture.engine.refreshWorkers(true);
+    } else if (cause === "endpoint") {
+      const settings = fixture.store.settings();
+      [settings.workers[0].baseUrl, settings.workers[1].baseUrl] = [settings.workers[1].baseUrl, settings.workers[0].baseUrl];
+      fixture.store.saveSettings(settings);
+    } else {
+      fixture.workers[1].state.postBehavior = "reject";
+      const rejected = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+      await until(() => fixture.store.job(rejected.id).status === "failed");
+      fixture.workers[1].state.postBehavior = "normal";
+    }
+    const next = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+    await until(() => fixture.store.job(next.id).status === "running");
+    assert.equal(fixture.store.job(next.id).workerId, "worker-0");
+  });
+});
+
+test("local host RAM pressure can reclaim an idle sibling even with no idle timeout", async t => {
+  const fixture = await engineFixture({ count: 2, location: "local" }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  const settings = fixture.store.settings(); settings.modelConfigurations.find(item => item.modelId === "sdxl-base")!.workerIds = ["worker-0"]; fixture.store.saveSettings(settings);
+  assert.equal(settings.policy.idleUnloadSeconds, 0);
+  fixture.hardware.host.memory.availableBytes = 9 * GiB;
+  const previous = fixture.workers[1].state.responseOverride;
+  fixture.workers[1].state.responseOverride = path => { if (path === "/free") fixture.hardware.host.memory.availableBytes = 64 * GiB; return previous?.(path); };
+  const job = await fixture.queue(); await fixture.engine.tick();
+  assert.equal(fixture.store.job(job.id).status, "queued");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [1, 0]);
+  await delay(1050); await fixture.engine.tick();
+  await until(() => fixture.store.job(job.id).status === "running");
+  assert.equal(fixture.store.job(job.id).workerId, "worker-0");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [1, 1]);
+  assert.equal(fixture.workers[1].state.submissions.length, 1, "The sibling releases cache without receiving the constrained job");
+});
+
+test("host RAM pressure never evicts an active sibling's model", async t => {
+  const fixture = await engineFixture({ count: 2, location: "local" }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  const settings = fixture.store.settings();
+  settings.modelConfigurations.find(item => item.modelId === "sdxl-base")!.workerIds = ["worker-0"];
+  settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-1"];
+  fixture.store.saveSettings(settings);
+  const active = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+  await until(() => fixture.store.job(active.id).status === "running");
+  fixture.hardware.host.memory.availableBytes = 9 * GiB;
+  const blocked = await fixture.queue(); await fixture.engine.tick();
+  await delay(1050); await fixture.engine.tick();
+  assert.equal(fixture.store.job(blocked.id).status, "queued");
+  assert.equal(fixture.store.job(active.id).status, "running");
+  assert.equal(fixture.workers[1].state.frees, 0);
+});
+
+test("an acknowledged but unfinished cache release does not evict the other GPUs for queued jobs", async t => {
+  const fixture = await engineFixture({ count: 3, location: "local" }); t.after(fixture.close);
+  const previous: Awaited<ReturnType<typeof fixture.queue>>[] = [];
+  for (let index = 0; index < 3; index++) previous.push(await fixture.queue());
+  await fixture.engine.tick(); await until(() => previous.every(job => fixture.store.job(job.id).status === "running"));
+  previous.forEach(job => fixture.complete(Number(fixture.store.job(job.id).workerId!.split("-")[1]), job.id));
+  await until(() => previous.every(job => fixture.store.job(job.id).status === "succeeded"));
+  const settings = fixture.store.settings(); settings.modelConfigurations.find(item => item.modelId === "sdxl-base")!.workerIds = ["worker-0"]; fixture.store.saveSettings(settings);
+  fixture.hardware.host.memory.availableBytes = 9 * GiB;
+  const first = await fixture.queue(), second = await fixture.queue();
+  await fixture.engine.tick();
+  assert.equal(fixture.store.job(first.id).status, "queued");
+  assert.equal(fixture.store.job(second.id).status, "queued");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [1, 0, 0], "The acknowledgement is not evidence that GC finished");
+  // The accepted /free finishes after its HTTP response and the original tick.
+  fixture.hardware.host.memory.availableBytes = 64 * GiB;
+  await fixture.engine.tick();
+  assert.equal(fixture.store.job(first.id).status, "queued", "The releasing GPU remains unavailable until the next polling interval");
+  await delay(1050);
+  await fixture.engine.tick(); await until(() => fixture.store.job(first.id).status === "running");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [1, 0, 0], "Fresh measurements admit the job without dropping sibling caches");
+});
+
+test("host reclaim respects a preparing process even after its GPU binding changes", async t => {
+  const fixture = await engineFixture({ count: 2, location: "local" }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  let settings = fixture.store.settings();
+  settings.workers[0].deviceIds = ["gpu-1"];
+  settings.modelConfigurations.find(item => item.modelId === "sdxl-base")!.workerIds = ["worker-1"];
+  settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-0"];
+  fixture.store.saveSettings(settings);
+  const active = await fixture.queue({ modelId: secondModel });
+  const client = fixture.engine.client(settings.workers[0]);
+  const original = client.discover.bind(client);
+  let entered = false, release!: () => void;
+  const paused = new Promise<void>(resolve => { release = resolve; });
+  client.discover = async () => { entered = true; await paused; return original(); };
+  try {
+    await fixture.engine.tick(); await until(() => entered, "preparing discovery");
+    client.discover = original;
+    assert.equal(fixture.store.job(active.id).status, "preparing");
+    assert.equal(fixture.workers[0].state.pending.length, 0, "Comfy's queue cannot yet reveal the preparing Studio job");
+    settings = fixture.store.settings(); settings.workers[0].deviceIds = ["gpu-0"]; fixture.store.saveSettings(settings);
+    fixture.hardware.host.memory.availableBytes = 9 * GiB;
+    const blocked = await fixture.queue(); await fixture.engine.tick();
+    await delay(1050); await fixture.engine.tick();
+    assert.equal(fixture.store.job(blocked.id).status, "queued");
+    assert.equal(fixture.workers[0].state.frees, 0, "Historical idle GPU metadata does not make an active endpoint safe to unload");
+  } finally { client.discover = original; release(); }
+});
+
+test("idle release blocks another endpoint bound to the same GPU", async t => {
+  const fixture = await engineFixture({ count: 2 }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  const settings = fixture.store.settings(); settings.policy.idleUnloadSeconds = 1;
+  settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-1"];
+  fixture.store.saveSettings(settings);
+  const client = fixture.engine.client(settings.workers[0]);
+  const original = client.freeIfIdle.bind(client);
+  let entered = false, release!: () => void;
+  const paused = new Promise<void>(resolve => { release = resolve; });
+  client.freeIfIdle = async () => { entered = true; await paused; return original(); };
+  let waiting!: Awaited<ReturnType<typeof fixture.queue>>;
+  try {
+    await delay(1050); await fixture.engine.start(); await until(() => entered, "idle release");
+    const updated = fixture.store.settings(); updated.workers[1].deviceIds = [...updated.workers[0].deviceIds]; fixture.store.saveSettings(updated);
+    waiting = await fixture.queue({ modelId: secondModel }); await fixture.engine.tick();
+    assert.equal(fixture.store.job(waiting.id).status, "queued");
+    assert.equal(fixture.workers[1].state.submissions.length, 1);
+  } finally { release(); }
+  await until(() => fixture.store.job(waiting.id).status === "running");
+});
+
+test("idle release blocks dispatch on its endpoint and rechecks siblings before unloading them", async t => {
+  const fixture = await engineFixture({ count: 2 }); t.after(fixture.close);
+  await warmBothWorkers(fixture);
+  const settings = fixture.store.settings(); settings.policy.idleUnloadSeconds = 1;
+  settings.modelConfigurations.find(item => item.modelId === "sdxl-base")!.workerIds = ["worker-0"];
+  settings.modelConfigurations.find(item => item.modelId === secondModel)!.workerIds = ["worker-1"];
+  fixture.store.saveSettings(settings);
+  const client = fixture.engine.client(settings.workers[0]);
+  const original = client.freeIfIdle.bind(client);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const paused = new Promise<void>(resolve => { release = resolve; });
+  client.freeIfIdle = async () => { entered(); await paused; return original(); };
+  await delay(1050); await fixture.engine.start();
+  await started;
+  let waiting!: Awaited<ReturnType<typeof fixture.queue>>;
+  try {
+    waiting = await fixture.queue(); const sibling = await fixture.queue({ modelId: secondModel });
+    await fixture.engine.tick(); await until(() => fixture.store.job(sibling.id).status === "running");
+    assert.equal(fixture.store.job(waiting.id).status, "queued", "No job is dispatched while its worker is unloading");
+    assert.equal(fixture.workers[0].state.submissions.length, 1);
+  } finally { release(); }
+  await until(() => fixture.store.job(waiting.id).status === "running");
+  assert.deepEqual(fixture.workers.map(worker => worker.state.frees), [1, 0], "The second worker's new job invalidates the earlier idle decision");
 });

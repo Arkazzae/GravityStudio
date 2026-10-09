@@ -25,7 +25,13 @@ const canonical = (value: unknown): string => {
 const message = (error: unknown) => error instanceof Error ? error.message : "The worker request failed.";
 const hostKey = (worker: WorkerSettings) => worker.location === "local" ? "local" : new URL(worker.baseUrl).hostname;
 const deviceKey = (worker: WorkerSettings) => worker.deviceIds[0] ?? `remote:${hostKey(worker)}:unidentified`;
-type Admission = { kind: "ready" } | { kind: "wait" | "reject"; reason: string };
+const workersOverlap = (a: WorkerSettings, b: WorkerSettings) => a.id === b.id || a.baseUrl === b.baseUrl || (hostKey(a) === hostKey(b) && (!a.deviceIds.length || !b.deviceIds.length || deviceKey(a) === deviceKey(b)));
+const workerIdentity = (worker: WorkerSettings) => canonical({ id: worker.id, baseUrl: worker.baseUrl, location: worker.location, deviceIds: worker.deviceIds });
+const modelIdentity = (snapshot: ExecutionSnapshot) => canonical({
+  recipe: { familyId: snapshot.recipe.familyId, revision: snapshot.recipe.revision },
+  model: { familyId: snapshot.model.familyId, revision: snapshot.model.revision, artifacts: [...snapshot.model.artifacts].sort((a, b) => a.role.localeCompare(b.role)) },
+});
+type Admission = { kind: "ready" } | { kind: "wait" | "reject"; reason: string; reclaimable?: boolean; ramPressure?: boolean };
 
 export class Engine {
   store: Store;
@@ -45,6 +51,11 @@ export class Engine {
   private recovery = new Map<string, { attempts: number; nextAt: number }>();
   private releaseAt = new Map<string, number>();
   private idleReleasedFor = new Map<string, string>();
+  // A routing preference, never evidence of resident memory or a lease credit.
+  private warmWorkers = new Map<string, { worker: string; model: string }>();
+  private releasingWorkers = new Map<string, { worker: WorkerSettings; until: number }>();
+  private memoryReleaseAt = new Map<string, number>();
+  private tickReleasedHosts = new Set<string>();
   private loopFlight?: Promise<void>;
   private workerRefresh?: Promise<void>;
   private workerRevision = 0;
@@ -85,6 +96,8 @@ export class Engine {
     this.workerRefreshRevision = revision;
     this.workerRefresh = (async () => {
       await Promise.all(this.store.settings().workers.filter(worker => worker.enabled).map(async worker => {
+        const warm = this.warmWorkers.get(worker.id);
+        if (warm && warm.worker !== workerIdentity(worker)) this.warmWorkers.delete(worker.id);
         const state = this.workers.get(worker.id);
         if (!force && state && Date.now() - state.checkedAt < 20_000) return;
         const client = this.client(worker);
@@ -93,12 +106,12 @@ export class Engine {
           if (!health.healthy) throw new Error(health.error);
           const discovery = await client.discover();
           if (revision === this.workerRevision) this.workers.set(worker.id, { connected: true, checkedAt: Date.now(), discovery, version: health.version });
-        } catch (error) { if (revision === this.workerRevision) this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error) }); }
+        } catch (error) { if (revision === this.workerRevision) { this.warmWorkers.delete(worker.id); this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error) }); } }
       }));
     })().finally(() => { this.workerRefresh = undefined; });
     return this.workerRefresh;
   }
-  invalidateWorkers() { this.workerRevision++; this.workers.clear(); }
+  invalidateWorkers() { this.workerRevision++; this.workers.clear(); this.warmWorkers.clear(); }
   beginRuntimeSetup() {
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation setup is already running.");
     if (this.store.activeJobs().length || this.flights.size) throw new ApiError(409, "JOBS_ACTIVE", "Finish or cancel queued generations before changing the GPUs in use.");
@@ -233,9 +246,39 @@ export class Engine {
   private async telemetry(worker: WorkerSettings): Promise<ResourceTelemetry | null> {
     return worker.location === "local" ? inventoryTelemetry(await this.hardwareReport(true)) : this.remoteTelemetry(worker, await this.client(worker).systemStats());
   }
-  private async admission(placement: PlacementSnapshot): Promise<Admission> {
+  private releasePending(worker: WorkerSettings): boolean {
+    for (const [endpoint, item] of this.releasingWorkers) if (item.until <= Date.now()) this.releasingWorkers.delete(endpoint);
+    return [...this.releasingWorkers.values()].some(item => workersOverlap(item.worker, worker));
+  }
+  private async releaseWorker(worker: WorkerSettings, memoryPressure = false): Promise<boolean> {
+    if (this.releasePending(worker)) return false;
+    const host = hostKey(worker);
+    if (memoryPressure && (this.tickReleasedHosts.has(host) || Date.now() - (this.memoryReleaseAt.get(host) ?? 0) < Math.max(this.pollMs, 1000))) return false;
+    const current = this.store.settings().workers.find(item => item.id === worker.id);
+    if (!current?.enabled || workerIdentity(current) !== workerIdentity(worker)) return false;
+    const busy = this.store.activeJobs().filter(job => job.status !== "queued").flatMap(job => job.placements.filter(item => item.worker.id === job.workerId));
+    if (busy.some(item => workersOverlap(item.worker, worker))) return false;
+    this.releasingWorkers.set(worker.baseUrl, { worker, until: Infinity });
+    this.releaseAt.set(worker.baseUrl, Date.now());
+    this.warmWorkers.delete(worker.id);
+    const recordRelease = () => {
+      const now = Date.now();
+      this.memoryReleaseAt.set(host, now); this.tickReleasedHosts.add(host);
+      this.releasingWorkers.set(worker.baseUrl, { worker, until: now + Math.max(this.pollMs, 1000) });
+    };
+    try {
+      const { released } = await this.client(worker).freeIfIdle();
+      // Comfy acknowledges /free before its worker finishes unloading and GC.
+      // Allow at least one polling interval before evicting another host cache.
+      if (released) recordRelease();
+      return released;
+    } catch (error) { recordRelease(); throw error; }
+    finally { if (this.releasingWorkers.get(worker.baseUrl)?.until === Infinity) this.releasingWorkers.delete(worker.baseUrl); }
+  }
+  private async admission(placement: PlacementSnapshot, reclaim = false): Promise<Admission> {
     const settings = this.store.settings();
     const worker = placement.worker;
+    if (this.releasePending(worker)) return { kind: "wait", reason: "Waiting for idle model memory to be released" };
     const active = this.store.activeJobs().filter(job => job.status !== "queued" && job.workerId);
     if (active.some(job => job.workerId === worker.id)) return { kind: "wait", reason: "Waiting for this worker's current generation" };
     if (active.length >= settings.policy.maxConcurrentJobs) return { kind: "wait", reason: "Waiting for a free generation slot" };
@@ -250,46 +293,92 @@ export class Engine {
       const budget = { ramBytes: placement.memory.ramBytes, gpus: { [deviceKey(worker)]: placement.memory.vramBytes } };
       const policy = { reserveRamBytes: settings.policy.ramReserveBytes, reserveVramBytes: settings.policy.vramReserveBytes };
       let result = checkAdmission(budget, telemetry, this.leases(worker), policy);
-      if (!result.admitted && ["insufficient-ram", "insufficient-vram"].includes(result.code) && Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) >= 30_000) {
+      const reclaimable = !result.admitted && ["insufficient-ram", "insufficient-vram"].includes(result.code) && Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) >= 30_000;
+      if (reclaim && reclaimable) {
         // A previous checkpoint can occupy memory on an otherwise idle worker.
         // Ask that worker to release caches, then measure again. Torch's global
         // free-memory counters are not proof that the studio owns an allocation.
-        this.releaseAt.set(worker.baseUrl, Date.now());
-        if ((await this.client(worker).freeIfIdle()).released) {
+        if (await this.releaseWorker(worker, true)) {
           telemetry = await this.telemetry(worker);
           if (!telemetry) return { kind: "wait", reason: "Waiting for memory measurements after unloading idle models" };
           result = checkAdmission(budget, telemetry, this.leases(worker), policy);
         }
       }
-      return result.admitted ? { kind: "ready" } : { kind: result.code === "invalid-budget" ? "reject" : "wait", reason: result.reason };
-    } catch (error) { return { kind: "wait", reason: `Waiting for worker memory telemetry: ${message(error)}` }; }
+      if (this.releasePending(worker)) return { kind: "wait", reason: "Waiting for idle model memory to be released" };
+      return result.admitted ? { kind: "ready" } : { kind: result.code === "invalid-budget" ? "reject" : "wait", reason: result.reason, reclaimable: !reclaim && reclaimable, ramPressure: result.code === "insufficient-ram" };
+    } catch (error) { this.warmWorkers.delete(worker.id); return { kind: "wait", reason: `Waiting for worker memory telemetry: ${message(error)}` }; }
+  }
+  private lastWorkerUse(worker: WorkerSettings): string | undefined {
+    return this.store.jobs().filter(job => job.workerId === worker.id && job.placements.some(item => item.worker.id === worker.id && workerIdentity(item.worker) === workerIdentity(worker)))
+      .map(job => job.updatedAt).sort().at(-1);
+  }
+  private async reclaimHostRam(job: StoredJob, placement: PlacementSnapshot): Promise<Admission> {
+    let decision = await this.admission(placement);
+    if (placement.worker.location !== "local" || decision.kind !== "wait" || !decision.ramPressure) return decision;
+    const candidates = this.store.settings().workers.filter(worker => worker.enabled && worker.location === "local" && worker.baseUrl !== placement.worker.baseUrl)
+      .map(worker => ({ worker, lastUsed: this.lastWorkerUse(worker) })).filter(item => item.lastUsed)
+      .sort((a, b) => a.lastUsed!.localeCompare(b.lastUsed!));
+    for (const { worker } of candidates) {
+      const current = this.store.settings().workers.find(item => item.id === placement.worker.id);
+      if (this.stopping || this.store.job(job.id).status !== "queued" || !current?.enabled || workerIdentity(current) !== workerIdentity(placement.worker)) break;
+      if (Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) < 30_000) continue;
+      try {
+        if (!await this.releaseWorker(worker, true)) continue;
+        decision = await this.admission(placement);
+        if (decision.kind !== "wait" || !decision.ramPressure) break;
+      } catch { /* A different idle worker may still be able to release memory. */ }
+    }
+    return decision;
   }
   async tick() {
     if (this.ticking || this.stopping || this.runtimeSetupActive) return;
     this.ticking = true;
+    this.tickReleasedHosts.clear();
     try {
       for (const job of this.store.activeJobs()) {
         if (this.stopping) break;
         if (job.status !== "queued" || this.flights.has(job.id)) continue;
         let reason = "Waiting for an available worker";
-        let rejected = 0;
-        for (const placement of job.placements) {
-          const unchanged = () => {
-            const worker = this.store.settings().workers.find(item => item.id === placement.worker.id);
-            return worker?.enabled && worker.baseUrl === placement.worker.baseUrl && worker.location === placement.worker.location && canonical(worker.deviceIds) === canonical(placement.worker.deviceIds);
-          };
-          if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
-          const decision = await this.admission(placement);
-          // Cancellation may arrive while telemetry or cache release is in flight.
-          if (this.stopping || this.store.job(job.id).status !== "queued") { reason = ""; break; }
-          if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
-          if (decision.kind !== "ready") { reason = decision.reason; if (decision.kind === "reject") rejected++; continue; }
-          this.store.patchJob(job.id, { status: "preparing", workerId: placement.worker.id, stage: "Checking model files", error: null });
-          this.launch(job.id, () => this.execute(job.id, placement));
-          reason = ""; break;
+        const rejected = new Set<string>();
+        const reclaimable: PlacementSnapshot[] = [];
+        const ramPressure = new Set<string>();
+        const wanted = modelIdentity(job.snapshot as ExecutionSnapshot);
+        const warm = (placement: PlacementSnapshot) => {
+          const hint = this.warmWorkers.get(placement.worker.id);
+          return hint?.worker === workerIdentity(placement.worker) && hint.model === wanted ? 1 : 0;
+        };
+        const placements = [...job.placements].sort((a, b) => warm(b) - warm(a));
+        // First find a worker that already has room. Reclaiming an earlier
+        // candidate's cache must not happen before checking the other GPUs.
+        for (const phase of ["available", "candidate", "host"] as const) {
+          const candidates = phase === "available" ? placements : phase === "candidate" ? reclaimable : placements.filter(item => item.worker.location === "local" && ramPressure.has(item.worker.id));
+          for (const placement of candidates) {
+            const unchanged = () => {
+              const worker = this.store.settings().workers.find(item => item.id === placement.worker.id);
+              const matches = worker?.enabled && workerIdentity(worker) === workerIdentity(placement.worker);
+              if (!matches) this.warmWorkers.delete(placement.worker.id);
+              return matches;
+            };
+            if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
+            const decision = phase === "host" ? await this.reclaimHostRam(job, placement) : await this.admission(placement, phase === "candidate");
+            // Cancellation may arrive while telemetry or cache release is in flight.
+            if (this.stopping || this.store.job(job.id).status !== "queued") { reason = ""; break; }
+            if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
+            if (decision.kind !== "ready") {
+              reason = decision.reason;
+              if (decision.kind === "reject") rejected.add(placement.worker.id);
+              else if (phase === "available" && decision.reclaimable) reclaimable.push(placement);
+              if (decision.ramPressure) ramPressure.add(placement.worker.id); else ramPressure.delete(placement.worker.id);
+              continue;
+            }
+            this.store.patchJob(job.id, { status: "preparing", workerId: placement.worker.id, stage: "Checking model files", error: null });
+            this.launch(job.id, () => this.execute(job.id, placement));
+            reason = ""; break;
+          }
+          if (!reason) break;
         }
         if (reason && this.store.job(job.id).status === "queued") {
-          if (job.placements.length > 0 && rejected === job.placements.length) this.store.patchJob(job.id, { status: "failed", stage: "Job exceeds the configured workers' capacity", error: reason });
+          if (job.placements.length > 0 && rejected.size === job.placements.length) this.store.patchJob(job.id, { status: "failed", stage: "Job exceeds the configured workers' capacity", error: reason });
           else if (this.store.job(job.id).stage !== reason) this.store.patchJob(job.id, { stage: reason });
         }
       }
@@ -313,6 +402,8 @@ export class Engine {
     this.recovery.set(id, { attempts, nextAt: Date.now() + Math.min(30_000, this.reconcileMs * 2 ** Math.min(attempts - 1, 10)) });
   }
   private async execute(id: string, placement: PlacementSnapshot) {
+    // Loading another graph can evict the previous model, even if this run fails.
+    this.warmWorkers.delete(placement.worker.id);
     let job = this.store.job(id);
     const client = this.client(placement.worker);
     const discovery = await client.discover();
@@ -371,6 +462,11 @@ export class Engine {
           }
           if (!outputs.length) throw new Error("The workflow completed without an image output.");
           this.store.patchJob(job.id, { status: "succeeded", stage: "Completed", progress: null, outputs, error: null });
+          const placement = job.placements.find(item => item.worker.id === job.workerId);
+          const worker = this.store.settings().workers.find(item => item.id === job.workerId);
+          if (placement && worker?.enabled && workerIdentity(worker) === workerIdentity(placement.worker)) {
+            this.warmWorkers.set(worker.id, { worker: workerIdentity(worker), model: modelIdentity(snapshot) });
+          }
           this.recovery.delete(job.id);
           return;
         }
@@ -402,19 +498,17 @@ export class Engine {
     }
   }
   private async unloadIdleWorkers() {
-    if (this.stopping) return;
+    if (this.stopping || this.ticking) return;
     const settings = this.store.settings();
     if (!settings.policy.idleUnloadSeconds) return;
-    const jobs = this.store.jobs();
     for (const worker of settings.workers.filter(item => item.enabled)) {
-      if (this.stopping) return;
-      const assigned = jobs.filter(job => job.workerId === worker.id && job.placements.some(placement => placement.worker.id === worker.id && placement.worker.baseUrl === worker.baseUrl));
-      if (!assigned.length || assigned.some(job => !terminal.has(job.status))) continue;
-      const lastUsed = assigned.map(job => job.updatedAt).sort().at(-1)!;
+      if (this.stopping || this.ticking) return;
+      // A submission may have started while another worker was being released.
+      const lastUsed = this.lastWorkerUse(worker);
+      if (!lastUsed) continue;
       if (Date.now() - Date.parse(lastUsed) < settings.policy.idleUnloadSeconds * 1000 || this.idleReleasedFor.get(worker.baseUrl) === lastUsed || Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) < 30_000) continue;
-      this.releaseAt.set(worker.baseUrl, Date.now());
       try {
-        if ((await this.client(worker).freeIfIdle()).released) this.idleReleasedFor.set(worker.baseUrl, lastUsed);
+        if (await this.releaseWorker(worker)) this.idleReleasedFor.set(worker.baseUrl, lastUsed);
       } catch { /* Keep idle release separate from job state; retry after cooldown. */ }
     }
   }
