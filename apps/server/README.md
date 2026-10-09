@@ -89,10 +89,16 @@ These operations require the owner's browser session, with an allowed `Origin` f
 | GET | `/api/text/models?provider=gemini` | `{ provider, models: [{ id, name, inputTokenLimit?, outputTokenLimit? }] }`; also accepts `openai-compatible` |
 | PUT | `/api/text/assistant` | `{ revision, provider, modelId }`; set both provider and model ID to `null` to disable |
 | POST | `/api/prompts/refine` | `{ settingsRevision, imageModelId, prompt, instruction? }`; returns `{ prompt, originalPrompt, provider, modelId, usage? }` |
+| GET | `/api/text/local` | MiMo installation, runtime, download progress and GPU selection |
+| POST | `/api/text/local` | Prepare `{ "modelId": "mimo-v2.6-distill-qwen-9b" }` in the background; returns HTTP 202 |
+| PUT | `/api/text/local` | `{ revision, gpuIds }`; an empty list follows enabled local Studio GPUs |
+| POST | `/api/text/local/unload` | `{}` unloads an idle local model; active requests return HTTP 409 |
 
 Settings use optimistic revisions; stale writes or refinements return HTTP 409. Choosing a model validates it against that connection's catalog. Discovery is cached for up to 60 seconds; `refresh=true` explicitly checks the provider again. Changing the compatible endpoint's URL clears its selected assistant and previous key. Compatible keys are stored separately from the named OpenAI integration.
 
-Refinement accepts up to 16,000 prompt characters and 2,000 instruction characters. At least one must contain text. Requests use the image family's instructions, return validated JSON and preserve quoted passages and image markers. Reference image files are never sent. One refinement may run at a time, with a 45-second deadline covering discovery, generation and reading the response. Browser disconnects abort the upstream request. Incomplete output, malformed JSON and provider failures leave the original prompt unchanged; failed generation requests are not automatically retried.
+Refinement accepts up to 16,000 prompt characters and 2,000 instruction characters. At least one must contain text. Each model's context limit applies separately. Requests use the image family's instructions, return validated JSON and preserve quoted passages and image markers. Reference image files are never sent. One refinement may run at a time, with a 45-second deadline for external providers and 180 seconds for local cold loading plus inference. Browser disconnects abort the upstream request. Incomplete output, malformed JSON and provider failures leave the original prompt unchanged; failed generation requests are not automatically retried.
+
+Use provider `local` with `mimo-v2.6-distill-qwen-9b` after preparation. Model listing does not load weights onto a GPU. Its 8,192-token context reserves 2,048 output tokens and template overhead; input checking is deliberately conservative. The runtime keeps resident weights across requests, shares memory budgets with image workers, and unloads idle weights under pressure or after the configured idle interval. A container left by a crash is stopped during startup before image scheduling resumes. Automatic GPU selection respects disabled image workers; only a host without configured local image workers falls back to all supported GPUs.
 
 This operation proposes text only: it does not submit an image job. The browser applies the proposal only if its draft still matches, provides Undo and uses the resulting prompt for a separate image submission. These endpoints are not an incoming OpenAI-compatible chat API.
 

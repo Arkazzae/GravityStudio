@@ -33,7 +33,7 @@ const listed = () => Response.json({ data: [{ id: 'fixture-text' }] });
 test('text inference and settings require the owner session; existing image API tokens have no paid text access', async t => {
   let calls = 0;
   const api = await fixture(t, async () => { calls++; return listed(); });
-  for (const [path, method] of [['/text/settings', 'GET'], ['/text/models?provider=gemini', 'GET'], ['/text/connection', 'PUT'], ['/text/assistant', 'PUT'], ['/prompts/refine', 'POST']]) {
+  for (const [path, method] of [['/text/settings', 'GET'], ['/text/models?provider=gemini', 'GET'], ['/text/local', 'GET'], ['/text/local', 'PUT'], ['/text/local', 'POST'], ['/text/local/unload', 'POST'], ['/text/connection', 'PUT'], ['/text/assistant', 'PUT'], ['/prompts/refine', 'POST']]) {
     const body = method === 'GET' ? undefined : '{}';
     assert.equal((await fetch(`${api.base}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body })).status, 401);
     assert.equal((await fetch(`${api.base}${path}`, { method, headers: { Authorization: 'Bearer fixture-api-token', 'Content-Type': 'application/json' }, body })).status, 403);

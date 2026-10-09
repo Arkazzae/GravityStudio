@@ -16,6 +16,7 @@ import { modelRegistry } from "./registry.ts";
 import { CredentialVault } from "./credentials.ts";
 import { INTEGRATION_PROVIDERS, integrationProvider, testIntegration } from "./integrations.ts";
 import { TextService } from "./text.ts";
+import { LocalTextRuntime } from "./local-text.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -60,12 +61,15 @@ export interface ServerOptions {
   models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
   integrationFetch?: typeof fetch;
   textFetch?: typeof fetch;
+  localText?: Pick<LocalTextRuntime, 'initialize' | 'status' | 'prepare' | 'configure' | 'release' | 'models' | 'run' | 'evictIdle' | 'close'>;
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
   await recoverOutputDeletions(store);
   const credentials = new CredentialVault(store);
-  const text = new TextService(store, credentials, { fetch: options.textFetch });
+  const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
+  await localText.initialize();
+  const text = new TextService(store, credentials, { fetch: options.textFetch, local: localText });
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
   const models = options.models ?? new ModelLibrary(store, engine, { huggingFaceToken: () => credentials.get("huggingface") });
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
@@ -119,6 +123,16 @@ export async function createStudioServer(options: ServerOptions) {
       if (path.startsWith("/api/text/") || path === "/api/prompts/refine") {
         requireSession();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        if (path === '/api/text/local') {
+          if (method === 'GET') return json(response, await localText.status());
+          if (method === 'POST') return json(response, await localText.prepare(await readJson(request, 1024)), 202);
+          if (method === 'PUT') return json(response, await localText.configure(await readJson(request, 8192)));
+        }
+        if (path === '/api/text/local/unload' && method === 'POST') {
+          const body = await readJson(request, 1024);
+          if (Object.keys(body).length) throw new ApiError(400, 'INVALID_LOCAL_TEXT_REQUEST', 'Unload the local model with an empty object.');
+          return json(response, await localText.release());
+        }
         if (path === "/api/text/settings" && method === "GET") return json(response, text.settings());
         if (path === "/api/text/connection" && method === "PUT") return json(response, text.saveConnection(await readJson(request, 8192)));
         if (path === "/api/text/assistant" && method === "PUT") return json(response, await text.saveAssistant(await readJson(request, 2048)));
@@ -173,6 +187,7 @@ export async function createStudioServer(options: ServerOptions) {
         if (method === "POST") {
           const body = await readJson(request, 16384);
           if (models.busy()) throw new ApiError(409, "MODEL_DOWNLOAD_BUSY", "Wait for the model download to finish before changing GPUs.");
+          await localText.evictIdle();
           return json(response, runtime.start(body), 202);
         }
       }
@@ -293,5 +308,5 @@ export async function createStudioServer(options: ServerOptions) {
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
-  return Object.assign(server, { closeOperations: async () => { stopping = true; await Promise.all([text.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
+  return Object.assign(server, { closeOperations: async () => { stopping = true; await text.close(); await Promise.all([localText.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
 }

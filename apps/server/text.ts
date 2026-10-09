@@ -7,6 +7,7 @@ import type { CredentialVault } from "./credentials.ts";
 import type { Store } from "./store.ts";
 import { modelRegistry } from "./registry.ts";
 import { buildRefinementPrompt, parseRefinementResult } from "./prompt-refinement.ts";
+import type { LocalTextRuntime } from "./local-text.ts";
 
 const metadataKey = "text-settings";
 const credentialId = "text-openai-compatible";
@@ -14,7 +15,7 @@ interface SavedSettings { version: 1; revision: number; baseUrl: string; assista
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const changed = () => new ApiError(409, "TEXT_SETTINGS_CHANGED", "Text settings changed. Reload them and try again.");
 function check(condition: unknown, message: string): asserts condition { if (!condition) throw new ApiError(400, "INVALID_TEXT_SETTINGS", message); }
-function providerId(value: unknown): TextProviderId { check(value === "gemini" || value === "openai-compatible", "Choose Gemini or an OpenAI-compatible connection."); return value; }
+function providerId(value: unknown): TextProviderId { check(value === "gemini" || value === "openai-compatible" || value === "local", "Choose Local Studio, Gemini or an OpenAI-compatible connection."); return value; }
 function revision(value: unknown): asserts value is number { check(typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER, "Reload the current text settings before saving."); }
 
 /** Only the owner can configure this destination; generation requests never supply URLs. */
@@ -45,8 +46,10 @@ export class TextService {
   private operations = new Map<AbortController, Promise<unknown>>();
   private discovering = new Set<TextProviderId>();
   private cache = new Map<TextProviderId, { identity: string; at: number; result: TextModels }>();
-  constructor(store: Store, credentials: CredentialVault, options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {
+  private local?: Pick<LocalTextRuntime, 'models' | 'run'>;
+  constructor(store: Store, credentials: CredentialVault, options: { fetch?: typeof fetch; timeoutMs?: number; local?: Pick<LocalTextRuntime, 'models' | 'run'> } = {}) {
     this.store = store; this.credentials = credentials; this.fetcher = options.fetch ?? fetch;
+    this.local = options.local;
     this.timeoutMs = options.timeoutMs ?? 45_000;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 60_000) throw new TypeError("Text request timeout must be between 1 and 60000 milliseconds.");
   }
@@ -54,7 +57,7 @@ export class TextService {
   private saved(): SavedSettings {
     const value = this.store.metadata<SavedSettings>(metadataKey);
     if (!value) return { version: 1, revision: 0, baseUrl: "", assistant: null };
-    if (value.version !== 1 || !Number.isSafeInteger(value.revision) || value.revision < 0 || typeof value.baseUrl !== "string" || (value.assistant !== null && (!object(value.assistant) || !["gemini", "openai-compatible"].includes(value.assistant.provider) || !validModelId(value.assistant.modelId)))) throw new ApiError(503, "TEXT_SETTINGS_UNREADABLE", "Saved text settings could not be read.");
+    if (value.version !== 1 || !Number.isSafeInteger(value.revision) || value.revision < 0 || typeof value.baseUrl !== "string" || (value.assistant !== null && (!object(value.assistant) || !["gemini", "openai-compatible", "local"].includes(value.assistant.provider) || !validModelId(value.assistant.modelId)))) throw new ApiError(503, "TEXT_SETTINGS_UNREADABLE", "Saved text settings could not be read.");
     return structuredClone(value);
   }
   settings(): TextSettings {
@@ -98,7 +101,7 @@ export class TextService {
     if (body.provider !== null || body.modelId !== null) {
       const provider = providerId(body.provider);
       check(validModelId(body.modelId), "Choose a model returned by the selected connection.");
-      identity = this.connectionIdentity(this.connection(provider));
+      if (provider !== 'local') identity = this.connectionIdentity(this.connection(provider));
       const available = await this.models(provider);
       if (!available.models.some(model => model.id === body.modelId)) throw new ApiError(400, "TEXT_MODEL_UNAVAILABLE", "The selected text model is not available from this connection.");
       assistant = { provider, modelId: body.modelId };
@@ -107,7 +110,7 @@ export class TextService {
     this.store.db.exec("BEGIN IMMEDIATE");
     try {
       const current = this.expectRevision(body.revision);
-      if (assistant && identity !== this.connectionIdentity(this.connection(assistant.provider))) throw changed();
+      if (assistant && assistant.provider !== 'local' && identity !== this.connectionIdentity(this.connection(assistant.provider))) throw changed();
       this.store.setMetadata(metadataKey, { ...current, revision: current.revision + 1, assistant });
       this.store.db.exec("COMMIT");
     } catch (error) { this.store.db.exec("ROLLBACK"); throw error; }
@@ -115,6 +118,7 @@ export class TextService {
     return this.settings();
   }
   private connection(provider: TextProviderId): TextConnection {
+    if (provider === 'local') throw new ApiError(409, 'LOCAL_TEXT_NOT_READY', 'Prepare the local language model in Models → Language.');
     if (provider === "gemini") {
       const apiKey = this.credentials.get("gemini");
       if (!apiKey) throw new ApiError(409, "TEXT_KEY_REQUIRED", "Save a Gemini API key in Settings → Integrations first.");
@@ -152,6 +156,7 @@ export class TextService {
     } finally { this.discovering.delete(connection.provider); }
   }
   models(provider: unknown, signal?: AbortSignal, refresh = false): Promise<TextModels> {
+    if (providerId(provider) === 'local') return this.operation(() => this.local?.models() ?? Promise.resolve({ provider: 'local', models: [] }), signal);
     const connection = this.connection(providerId(provider));
     return this.operation(inner => this.discovered(connection, inner, refresh), signal, Math.min(this.timeoutMs, 12_000));
   }
@@ -167,9 +172,22 @@ export class TextService {
     if (!settings.assistant) throw new ApiError(409, "TEXT_ASSISTANT_REQUIRED", "Choose a prompt assistant in Settings first.");
     if (this.refining) throw new ApiError(409, "TEXT_BUSY", "A prompt refinement is already running. Wait for it to finish or cancel it.");
     const { provider, modelId } = settings.assistant;
-    const connection = this.connection(provider), identity = this.connectionIdentity(connection);
     const originalPrompt = body.prompt, instruction = body.instruction;
     const prompt = buildRefinementPrompt(model, originalPrompt, instruction);
+    if (provider === 'local') {
+      if (!this.local) throw new ApiError(409, 'LOCAL_TEXT_NOT_READY', 'Prepare the local language model in Models → Language.');
+      this.refining = true;
+      return this.operation(inner => this.local!.run(modelId, inner, async (connection, textModel) => {
+        this.expectRevision(settings.revision);
+        const result = await generateRefinement(connection, textModel, prompt, inner, this.fetcher);
+        if (inner.aborted) throw cancelled(inner);
+        this.expectRevision(settings.revision);
+        const refined = parseRefinementResult(result.text, originalPrompt, instruction);
+        if (connection.apiKey && refined.includes(connection.apiKey)) throw new ApiError(502, 'TEXT_INVALID_RESPONSE', 'The text model returned an invalid refinement.');
+        return { prompt: refined, originalPrompt, provider, modelId, ...(result.usage ? { usage: result.usage } : {}) };
+      }), signal, 180_000).finally(() => { this.refining = false; });
+    }
+    const connection = this.connection(provider), identity = this.connectionIdentity(connection);
     this.refining = true;
     return this.operation(async inner => {
       const available = await this.discovered(connection, inner);
