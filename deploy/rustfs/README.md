@@ -64,6 +64,8 @@ curl --fail http://127.0.0.1:9000/health/ready
 
 Startup can take a few seconds; retry the health check until it succeeds. Named volumes avoid changing host-directory ownership. Podman's [secret mount options](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#secret-secret-opt-opt) set the in-container permissions without putting keys in arguments or container environment values.
 
+This recipe has been checked on Linux AMD64 with rootless Podman: read-only startup, UID `10001`, secret readability, named-volume initialization and HTTP readiness. Podman's scheduled health checks require a working user systemd manager; the HTTP readiness endpoint can also be checked directly.
+
 To let systemd manage this existing container, stop it before handing it to the supplied user service:
 
 ```sh
