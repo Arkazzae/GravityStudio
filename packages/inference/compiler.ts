@@ -66,6 +66,10 @@ function parametersFor(request: GenerationRequest, model: ModelManifest): Resolv
   if (model.familyId.startsWith("flux-2-klein")) {
     check(p.scheduler === "native", "FLUX.2 Klein uses its native resolution-aware scheduler.");
     check(!p.negativePrompt, "This FLUX.2 Klein recipe does not accept a negative prompt.");
+  } else if (model.familyId === "ideogram-4") {
+    check(p.scheduler === "native", "Ideogram 4 uses its native resolution-aware scheduler.");
+    check(!p.negativePrompt, "This Ideogram 4 recipe does not accept a negative prompt.");
+    check(Math.max(p.width, p.height) / Math.min(p.width, p.height) <= 6, "Ideogram 4 supports aspect ratios from 1:6 to 6:1.");
   } else check(p.scheduler !== "native", "Select a ComfyUI scheduler for this family.");
   return p;
 }
@@ -158,6 +162,33 @@ function qwenImage21Graph(model: ModelManifest, p: ResolvedParameters, images: I
   return graph;
 }
 
+function ideogram4Graph(model: ModelManifest, p: ResolvedParameters): WorkflowGraph {
+  // The publisher's CaptionVerifier requires background before elements;
+  // style is optional. Keep the user's wording without a remote Magic Prompt.
+  // https://github.com/ideogram-oss/ideogram4/blob/main/docs/prompting.md
+  const caption = JSON.stringify({ high_level_description: p.prompt, compositional_deconstruction: { background: "", elements: [] } });
+  return {
+    model: { class_type: "UNETLoader", inputs: { unet_name: artifact(model, "diffusion"), weight_dtype: "default" } },
+    model_negative: { class_type: "UNETLoader", inputs: { unet_name: artifact(model, "diffusion-unconditional"), weight_dtype: "default" } },
+    clip: { class_type: "CLIPLoader", inputs: { clip_name: artifact(model, "text-encoder"), type: "ideogram4", device: "default" } },
+    vae: { class_type: "VAELoader", inputs: { vae_name: artifact(model, "vae") } },
+    positive: { class_type: "CLIPTextEncode", inputs: { clip: ["clip", 0], text: caption } },
+    latent: { class_type: "EmptyFlux2LatentImage", inputs: { width: p.width, height: p.height, batch_size: 1 } },
+    schedule: { class_type: "Ideogram4Scheduler", inputs: { steps: p.steps, width: p.width, height: p.height, mu: 0, std: 1.75 } },
+    // Follow the official Comfy template's late sigma range, without raising
+    // guidance when the user selected a value below 3.
+    polish: { class_type: "CFGOverride", inputs: { model: ["model", 0], cfg: Math.min(p.cfg, 3), start_percent: 0.7, end_percent: 1 } },
+    // An absent negative socket gives the unconditional model no text tokens.
+    // Zeroed text conditioning would still select its conditional code path.
+    guider: { class_type: "DualModelGuider", inputs: { model: ["polish", 0], model_negative: ["model_negative", 0], positive: ["positive", 0], cfg: p.cfg } },
+    noise: { class_type: "RandomNoise", inputs: { noise_seed: p.seed } },
+    sampler: { class_type: "KSamplerSelect", inputs: { sampler_name: p.sampler } },
+    sample: { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0], guider: ["guider", 0], sampler: ["sampler", 0], sigmas: ["schedule", 0], latent_image: ["latent", 0] } },
+    decode: { class_type: "VAEDecode", inputs: { samples: ["sample", 0], vae: ["vae", 0] } },
+    output: { class_type: "SaveImage", inputs: { images: ["decode", 0], filename_prefix: "grav" } },
+  };
+}
+
 export function compileGeneration(request: GenerationRequest, model?: ModelManifest): ExecutionSnapshot {
   check(request && typeof request === "object" && !Array.isArray(request) && Object.keys(request).every(key => requestKeys.has(key)), "Unknown generation parameter.");
   check(Object.values(request).every(value => value !== null), "Generation parameters cannot be null.");
@@ -176,7 +207,7 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
     schemaVersion: 1,
     recipe: { familyId: family.id, revision: family.revision, operation },
     model: structuredClone(model), parameters, inputs: structuredClone(images),
-    graph: model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : model.familyId === "qwen-image-2.1" ? qwenImage21Graph(model, parameters, images) : sampledGraph(model, parameters, images),
+    graph: model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : model.familyId === "qwen-image-2.1" ? qwenImage21Graph(model, parameters, images) : model.familyId === "ideogram-4" ? ideogram4Graph(model, parameters) : sampledGraph(model, parameters, images),
     outputs: [{ node: "output", field: "images" }],
   };
   return { ...content, hash: snapshotHash(content) };

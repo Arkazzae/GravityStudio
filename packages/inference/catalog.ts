@@ -36,6 +36,12 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
     defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
     dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,
   },
+  "ideogram-4": {
+    id: "ideogram-4", name: "Ideogram 4", revision: "1",
+    operations: ["text-to-image"], artifacts: ["diffusion", "diffusion-unconditional", "text-encoder", "vae"],
+    defaults: { ...base, steps: 20, cfg: 7, scheduler: "native" },
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 0,
+  },
 };
 
 /** These manifests describe existing worker files; discovery determines availability. No download occurs. */
@@ -78,6 +84,17 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
       { role: "vae", folder: "vae", filename: "qwen_image_2.1_vae_bf16.safetensors", sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/vae/qwen_image_2.1_vae_bf16.safetensors" },
     ],
   },
+  {
+    id: "ideogram-4-fp8", name: "Ideogram 4 FP8", familyId: "ideogram-4", revision: "1",
+    description: "Local text-to-image generation for typography and detailed compositions.",
+    license: "Ideogram Non-Commercial Model Agreement; commercial use requires a separate license",
+    artifacts: [
+      { role: "diffusion", folder: "diffusion_models", filename: "ideogram4_fp8_scaled.safetensors", sha256: "49a946f1b0f8bcf5eab7d3b1ecc7b453c104e034cb1b592032745692724bd306", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/diffusion_models/ideogram4_fp8_scaled.safetensors" },
+      { role: "diffusion-unconditional", folder: "diffusion_models", filename: "ideogram4_unconditional_fp8_scaled.safetensors", sha256: "9b359007dae162cca7591d00868feea733eb7c56e56e3a214a4d5a9a2a07cd60", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_8b_fp8_scaled.safetensors", sha256: "4ba424cf62e51392e4d1a39933e803706f4e823c1065f36aaf149c6453f66bcd", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/text_encoders/qwen3vl_8b_fp8_scaled.safetensors" },
+      { role: "vae", folder: "vae", filename: "flux2-vae.safetensors", sha256: "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/vae/flux2-vae.safetensors" },
+    ],
+  },
 ];
 
 export function isRelativeFile(value: unknown): value is string {
@@ -87,7 +104,7 @@ export function isRelativeFile(value: unknown): value is string {
 }
 
 const artifactFolders: Record<ArtifactRole, string> = {
-  checkpoint: "checkpoints", diffusion: "diffusion_models", "text-encoder": "text_encoders", vae: "vae",
+  checkpoint: "checkpoints", diffusion: "diffusion_models", "diffusion-unconditional": "diffusion_models", "text-encoder": "text_encoders", vae: "vae",
 };
 const allowedDefaults = new Set(Object.keys(base));
 

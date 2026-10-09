@@ -11,12 +11,15 @@ This package compiles portable image requests into ComfyUI API graphs. A family 
 | FLUX.2 Klein 9B | Text to image; reference editing | Family recipe only; supply a compatible manifest |
 | Krea 2 | Text to image | Krea 2 Turbo FP8 |
 | Qwen Image 2.1 | Text to image; reference editing | Qwen Image 2.1 BF16 |
+| Ideogram 4 | Text to image | Ideogram 4 FP8 |
 
 SDXL image-to-image scales and center-crops the input to the selected dimensions before encoding it. Klein accepts up to four references. Its native scheduler uses the output dimensions; this recipe does not expose a negative prompt. Krea reference editing, inpainting and arbitrary LoRA chains are not implemented by these recipes.
 
 Qwen Image 2.1 accepts up to ten references in order; address them as `<image1>`, `<image2>`, and so on in the prompt. Reference encoding preserves aspect ratio at approximately one megapixel per image, while the output uses the dimensions selected in Studio. Choose an output aspect ratio close to the first reference to preserve the composition. The recipe follows the official custom-size workflow, supports dimensions in multiples of 32 up to 4.4 million pixels, and defaults to 25 steps with Euler/simple and guidance 1. Negative prompts take effect when guidance exceeds 1. For a transparent PNG, explicitly request an RGBA image with an alpha channel and transparent background in the prompt. The optional prompt enhancement model is not loaded.
 
 Qwen recipe revision 2 works around [reported noisy reference edits](https://github.com/Comfy-Org/ComfyUI/issues/16435) on certain sampling grids. References use a 992-pixel resolution budget. When the requested latent grid contains a multiple of 2,048 tokens, sampling adds 32 pixels to each dimension and bicubic scaling restores the requested output dimensions. This remains within the recipe's sampling pixel budget; text-to-image is unchanged.
+
+Ideogram 4 FP8 supports text-to-image with 20 steps, Euler sampling and guidance 7 by default. It uses a native resolution-aware schedule and lowers guidance late in sampling. Studio converts a plain prompt into the publisher's minimal caption format locally; it does not call Magic Prompt or another hosted service. Reference images and negative prompts are unavailable in this recipe. Dimensions use a 16-pixel grid, from 256 to 2048 per side, with aspect ratios up to 6:1. Initial memory budgets are estimates of 48 GiB RAM and 28 GiB VRAM at 1024×1024; larger images reserve more memory. These estimates do not establish that generation will fit on a particular GPU.
 
 The managed runtime pins [ComfyUI v0.39.0](https://github.com/Comfy-Org/ComfyUI/tree/b0b743566f65daafc423b4fea8a2fbda94b3384a). These recipes use its built-in nodes and do not require custom node packs. The [schema regression fixture](../../tests/inference/fixtures/comfy-v0.39.0-signatures.json) records the pinned source file digests, socket types and loader enums. Tests cover graph compatibility and the HTTP/WebSocket protocol. GPU execution and model quality still require a real generation on the selected hardware.
 
@@ -37,6 +40,10 @@ Put existing model files in the worker's model directory. The managed deployment
 | Qwen Image 2.1 | `diffusion_models` | `qwen_image_2.1_bf16.safetensors` |
 | Qwen Image 2.1 | `text_encoders` | `qwen3vl_8b_bf16.safetensors` |
 | Qwen Image 2.1 | `vae` | `qwen_image_2.1_vae_bf16.safetensors` |
+| Ideogram 4 FP8 | `diffusion_models` | `ideogram4_fp8_scaled.safetensors` |
+| Ideogram 4 FP8 | `diffusion_models` | `ideogram4_unconditional_fp8_scaled.safetensors` |
+| Ideogram 4 FP8 | `text_encoders` | `qwen3vl_8b_fp8_scaled.safetensors` |
+| Ideogram 4 FP8 | `vae` | `flux2-vae.safetensors` |
 
 Use the model publishers' files and licenses:
 
@@ -45,6 +52,7 @@ Use the model publishers' files and licenses:
 - Krea: [Krea's Turbo model card](https://huggingface.co/krea/Krea-2-Turbo) and [Comfy-Org's pinned files](https://huggingface.co/Comfy-Org/Krea-2/tree/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96), with the Krea 2 Community License linked by the publisher.
 - Qwen: [the publisher's model card](https://huggingface.co/Qwen/Qwen-Image-2.1) and [Comfy-Org's pinned BF16 files](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/tree/cb504a4090723e43f17ad01cec0359490e2de613). The [Qwen Research License](https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE) permits non-commercial research and evaluation; commercial use requires a separate license. The three BF16 files total approximately 30.2 GiB. The recipe uses automatic, lossless KV cache placement in GPU or host memory.
 - WAI: [the creator's model version](https://civitai.com/models/827184?modelVersionId=2883731). Access and download permissions are controlled by Civitai and the creator. A configured filename does not prove that this version is available to download or grant permission to use it.
+- Ideogram: [the publisher's FP8 model card](https://huggingface.co/ideogram-ai/ideogram-4-fp8) and [Comfy-Org's pinned files](https://huggingface.co/Comfy-Org/Ideogram-4/tree/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d), under the [Ideogram Non-Commercial Model Agreement](https://huggingface.co/ideogram-ai/ideogram-4-fp8/blob/main/LICENSE.md). Commercial use requires a separate license. The four files total approximately 27.5 GiB; an existing Klein VAE with the matching digest is reused. If Hugging Face requires access approval, accept the publisher's terms with your own account and configure its authorized token in Models → Hugging Face.
 
 Artifact URLs and expected SHA-256 digests are in [catalog.ts](./catalog.ts). The default Klein VAE comes from the Klein repository; its digest starts with `868fe7b3`. Another published file with the same filename exists in the FLUX.2 dev repository with a different digest. Compare the full digest when selecting an exact artifact.
 

@@ -92,7 +92,7 @@ export class Engine {
     try {
       const discovery = await client.discover();
       return { connected: true, version: health.version, artifacts: {
-        checkpoint: discovery.models.checkpoints ?? [], diffusion: discovery.models.diffusion_models ?? [],
+        checkpoint: discovery.models.checkpoints ?? [], diffusion: discovery.models.diffusion_models ?? [], "diffusion-unconditional": discovery.models.diffusion_models ?? [],
         "text-encoder": discovery.models.text_encoders ?? [], vae: discovery.models.vae ?? [],
       } };
     } catch (error) { return { connected: false, error: message(error), artifacts: {} }; }

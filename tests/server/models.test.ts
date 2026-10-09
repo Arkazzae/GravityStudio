@@ -10,6 +10,7 @@ import { modelRegistry, saveImportedModel } from "../../apps/server/registry.ts"
 import { configuredModel, settingsView, validateSettings } from "../../apps/server/settings.ts";
 import { Store } from "../../apps/server/store.ts";
 import type { ModelManifest } from "../../packages/inference/index.ts";
+import { getModel } from "../../packages/inference/index.ts";
 import { engineFixture, GiB, inventory } from "./helpers/engine-fixture.ts";
 
 const source = "https://huggingface.co/example/checkpoints/blob/main/portrait.safetensors";
@@ -82,6 +83,76 @@ test("an existing studio discovers Qwen's download and capabilities without enab
 test("Hugging Face links normalize to file downloads and reject unsupported sources", () => {
   assert.equal(huggingFaceFile(`${source}?download=true`), source.replace("/blob/", "/resolve/"));
   for (const url of ["http://huggingface.co/example/repo/blob/main/a.safetensors", "https://huggingface.co.attacker.example/a/b/blob/main/c.safetensors", "https://name:secret@huggingface.co/a/b/blob/main/c.safetensors", "https://huggingface.co:8443/a/b/blob/main/c.safetensors", "https://127.0.0.1/a/b/blob/main/c.safetensors", "https://huggingface.co/a/b/blob/main/a.ckpt", "https://huggingface.co/a/b/resolve/main/%2foutside.safetensors", "https://huggingface.co/a/b/resolve/main/%5coutside.safetensors", `${source}?token=secret`, "https://huggingface.co/example/checkpoints"]) assert.throws(() => huggingFaceFile(url), { code: "INVALID_MODEL_SOURCE" });
+});
+
+test("an existing studio discovers Ideogram's four artifacts without enabling it or changing saved configuration", async t => {
+  const { store, library } = await fixture(t, { fetch: async () => assert.fail("Browsing must not download weights") });
+  const previous = settingsView(store);
+  previous.modelConfigurations = previous.modelConfigurations.filter(model => model.modelId !== "ideogram-4-fp8");
+  previous.modelConfigurations[0].artifacts.checkpoint = "custom-checkpoint.safetensors";
+  store.saveSettings(previous);
+  const card = (await new Engine(store).catalog()).models.find(model => model.id === "ideogram-4-fp8")!;
+  assert.equal(card.familyId, "ideogram-4");
+  assert.equal(card.ready, false);
+  assert.deepEqual(card.operations, ["text-to-image"]);
+  assert.equal(card.capabilities.imageInput, false);
+  assert.equal(card.capabilities.maxImages, 0);
+  assert.equal(card.capabilities.negativePrompt, false);
+  assert.match(card.license!, /Non-Commercial/);
+  const view = await library.view();
+  const entry = view.models.find(model => model.id === card.id)!;
+  assert.equal(entry.downloadable, true);
+  assert.equal(entry.installed, false);
+  assert.equal(entry.enabled, false);
+  assert.equal(view.download, null);
+  assert.deepEqual(entry.artifacts.map(artifact => artifact.role), ["diffusion", "diffusion-unconditional", "text-encoder", "vae"]);
+  for (const artifact of card.artifacts) {
+    assert.match(huggingFaceFile(artifact.source), /^https:\/\/huggingface\.co\/Comfy-Org\/Ideogram-4\/resolve\/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d\//);
+    assert.match(artifact.sha256!, /^[a-f0-9]{64}$/);
+  }
+  const settings = settingsView(store);
+  const configuration = settings.modelConfigurations.find(model => model.modelId === card.id)!;
+  assert.deepEqual(configuration.memory, { ramBytes: 48 * GiB, vramBytes: 28 * GiB, source: "estimate" });
+  assert.deepEqual(settings.modelConfigurations.filter(model => model.modelId !== card.id), previous.modelConfigurations);
+  store.saveSettings(validateSettings(settings, inventory(), modelRegistry(store)));
+  configuration.artifacts["diffusion-unconditional"] = "local/unconditional.safetensors";
+  const resolved = configuredModel(configuration, store);
+  assert.equal(resolved.artifacts.find(artifact => artifact.role === "diffusion-unconditional")!.sha256, undefined);
+  assert.equal(resolved.artifacts.find(artifact => artifact.role === "diffusion")!.sha256, card.artifacts[0].sha256);
+});
+
+test("Ideogram downloads both diffusion roles and reuses the matching shared VAE", async t => {
+  const requests: string[] = [];
+  const { directory, store, library } = await fixture(t, { fetch: async input => { requests.push(String(input)); return response(); } });
+  // Tiny verified safetensors exercise the real downloader without model weights.
+  const model = structuredClone(getModel("ideogram-4-fp8"));
+  model.id = "fixture-ideogram";
+  model.artifacts = model.artifacts.map(artifact => ({ ...artifact, sha256 }));
+  saveImportedModel(store, model);
+  await mkdir(join(directory, "models", "vae"), { recursive: true });
+  await writeFile(join(directory, "models", "vae", "flux2-vae.safetensors"), bytes);
+  library.start({ modelId: model.id }); await library.waitForIdle();
+  const view = await library.view();
+  assert.equal(view.download?.status, "succeeded", view.download?.error ?? "Ideogram download should complete");
+  assert.equal(requests.length, 3);
+  assert.equal(requests.some(url => url.includes("/vae/")), false);
+  assert.equal(requests.filter(url => url.includes("/diffusion_models/")).length, 2);
+  for (const artifact of model.artifacts) assert.deepEqual(await readFile(join(directory, "models", artifact.folder, artifact.filename)), bytes);
+  assert.equal(view.models.find(entry => entry.id === model.id)!.installed, true);
+  assert.equal(view.models.find(entry => entry.id === model.id)!.enabled, false);
+});
+
+test("denied Ideogram model access stops without trying another source or activating the model", async t => {
+  for (const status of [401, 403]) await t.test(String(status), async t => {
+    let requests = 0;
+    const { library } = await fixture(t, { fetch: async () => { requests++; return new Response(null, { status }); } });
+    library.start({ modelId: "ideogram-4-fp8" }); await library.waitForIdle();
+    const view = await library.view();
+    assert.equal(requests, 1);
+    assert.equal(view.download?.status, "failed");
+    assert.match(view.download!.error!, /access|permission|license|token/i);
+    assert.equal(view.models.find(model => model.id === "ideogram-4-fp8")!.enabled, false);
+  });
 });
 
 test("a streamed checkpoint installs atomically, records its digest and remains available after restart", async t => {

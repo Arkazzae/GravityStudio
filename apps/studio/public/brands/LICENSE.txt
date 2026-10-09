@@ -1,4 +1,4 @@
-The flux.svg, krea.svg, qwen.svg and stability.svg marks are from Lobe Icons:
+The flux.svg, ideogram.svg, krea.svg, qwen.svg and stability.svg marks are from Lobe Icons:
 https://github.com/lobehub/lobe-icons
 License source: https://github.com/lobehub/lobe-icons/blob/master/LICENSE
 
