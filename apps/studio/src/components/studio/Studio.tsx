@@ -21,6 +21,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [catalog, setCatalog] = useState<Catalog>({ models: [], families: [] });
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
+  const stateRevision = useRef(0);
   const [draft, setDraft] = useState<Draft>(initialDraft);
   const [dockHeight, setDockHeight] = useState(170);
   const [zoom, setZoom] = useState(.35);
@@ -60,8 +61,9 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     catch (error) { setError(errorMessage(error)); }
   }, []);
   const refresh = useCallback(async () => {
-    try { const next = await api<StudioState>('/state'); setState(next); setConnected(true); setError(''); }
-    catch (error) { setConnected(false); setError(errorMessage(error)); if ((error as { status?: number }).status === 401) sessionExpired(); }
+    const revision = ++stateRevision.current;
+    try { const next = await api<StudioState>('/state'); if (revision !== stateRevision.current) return; setState(next); setConnected(true); setError(''); }
+    catch (error) { if (revision !== stateRevision.current) return; setConnected(false); setError(errorMessage(error)); if ((error as { status?: number }).status === 401) sessionExpired(); }
   }, [sessionExpired]);
   const refreshCatalog = useCallback(async () => {
     try {
@@ -95,6 +97,18 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
     document.getElementById('image-prompt')?.focus();
   }
+  async function deleteOutput(job: Job, output: Job['outputs'][number]) {
+    try {
+      await api<{ job: Job }>(`/jobs/${encodeURIComponent(job.id)}/outputs/${encodeURIComponent(output.id)}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) });
+      stateRevision.current++;
+      setState(current => current ? { ...current, jobs: current.jobs.map(entry => entry.id === job.id ? { ...entry, outputs: entry.outputs.filter(saved => saved.id !== output.id) } : entry) } : current);
+      favorites.forgetOutput(job.id, output.id);
+      void refresh();
+    } catch (error) {
+      if ((error as { status?: number }).status === 401) sessionExpired();
+      throw error;
+    }
+  }
   if (!bootstrap) return <main className="flex min-h-dvh items-center justify-center px-5"><div className="max-w-md text-center"><Logo className="mx-auto mb-6 size-9 text-volt" />{error ? <><p role="alert" className="error-notice">{error}</p><button onClick={() => void checkSession()} className="mt-5 rounded-chip bg-chip px-5 py-3 text-sm">Try again</button></> : <p role="status" className="text-sm text-ink-2">Opening your studio…</p>}</div></main>;
   if (!authenticated) return <AuthPanel setup={!bootstrap.configured} onAuthenticated={() => { if (!bootstrap.configured) { setOnboarding(true); setPanel('settings'); } void checkSession(); }} />;
   return <div className="flex h-dvh flex-col overflow-hidden">
@@ -109,7 +123,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     {error && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-y border-[#e8997038] bg-[#67412c33] px-4 py-2 text-xs text-[#ffc3aa]"><span>{error}</span><button className="shrink-0 underline underline-offset-3" onClick={() => { void refresh(); void refreshCatalog(); }}>Try again</button></div>}
     <main className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
-        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => setPanel('models')} onOpenSettings={() => setPanel('settings')} />}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => setPanel('models')} onOpenSettings={() => setPanel('settings')} />}</div>
         <PromptDock favoriteError={favorites.error} onOpenModels={() => setPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
     {showSettings && <StudioDialog panel="settings" title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>

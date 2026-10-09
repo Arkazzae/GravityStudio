@@ -85,8 +85,15 @@ export function useFavorites(ownerId: string | null, onSessionExpired: () => voi
     }
   }, [ownerId, onSessionExpired, refresh]);
 
+  const forgetOutput = useCallback((jobId: string, outputId: string) => {
+    version.current++; reading.current?.abort();
+    setJobs(current => current.map(job => job.id === jobId ? { ...job, outputs: job.outputs.filter(output => output.id !== outputId) } : job).filter(job => job.outputs.length));
+    setFailure(current => current?.job.id === jobId && current.output.id === outputId ? null : current);
+    void refresh();
+  }, [refresh]);
+
   const keys = useMemo(() => new Set(jobs.flatMap(job => job.outputs.map(output => favoriteKey(job.id, output.id)))), [jobs]);
-  return { jobs, ready, loading: !ready && !loadError, keys, pending, toggle,
+  return { jobs, ready, loading: !ready && !loadError, keys, pending, toggle, forgetOutput,
     error: failure?.message || loadError,
     retry: () => { if (failure) void toggle(failure.job, failure.output); else void refresh(); },
   };
