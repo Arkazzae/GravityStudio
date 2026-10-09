@@ -107,3 +107,34 @@ test("generation requires an idempotency key and logout invalidates the session"
   await api.request("/logout", "POST", {});
   assert.equal((await fetch(`${api.url}/api/jobs`, { headers: { Cookie: oldCookie } })).status, 401);
 });
+
+test("MCP authenticates every request and exposes generation tools without server administration", async t => {
+  const api = await fixture(t); await api.setup();
+  const created = await (await api.request("/tokens", "POST", { name: "MCP client" })).json();
+  const headers = { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+  const rpc = (body: unknown, extra: Record<string, string> = {}) => fetch(`${api.url}/api/mcp`, { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(body) });
+  async function message(response: Response) {
+    const text = await response.text();
+    if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+      const data = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      assert.equal(data.length, 1); return data[0];
+    }
+    return JSON.parse(text);
+  }
+  const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } } };
+  assert.equal((await rpc(init, { Authorization: "Bearer invalid" })).status, 401);
+  const initialized = await rpc(init);
+  assert.equal(initialized.status, 200);
+  assert.equal((await message(initialized)).result.serverInfo.name, "gravity-studio");
+  const listed = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+  assert.equal(listed.status, 200);
+  const names = (await message(listed)).result.tools.map((tool: { name: string }) => tool.name).sort();
+  assert.deepEqual(names, ["gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list"]);
+  const result = await message(await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "gravity_jobs_list", arguments: {} } }));
+  assert.deepEqual(result.result.structuredContent.data, { jobs: [] });
+  const rejected = await message(await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "gravity_job_submit", arguments: { request: { modelId: "sdxl-base", prompt: "mountain" }, idempotencyKey: "mcp-request-first" } } }));
+  assert.equal(rejected.result.isError, true);
+  assert.equal(JSON.parse(rejected.result.content[0].text).error.code, "MODEL_DISABLED");
+  await api.request(`/tokens/${created.id}`, "DELETE");
+  assert.equal((await rpc(init)).status, 401);
+});

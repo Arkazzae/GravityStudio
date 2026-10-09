@@ -9,6 +9,7 @@ import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
 import { MAX_INPUT_BYTES, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
+import { mcpResponse } from "./mcp.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -56,7 +57,7 @@ export async function createStudioServer(options: ServerOptions) {
       if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Credentials", "true"); response.setHeader("Vary", "Origin"); }
       if (method === "OPTIONS") {
         if (!origin) throw new ApiError(403, "ORIGIN_NOT_ALLOWED", "Supply an allowed origin.");
-        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename", ...safeHeaders }); response.end(); return;
+        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename, MCP-Protocol-Version, MCP-Session-Id", ...safeHeaders }); response.end(); return;
       }
       if (path === "/api/health" && method === "GET") return json(response, { status: "ok", version: "0.1.0" });
       const identity = identify(request, store);
@@ -86,6 +87,17 @@ export async function createStudioServer(options: ServerOptions) {
       const { user } = identity;
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
+      if (path === "/api/mcp") {
+        if (method !== "POST") { response.setHeader("Allow", "POST"); throw new ApiError(405, "METHOD_NOT_ALLOWED", "This stateless MCP endpoint accepts POST requests."); }
+        const body = await readJson(request);
+        const headers = new Headers();
+        for (const name of ["content-type", "accept", "mcp-protocol-version", "mcp-session-id"]) {
+          const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
+        }
+        const result = await mcpResponse(engine, store, user.id, new Request("http://localhost/api/mcp", { method: "POST", headers, body: JSON.stringify(body) }), body);
+        response.writeHead(result.status, { ...safeHeaders, "Content-Type": result.headers.get("content-type") ?? "application/json" });
+        response.end(Buffer.from(await result.arrayBuffer())); return;
+      }
       if (path === "/api/logout" && method === "POST") {
         const token = cookieToken(request); if (token) store.revokeSession(digest(token));
         response.setHeader("Set-Cookie", clearSession(secure)); return json(response, { loggedOut: true });
@@ -124,8 +136,10 @@ export async function createStudioServer(options: ServerOptions) {
       if (path === "/api/inputs") {
         if (method === "GET") return json(response, { inputs: store.inputs(user.id) });
         if (method === "POST") {
-          const name = request.headers["x-filename"];
-          const input = await saveInput(store, user.id, await readBytes(request, MAX_INPUT_BYTES), typeof name === "string" ? name : "reference.png");
+          const suppliedName = request.headers["x-filename"];
+          let name = typeof suppliedName === "string" ? suppliedName : "reference.png";
+          try { name = decodeURIComponent(name); } catch { /* Plain filenames containing % remain valid. */ }
+          const input = await saveInput(store, user.id, await readBytes(request, MAX_INPUT_BYTES), name);
           return json(response, input, 201);
         }
       }
