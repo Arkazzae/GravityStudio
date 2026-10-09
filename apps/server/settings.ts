@@ -22,7 +22,7 @@ export function validateWorkerUrl(value: unknown): string {
 }
 export function defaultModelConfiguration(model: ModelManifest): ModelConfiguration {
   const budgets: Record<string, [number, number]> = {
-    sdxl: [20, 12], "flux-2-klein-4b": [28, 20], "flux-2-klein-9b": [40, 28], "krea-2": [48, 28],
+    sdxl: [16, 8], "flux-2-klein-4b": [28, 20], "flux-2-klein-9b": [40, 28], "krea-2": [48, 28],
   };
   const [ram, vram] = budgets[model.familyId] ?? [48, 28];
   return { modelId: model.id, enabled: false, artifacts: Object.fromEntries(model.artifacts.map(item => [item.role, item.filename])), workerIds: [], memory: { ramBytes: ram * GiB, vramBytes: vram * GiB, source: "estimate" } };
