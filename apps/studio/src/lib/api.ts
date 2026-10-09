@@ -31,11 +31,11 @@ export interface GenerationParameters { width: number; height: number; steps: nu
 export interface Job {
   id: string; modelId: string; modelName?: string; prompt: string; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
-  stage?: string; progress: number | null; createdAt: string; updatedAt?: string;
+  stage?: string; progress: number | null; createdAt: string; updatedAt?: string; workerId?: string | null;
   outputs: Array<{ id: string; url: string; width?: number; height?: number; mimeType: string; favorite?: boolean }>;
   error: string | null;
 }
-export interface StudioState { jobs: Job[]; workers: Array<Worker & { connected?: boolean; status?: string; error?: string }>; hardware: Hardware }
+export interface StudioState { jobs: Job[]; workers: Array<Worker & { connected?: boolean; status?: string; error?: string; canRelease?: boolean }>; hardware: Hardware }
 export interface WorkerProbe { connected: boolean; version?: string; error?: string; artifacts?: Record<string, string[]> }
 export class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); this.name = 'ApiError'; } }
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {

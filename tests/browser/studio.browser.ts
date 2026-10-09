@@ -34,7 +34,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
   const store = new Store(directory);
   const inventory = dualR9700();
-  inventory.gpus = inventory.gpus.map((gpu, index) => ({ ...gpu, name: 'AMD Radeon AI PRO R9700', pciAddress: index ? '0000:07:00.0' : '0000:03:00.0' }));
+  inventory.gpus = inventory.gpus.map((gpu, index) => ({ ...gpu, name: 'AMD Radeon AI PRO R9700', pciAddress: index ? '0000:07:00.0' : '0000:03:00.0', memory: { ...gpu.memory, usedBytes: (index ? 8 : 4) * 1024 ** 3 } }));
+  inventory.host.memory.availableBytes = 72 * 1024 ** 3;
   const engine = new Engine(store, { detect: async () => ({ ...inventory, detectedAt: new Date().toISOString() }), pollMs: 100 });
   const comfy = await fakeComfy();
   const otherComfy = await fakeComfy();
@@ -118,10 +119,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   let localPreparations = 0;
   let localRuns = 0;
   let localReleases = 0;
+  let localStatusReads = 0;
   let localUnloadFails = false;
   const localText: NonNullable<Parameters<typeof createStudioServer>[0]['localText']> = {
     initialize: async () => {},
-    status: async () => structuredClone(localState),
+    status: async () => { localStatusReads++; return structuredClone(localState); },
     prepare: async body => {
       assert.deepEqual(body, { modelId: LOCAL_TEXT_MODEL.id });
       localPreparations++;
@@ -211,6 +213,20 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   async function screenshotPopover(name: string) {
     await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
     await browser.screenshot(join(output, name));
+  }
+  const activityScope = '[role="dialog"][aria-label="Server activity"]:popover-open';
+  async function openActivity() {
+    await browser.click('[data-server-activity]');
+    await browser.until(`!!document.querySelector(${JSON.stringify(activityScope)})`, 'Server activity opens');
+  }
+  async function activityFrame(name: 'idle' | 'active') {
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      await browser.evaluate(`Promise.all([document.fonts.ready, ...document.querySelector(${JSON.stringify(activityScope)}).getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))`);
+      assert.equal(await browser.evaluate(`(() => { const panel = document.querySelector(${JSON.stringify(activityScope)}), rect = panel.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && panel.scrollWidth <= panel.clientWidth + 1; })()`), true, `The ${name} server panel fits the ${mobile ? 'mobile' : 'desktop'} viewport`);
+      await browser.screenshot(join(output, `activity-${name}-${mobile ? 'mobile' : 'desktop'}.png`));
+    }
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   }
   async function uploadReference() {
     const file = join(directory, 'reference-upload.png');
@@ -375,6 +391,28 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Ready model');
   await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Server activity starts idle');
   assert.equal(await browser.evaluate("document.querySelector('[data-server-activity]').textContent.includes('Activity')"), false, 'The header uses a compact meter without an Activity text label');
+  await openActivity();
+  for (const [number, pci, used] of [[1, '0000:03:00.0', 4], [2, '0000:07:00.0', 8]] as const) {
+    const gpuLabel = `GPU ${number} · AMD Radeon AI PRO R9700`;
+    await browser.until(`document.querySelector(${JSON.stringify(`${activityScope} [aria-label="${gpuLabel}"]`)})?.textContent.includes(${JSON.stringify(pci)})`, 'Identical GPU cards retain their numbered hardware identity');
+    const meter = await browser.evaluate<{ now: number; max: number; text: string }>(`(() => { const meter = document.querySelector(${JSON.stringify(`${activityScope} [role="meter"][aria-label="${gpuLabel} memory"]`)}); return {now:Number(meter.getAttribute('aria-valuenow')), max:Number(meter.getAttribute('aria-valuemax')), text:meter.getAttribute('aria-valuetext') || meter.parentElement.textContent}; })()`);
+    assert.equal(meter.now / meter.max, used / 32, 'GPU usage uses observed used memory rather than total VRAM');
+    assert.match(meter.text, new RegExp(`\\b${used}(?:\\.0)?\\b.*\\b32(?:\\.0)?\\b`), 'The GPU meter exposes used and total memory');
+  }
+  const ramMeter = await browser.evaluate<{ now: number; max: number }>(`(() => { const meter = document.querySelector(${JSON.stringify(`${activityScope} [role="meter"][aria-label="System RAM used"]`)}); return {now:Number(meter.getAttribute('aria-valuenow')),max:Number(meter.getAttribute('aria-valuemax'))}; })()`);
+  assert.equal(ramMeter.now / ramMeter.max, 24 / 96, 'RAM reports used memory as total minus available');
+  await activityFrame('idle');
+  await browser.evaluate("window.__gravityActivityFetch = window.fetch; window.fetch = async function(input, init) { const url = typeof input === 'string' ? input : input.url; if (url === '/api/state') throw new TypeError('Activity connection interrupted'); return window.__gravityActivityFetch.call(this, input, init); }");
+  try {
+    await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
+    await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'offline'", 'Refresh reports a disconnected Studio');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(activityScope)}).querySelectorAll('[role="meter"]').length`), 0, 'A disconnected panel does not present stale GPU or RAM readings');
+  } finally {
+    await browser.evaluate('window.fetch = window.__gravityActivityFetch; delete window.__gravityActivityFetch');
+  }
+  await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
+  await browser.until(`document.querySelector('[data-server-activity]')?.dataset.state === 'idle' && document.querySelector(${JSON.stringify(activityScope)}).querySelectorAll('[role="meter"]').length === 3`, 'Refresh restores live hardware readings');
+  await browser.click('button[aria-label="Close activity"]');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
   const advertised = await browser.evaluate<{ defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { multiple: number; min: number; max: number; maxPixels: number }; capabilities: { negativePrompt: boolean } }>(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === ${JSON.stringify(modelId)}))`);
@@ -434,12 +472,34 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   completeAutomatically = false;
   await browser.clickText('Generate');
   await browser.until("['queued', 'running'].includes(document.querySelector('[data-server-activity]')?.dataset.state)", 'Server activity reflects the pending generation');
+  await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'running'", 'The first image starts on its assigned worker');
+  const queuedActivityJob = await browser.evaluate<{ id: string }>(`fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json','Idempotency-Key':'browser-activity-queued'}, body:JSON.stringify({modelId:${JSON.stringify(modelId)},prompt:'Queued activity panel cancellation'})}).then(async response => { const body = await response.json(); if (!response.ok) throw new Error(JSON.stringify(body)); return body.job; })`);
+  await openActivity();
+  await browser.until(`document.querySelector(${JSON.stringify(activityScope)})?.textContent.includes('Browser checkpoint') && !!document.querySelector(${JSON.stringify(`${activityScope} button[aria-label="Cancel queued job: Queued activity panel cancellation"]`)})`, 'The activity panel identifies the active model and queued generation');
+  const activeImage = store.jobs(store.owner()!.id).find(job => job.prompt === prompt && job.status === 'running')!;
+  await browser.until(`document.querySelector(${JSON.stringify(activityScope)})?.textContent.includes(${JSON.stringify(activeImage.stage)})`, 'The model row reports the real generation stage');
+  assert.equal(await browser.evaluate(`!!document.querySelector(${JSON.stringify(`${activityScope} button[aria-label="Release cache for GPU 2"]:not(:disabled)`)})`), false, 'Image memory cannot be released while its worker is generating');
+  const freesWhileActive = comfy.state.frees;
+  await activityFrame('active');
+  await browser.click(`${activityScope} button[aria-label="Cancel queued job: Queued activity panel cancellation"]`);
+  await browser.until(`!document.querySelector(${JSON.stringify(`${activityScope} button[aria-label="Cancel queued job: Queued activity panel cancellation"]`)})`, 'Cancel removes the queued job from activity');
+  assert.equal(store.job(queuedActivityJob.id).status, 'cancelled', 'The queued cancellation is saved through the real owner API');
+  assert.equal(comfy.state.frees, freesWhileActive, 'Inspecting active work never releases its model cache');
+  await browser.click('button[aria-label="Close activity"]');
   completeAutomatically = true;
   await browser.until("!!document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]')", 'Generated output in gallery');
   await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Server activity returns to idle after generation');
-  const first = store.jobs(store.owner()!.id)[0];
+  const first = store.jobs(store.owner()!.id).find(job => job.prompt === prompt && job.status === 'succeeded')!;
   assert.equal(first.status, 'succeeded'); assert.equal(first.parameters.seed, 1234); assert.equal(comfy.state.submissions.length, 1);
   assert.deepEqual({ width: first.parameters.width, height: first.parameters.height, steps: first.parameters.steps, cfg: first.parameters.cfg, negativePrompt: first.parameters.negativePrompt }, { width: generationWidth, height: 768, steps: 24, cfg: 6.5, negativePrompt: 'text, watermark' }, 'Generation uses the edited toolbar parameters');
+  await openActivity();
+  await browser.until(`document.querySelector(${JSON.stringify(`${activityScope} button[aria-label="Release cache for GPU 2"]`)})?.disabled === false`, 'An idle image worker offers cache release');
+  const releasesBefore = comfy.state.frees;
+  await browser.click(`${activityScope} button[aria-label="Release cache for GPU 2"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(activityScope)})?.textContent.includes('Release requested')`, 'The cache action acknowledges the request without claiming measured VRAM was already released');
+  assert.equal(comfy.state.frees, releasesBefore + 1, 'Releasing image cache uses ComfyUI free after its queue is confirmed idle');
+  assert.equal(store.job(first.id).outputs.length, 1, 'Releasing model cache preserves saved images');
+  await browser.click('button[aria-label="Close activity"]');
   await browser.until("Array.from(document.querySelectorAll('figure img')).every(image => image.complete && image.naturalWidth > 0)", 'Output image pixels loaded');
   await browser.screenshot(join(output, 'image-desktop.png'));
   await browser.fill('#image-prompt', 'Temporary draft');
@@ -1099,6 +1159,27 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('GPU selection saved')`, 'An installed model can return to automatic Studio GPU selection');
   assert.deepEqual(localState.gpuIds, []);
   await browser.click('button[aria-label="Close models"]');
+  Object.assign(localState, { phase: 'loaded', gpuId: 'amd:9700b', busy: false });
+  const statusReadsBefore = localStatusReads;
+  await openActivity();
+  const unloadAssistant = `${activityScope} button[aria-label="Unload ${LOCAL_TEXT_MODEL.name}"]`;
+  await browser.until(`document.querySelector(${JSON.stringify(unloadAssistant)})?.disabled === false`, 'Activity discovers the resident local assistant without opening Models');
+  assert.ok(localStatusReads > statusReadsBefore, 'Opening activity reads managed local runtime status');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${activityScope} [aria-label="GPU 2 · AMD Radeon AI PRO R9700"]`)})?.textContent.includes(${JSON.stringify(LOCAL_TEXT_MODEL.name)})`), true, 'The assistant appears on its assigned physical GPU');
+  Object.assign(localState, { phase: 'running', busy: true });
+  await browser.until(`!document.querySelector(${JSON.stringify(`${unloadAssistant}:not(:disabled)`)})`, 'Open activity polls the runtime and prevents unloading an active text request');
+  assert.equal(localReleases, 2, 'Polling a busy assistant never unloads it');
+  Object.assign(localState, { phase: 'failed', busy: false, error: 'Could not confirm the local model stopped. Retry unloading it.' });
+  await browser.until(`document.querySelector(${JSON.stringify(unloadAssistant)})?.disabled === false && document.querySelector(${JSON.stringify(activityScope)})?.textContent.includes('Could not confirm')`, 'A failed stop preserves a visible resident model and a retryable unload action');
+  await browser.click(unloadAssistant);
+  await browser.until(`!document.querySelector(${JSON.stringify(unloadAssistant)})`, 'Confirmed unload removes the assistant from resident GPU models');
+  assert.equal(localReleases, 3); assert.equal(localState.gpuId, null);
+  await browser.click('button[aria-label="Close activity"]');
+  // Give any in-flight read a chance to settle before checking the closed panel.
+  await delay(100);
+  const closedStatusReads = localStatusReads;
+  await delay(3300);
+  assert.equal(localStatusReads, closedStatusReads, 'Closing activity stops its local runtime polling');
   await browser.fill('#image-prompt', assistantDraft);
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');

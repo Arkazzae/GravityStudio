@@ -14,7 +14,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
-- Recent activity, optional completion sounds and desktop notifications, and an installable PWA with manual updates.
+- Live GPU memory and runtime activity, optional completion sounds and desktop notifications, and an installable PWA with manual updates.
 
 This first version focuses on image generation and prompt assistance. A standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
 
@@ -64,6 +64,8 @@ See [runtime installation](deploy/comfyui/README.md) for device permissions, sel
 ### Different hardware
 
 Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Adjust these limits under **Settings → Advanced settings**.
+
+The activity control in the top bar shows queued and running generations, each local GPU's measured VRAM use, host RAM, and the local assistant's runtime state. Cancel waiting jobs or release an idle worker's cache there. Image cache release applies to the whole worker and never deletes model files; its next job loads the required weights again. A connected image worker does not imply that a particular checkpoint remains loaded.
 
 Model memory budgets start as editable estimates. A successful connection confirms the ComfyUI API and required files/nodes; it does not certify model speed, image quality or fit on a particular card. The runtime smoke test separately checks actual GPU execution. GPU fixtures cover dual R9700, triple RTX 3090, B100 and mixed-vendor configurations.
 
