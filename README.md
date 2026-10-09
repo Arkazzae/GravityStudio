@@ -12,6 +12,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
+- Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 
 This first version focuses on image generation. LLM serving, video, audio, training and an OpenAI-compatible API are outside this release.
 
@@ -34,7 +35,7 @@ For development, use `pnpm dev` instead of the build/start commands. The web app
 
 In **Settings**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
 
-Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Downloads are checked before activation. Models requiring Hugging Face access need their license accepted and `HF_TOKEN` configured on the server. Catalog entries without a download source can use files already placed in the shared model directory.
+Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Downloads are checked before activation. Models requiring Hugging Face access need their license accepted and a token saved under **Settings → Integrations**. Catalog entries without a download source can use files already placed in the shared model directory.
 
 Change the GPU checkboxes later and apply the selection. Existing worker identities and ports are retained; newly selected GPUs get additional workers. Finish or cancel queued generations before changing the selection. An existing ComfyUI installation can be connected through **Advanced settings**.
 
@@ -65,6 +66,14 @@ Create a token under **Settings → Advanced settings → API access**. Use it a
 The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model listing, image submission, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its generation.
 
 See [API usage](apps/server/README.md) for requests and response behavior.
+
+## Integration keys
+
+Open **Settings → Integrations** to save, replace, remove or check a provider key. The panel shows only the last four characters of a saved key; there is no reveal or export operation. The owner's browser session is required to manage integrations. Studio API tokens and MCP clients cannot read or manage them.
+
+Keys are encrypted with AES-256-GCM before being written to SQLite. The server uses `GRAVITY_CREDENTIALS_KEY` when supplied (32 random bytes encoded as base64), otherwise it creates a private `credentials.key` file in the data directory. Keep this master key stable and back it up securely: losing it makes saved keys unreadable. For deployments, supply it through your secret manager and keep it separate from database backups. Encryption protects a database copy; someone with access to the running server or both the database and master key can still recover credentials. Use HTTPS when accessing Studio over a network.
+
+The saved Hugging Face token is used for model downloads; `HF_TOKEN` remains a fallback for existing installations. The other providers currently support credential management and authenticated access checks. Checks do not generate content or prove access to every model. Cloud generation and prompt assistant features can build on these connections separately.
 
 ## Data and deployment
 

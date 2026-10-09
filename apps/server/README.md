@@ -57,7 +57,26 @@ The studio interface uses these administrative endpoints. All require the owner'
 
 Setup detects the available container engine, preserves existing worker assignments and ports, adds newly selected GPUs, tests them and saves the selected workers in studio settings. Generations and configuration changes are blocked while setup is running. Poll `GET /api/runtime` until `busy` is false.
 
-Downloads run on the server and continue when the browser page closes. The library accepts Hugging Face safetensors files, checks sizes and file structure, and verifies catalog checksums when available. Imports currently support complete SDXL / Illustrious checkpoints; other families use their catalog's complete artifact set. Imported files receive a recorded SHA-256 digest. Completed downloads are activated when a configured managed worker can see the files; otherwise activate them after setting up generation. For gated models, accept the model license and configure `HF_TOKEN` on the server.
+Downloads run on the server and continue when the browser page closes. The library accepts Hugging Face safetensors files, checks sizes and file structure, and verifies catalog checksums when available. Imports currently support complete SDXL / Illustrious checkpoints; other families use their catalog's complete artifact set. Imported files receive a recorded SHA-256 digest. Completed downloads are activated when a configured managed worker can see the files; otherwise activate them after setting up generation. For gated models, accept the model license and save a Hugging Face token in **Settings → Integrations**. A saved token takes precedence over the legacy `HF_TOKEN` environment variable. Authorization is sent only to `huggingface.co`, never its redirected storage hosts.
+
+## Integrations
+
+These endpoints require the owner's browser session. Mutations and access checks require an allowed `Origin`. Responses use `Cache-Control: private, no-store`; no operation returns a saved secret. Keys must contain 8–4096 visible ASCII characters without internal whitespace; surrounding whitespace is trimmed.
+
+| Method | Path | Request or result |
+| --- | --- | --- |
+| GET | `/api/integrations` | `{ providers: [{ id, name, description, credential }] }` |
+| PUT | `/api/integrations/:provider` | Save or replace with `{ "apiKey": "..." }`; returns safe provider metadata |
+| DELETE | `/api/integrations/:provider` | Remove the saved key; returns provider metadata with `credential: null` |
+| POST | `/api/integrations/:provider/test` | Send `{}` to check the saved key; returns `{ ok: true, message }` |
+
+Provider IDs are `huggingface`, `civitai`, `gemini`, `openai`, `anthropic` and `nanogpt`. `credential` is either `null` or `{ suffix, updatedAt }`; `suffix` contains only the last four characters. Saving does not automatically contact a provider. Checks use fixed HTTPS endpoints, reject redirects, have a timeout and never relay upstream response bodies or secrets. A failed check preserves the saved key. One check per provider may run at a time; replacing or deleting a key during a check invalidates its result.
+
+Checks use authenticated read operations: Hugging Face account identity, Civitai account identity, Gemini / OpenAI / Anthropic model listing and NanoGPT usage. They do not generate content or verify billing, model licenses or access to every model. Hugging Face downloads use the saved key; cloud inference is not part of this release.
+
+Provider references: [Hugging Face account identity](https://huggingface.co/docs/huggingface_hub/package_reference/hf_api#huggingface_hub.HfApi.whoami), [Civitai authentication](https://github.com/civitai/civitai-developer-docs/blob/main/site/guide/authentication.md), [Gemini models](https://ai.google.dev/api/models), [OpenAI models](https://developers.openai.com/api/reference/resources/models/methods/list), [Anthropic models](https://platform.claude.com/docs/en/api/models/list), [NanoGPT usage](https://docs.nano-gpt.com/api-reference/endpoint/usage).
+
+See [integration key storage](../../README.md#integration-keys) for master key configuration, backups and the limits of encryption.
 
 ## MCP
 
