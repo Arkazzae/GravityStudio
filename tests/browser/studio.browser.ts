@@ -480,6 +480,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.evaluate("void (window.__gravityViewerState = { opener: document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]'), prompt: document.querySelector('#image-prompt').value, reference: document.querySelector('button[aria-label=\"Remove reference 1\"]') })");
   await browser.click('[aria-label="Open Browser checkpoint output"]');
   await browser.until("document.querySelector('dialog[open][aria-label=\"Browser checkpoint output\"]')?.matches(':modal') && document.querySelector('[aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Output viewer opens with the image loaded');
+  assert.equal(await browser.evaluate("document.querySelector('#output-viewer aside > header > [aria-hidden=true]')?.textContent"), 'B', 'An imported checkpoint uses its own initial when it has no publisher logo');
   assert.equal(await browser.evaluate("document.activeElement === document.querySelector('dialog[open]')"), true, 'The viewer initially focuses its frame instead of an action');
   const viewedSource = await browser.evaluate<string>("document.querySelector('[aria-label=\"Image zoom and pan\"] img').src");
   assert.equal(await browser.evaluate("document.querySelector('dialog[open] aside').innerText.includes('1 of 2')"), true, 'The viewer follows the gallery order');
@@ -832,7 +833,16 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       window.fetch = async (input, options) => {
         const response = await window.__gravityOriginalFetch.call(window, input, options);
         const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-        if (url.origin !== location.origin || url.pathname !== '/api/catalog' || (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET' || !response.ok) return response;
+        if (url.origin !== location.origin || (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET' || !response.ok) return response;
+        if (url.pathname === '/api/state' && (window.__gravityViewerBrandFixture || window.__gravityWideGalleryFixture)) {
+          const state = await response.json();
+          state.jobs = state.jobs.map(job => job.outputs.length ? { ...job,
+            ...(window.__gravityViewerBrandFixture ? { modelId: 'qwen-image-2.1', modelName: 'Qwen Image 2.1' } : {}),
+            ...(window.__gravityWideGalleryFixture ? { outputs: job.outputs.map(output => ({ ...output, width: 2560, height: 1024 })) } : {}),
+          } : job);
+          return new Response(JSON.stringify(state), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.pathname !== '/api/catalog') return response;
         const catalog = await response.json();
         catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), installed: true, ready: model.id !== window.__gravityUnavailableModel, capabilities: { ...model.capabilities, ready: model.id !== window.__gravityUnavailableModel }, missingReasons: model.id === window.__gravityUnavailableModel ? ['Worker is offline'] : [], unavailableReason: model.id === window.__gravityUnavailableModel ? 'Worker is offline' : '' } : model);
         return new Response(JSON.stringify(catalog), { status: response.status, headers: { 'Content-Type': 'application/json' } });
@@ -897,6 +907,35 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       const chromeWidth = intrinsicWidths[0].width - intrinsicWidths[0].textWidth;
       for (const measured of intrinsicWidths) assert.ok(Math.abs(measured.width - measured.textWidth - chromeWidth) <= 2, 'Chip width follows its model label while retaining consistent icon spacing');
     }
+    await browser.evaluate("window.__gravityViewerBrandFixture = true; document.dispatchEvent(new Event('visibilitychange'));");
+    await browser.until("!!document.querySelector('button[aria-label=\"Open Qwen Image 2.1 output\"]')", 'The visual viewer fixture uses a known model publisher');
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      await browser.click('button[aria-label="Open Qwen Image 2.1 output"]');
+      await browser.until("document.querySelector('#output-viewer[open] [aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Qwen viewer image loaded');
+      assert.equal(await browser.evaluate("document.querySelector('#output-viewer aside > header > [aria-hidden=true]')?.style.maskImage.includes('/brands/qwen.svg')"), true, 'The viewer uses the selected model publisher logo');
+      await browser.screenshot(join(output, `output-viewer-qwen-${mobile ? 'mobile' : 'desktop'}.png`));
+      await browser.click('#output-viewer button[aria-label="Close preview"]');
+      await browser.until("!document.querySelector('#output-viewer[open]')", 'Qwen visual fixture viewer closes');
+    }
+    const savedGalleryZoom = await browser.evaluate<string>("document.querySelector('input[aria-label=\"Image tile size\"]').value");
+    await browser.evaluate("delete window.__gravityViewerBrandFixture; window.__gravityWideGalleryFixture = true; document.dispatchEvent(new Event('visibilitychange'));");
+    await browser.click('button[aria-label="Justified image layout"]');
+    await browser.fill('input[aria-label="Image tile size"]', '0');
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      await browser.until("Array.from(document.querySelectorAll('main figure')).length === 2 && Array.from(document.querySelectorAll('main figure')).every(figure => { const rect = figure.getBoundingClientRect(); return rect.width > rect.height * 2 && rect.height <= 150.5; })", 'Wide output tiles render at the minimum gallery size');
+      const buttons = await browser.evaluate<Array<{ label: string; fits: boolean }>>("Array.from(document.querySelectorAll('main figure')).flatMap(figure => { const frame = figure.getBoundingClientRect(); return Array.from(figure.querySelectorAll('button:not([aria-label^=Open]), a')).map(button => { const rect = button.getBoundingClientRect(); return { label: button.getAttribute('aria-label'), fits: rect.width > 0 && rect.height > 0 && rect.left >= frame.left - .5 && rect.top >= frame.top - .5 && rect.right <= frame.right + .5 && rect.bottom <= frame.bottom + .5 }; }); })");
+      assert.equal(buttons.length, 8, 'Both saved outputs expose all four gallery actions');
+      assert.ok(buttons.every(button => button.fits), `${mobile ? 'Mobile' : 'Desktop'} actions fit inside short, wide tiles: ${JSON.stringify(buttons)}`);
+      const point = await browser.evaluate<{ x: number; y: number }>("(() => { const rect = document.querySelector('main figure').getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; })()");
+      await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+      await browser.evaluate("new Promise(resolve => requestAnimationFrame(resolve)).then(() => Promise.all(document.querySelector('main figure').getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})))).then(() => true)");
+      await browser.screenshot(join(output, `gallery-actions-wide-minimum-${mobile ? 'mobile' : 'desktop'}.png`));
+    }
+    await browser.fill('input[aria-label="Image tile size"]', savedGalleryZoom);
+    await browser.evaluate("delete window.__gravityWideGalleryFixture; document.dispatchEvent(new Event('visibilitychange'));");
+    await browser.until("!!document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]')", 'Real output model restored after the logo fixture');
     await selectGeometryModel('FLUX.2 Klein 4B');
     await uploadReference();
     await browser.click('button[aria-label="Browse saved images"]');
@@ -934,7 +973,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(store.jobs(store.owner()!.id).length, jobCount, 'The geometry fixture creates no generation jobs');
     assert.equal(comfy.state.submissions.length, submissionCount, 'The geometry fixture submits no ComfyUI prompts');
   } finally {
-    await browser.evaluate(`(() => { if (window.__gravityOriginalFetch) { window.fetch = window.__gravityOriginalFetch; delete window.__gravityOriginalFetch; } delete window.__gravityGeometryPrompt; delete window.__gravityUnavailableModel; ${savedDraft === null ? `localStorage.removeItem(${JSON.stringify(draftKey)});` : `localStorage.setItem(${JSON.stringify(draftKey)}, ${JSON.stringify(savedDraft)});`} })()`);
+    await browser.evaluate(`(() => { if (window.__gravityOriginalFetch) { window.fetch = window.__gravityOriginalFetch; delete window.__gravityOriginalFetch; } delete window.__gravityGeometryPrompt; delete window.__gravityUnavailableModel; delete window.__gravityViewerBrandFixture; delete window.__gravityWideGalleryFixture; ${savedDraft === null ? `localStorage.removeItem(${JSON.stringify(draftKey)});` : `localStorage.setItem(${JSON.stringify(draftKey)}, ${JSON.stringify(savedDraft)});`} })()`);
     await browser.send('Page.reload');
     await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Real catalog and saved draft restored after the geometry fixture');
   }
@@ -944,6 +983,74 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await clickScopedText('#output-viewer', 'Use these settings');
   await browser.until("!document.querySelector('#output-viewer[open]') && document.activeElement === document.querySelector('#image-prompt')", 'Reusing settings closes the viewer and focuses the composer');
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), store.jobs(store.owner()!.id).find(job => job.outputs.length)!.prompt, 'Reuse restores the selected output prompt');
+  const deletionUrl = await browser.evaluate<string>(`document.querySelector(${JSON.stringify(`${firstFigure} > img`)}).getAttribute('src')`);
+  const preservedImages = await browser.evaluate<string[]>(`Array.from(document.querySelectorAll('main figure > img')).map(image => image.getAttribute('src')).filter(url => url !== ${JSON.stringify(deletionUrl)})`);
+  assert.equal(preservedImages.length, 1, 'Delete regression starts with two saved images');
+  await browser.click(`${firstFigure} button[aria-label="Add to favorites"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed') === 'true'`, 'The image to delete is also a favorite');
+  await browser.evaluate(`(() => {
+    window.__gravityBeforeDelete = window.fetch;
+    window.__gravityDeleteRequests = 0;
+    window.__gravityDeleteFailure = true;
+    window.fetch = (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.origin === location.origin && url.pathname === ${JSON.stringify(`/api/jobs/${first.id}/outputs/${first.outputs[0].id}`)} && method === 'DELETE') {
+        window.__gravityDeleteRequests++;
+        if (window.__gravityDeleteFailure) {
+          window.__gravityDeleteFailure = false;
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Image deletion interrupted.' } }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+        }
+      }
+      return window.__gravityBeforeDelete.call(window, input, options);
+    };
+  })()`);
+  const deleteButton = `${firstFigure} button[aria-label="Delete image"]`;
+  const confirmDeleteButton = `${firstFigure} button[aria-label="Confirm image deletion"]`;
+  async function armDelete() {
+    await browser.until(`document.querySelector(${JSON.stringify(deleteButton)})?.disabled === false`, 'The image is ready for deletion');
+    await browser.click(deleteButton);
+    await browser.until(`document.querySelector(${JSON.stringify(confirmDeleteButton)})?.disabled === false`, 'The first click arms the same image action for confirmation');
+    assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open, dialog[open]')"), false, 'Arming deletion opens no dialog or popover');
+  }
+  try {
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      await armDelete();
+      assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 0, 'The first click sends no DELETE request');
+      await browser.evaluate(`new Promise(resolve => requestAnimationFrame(resolve)).then(() => { const animations = []; for (let element = document.querySelector(${JSON.stringify(confirmDeleteButton)}); element; element = element.parentElement) animations.push(...element.getAnimations()); return Promise.all(animations.map(animation => animation.finished.catch(() => {}))); }).then(() => true)`);
+      await browser.screenshot(join(output, `gallery-delete-armed-${mobile ? 'mobile' : 'desktop'}.png`));
+      if (mobile) await browser.click('#image-prompt'); else await browser.key('Escape');
+      await browser.until(`!!document.querySelector(${JSON.stringify(deleteButton)}) && !document.querySelector(${JSON.stringify(confirmDeleteButton)})`, `${mobile ? 'Moving focus away' : 'Escape'} cancels the armed action`);
+      assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 0, 'Cancelling an armed action sends no DELETE request');
+    }
+    assert.equal(await browser.evaluate(`!!document.querySelector(${JSON.stringify(firstFigure)})`), true, 'Cancel leaves the image in the gallery');
+    await armDelete();
+    assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 0, 'Rearming still requires a separate confirmation click');
+    await browser.click(confirmDeleteButton);
+    await browser.until("Array.from(document.querySelectorAll('main [role=alert]')).some(alert => alert.textContent.includes('Image deletion interrupted.'))", 'A failed deletion has a visible gallery error');
+    await browser.until(`document.querySelector(${JSON.stringify(deleteButton)})?.disabled === false && !document.querySelector(${JSON.stringify(confirmDeleteButton)})`, 'Failure resets the action to its trash icon');
+    assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 1);
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed')`), 'true', 'Failure preserves the output and its favorite');
+    assert.equal(store.job(first.id).outputs.length, 1, 'Failure preserves the saved output record');
+    await armDelete();
+    assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 1, 'A failed attempt must be armed again before retrying');
+    await browser.click(confirmDeleteButton);
+    await browser.until(`!document.querySelector(${JSON.stringify(firstFigure)}) && document.querySelectorAll('main figure').length === 1`, 'The second click removes only the confirmed image');
+    assert.equal(await browser.evaluate('window.__gravityDeleteRequests'), 2);
+    assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('main figure > img')).map(image => image.getAttribute('src'))"), preservedImages, 'Other generated outputs remain visible');
+    assert.equal(await browser.evaluate(`fetch(${JSON.stringify(deletionUrl)}).then(response => response.status)`), 404, 'The deleted output file is unavailable');
+    assert.deepEqual(await browser.evaluate("fetch('/api/favorites').then(response => response.json()).then(body => body.jobs)"), [], 'Deleting an image also removes its favorite');
+    assert.equal(store.job(first.id).status, 'succeeded', 'The generation record remains available');
+    assert.deepEqual(store.job(first.id).outputs, [], 'Only the selected output is removed from the generation record');
+    assert.equal(await browser.evaluate(`Array.from(document.querySelectorAll('main p')).some(element => element.textContent.trim() === ${JSON.stringify(prompt)})`), false, 'A completed job with no remaining images has no placeholder tile');
+  } finally {
+    await browser.evaluate('window.fetch = window.__gravityBeforeDelete; delete window.__gravityBeforeDelete; delete window.__gravityDeleteRequests; delete window.__gravityDeleteFailure;');
+  }
+  await browser.send('Page.reload');
+  await browser.until("document.querySelectorAll('main figure').length === 1 && !!document.querySelector('#image-prompt')", 'Output deletion persists after reload');
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('main figure > img')).map(image => image.getAttribute('src'))"), preservedImages);
+  assert.equal(await browser.evaluate(`Array.from(document.querySelectorAll('main p')).some(element => element.textContent.trim() === ${JSON.stringify(prompt)})`), false, 'Reload does not recreate a succeeded placeholder for the deleted image');
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });
