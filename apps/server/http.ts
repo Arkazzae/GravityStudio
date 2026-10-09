@@ -7,7 +7,7 @@ import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
 import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
-import { deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverOutputDeletions, saveInput } from "./media.ts";
+import { deleteInput, deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverMediaDeletions, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
@@ -65,7 +65,7 @@ export interface ServerOptions {
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
-  await recoverOutputDeletions(store, { remote: false });
+  await recoverMediaDeletions(store, { remote: false });
   const credentials = new CredentialVault(store);
   const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
   await localText.initialize();
@@ -87,7 +87,7 @@ export async function createStudioServer(options: ServerOptions) {
   let deletionRecovery: Promise<void> | undefined;
   function retryRemoteDeletions() {
     if (stopping || deletionRecovery) return;
-    deletionRecovery = recoverOutputDeletions(store, { local: false, continue: () => !stopping }).finally(() => {
+    deletionRecovery = recoverMediaDeletions(store, { local: false, continue: () => !stopping }).finally(() => {
       deletionRecovery = undefined;
       if (!stopping) { deletionTimer = setTimeout(retryRemoteDeletions, 30_000); deletionTimer.unref(); }
     });
@@ -296,6 +296,10 @@ export async function createStudioServer(options: ServerOptions) {
         }
       }
       const inputRoute = path.match(/^\/api\/inputs\/([a-f0-9-]{36})$/);
+      if (inputRoute && method === "DELETE") {
+        await mediaOperation(() => deleteInput(store, inputRoute[1], user.id));
+        return json(response, { deleted: true });
+      }
       if (inputRoute && method === "GET") {
         const input = store.input(inputRoute[1], user.id);
         await mediaOperation(async () => {

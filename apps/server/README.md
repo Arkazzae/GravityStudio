@@ -31,6 +31,7 @@ Retry an uncertain submission with the **same key and exactly the same request**
 | GET | `/api/inputs` | Uploaded reference images |
 | POST | `/api/inputs` | Upload raw PNG/JPEG/WebP bytes, up to 20 MiB |
 | GET | `/api/inputs/:id` | Read a private reference image |
+| DELETE | `/api/inputs/:id` | Delete an imported image; active or interrupted generations using it return `409 INPUT_IN_USE` |
 | POST | `/api/mcp` | MCP tool requests over Streamable HTTP |
 
 Uploads accept an optional `X-Filename` header, percent-encoded for non-ASCII names. The upload response contains the input `id` directly. Pass those IDs in the generation request's `images` array. The catalog describes which models accept references. Dimensions, steps, guidance, seed, negative prompt and denoise are validated by the selected family recipe.

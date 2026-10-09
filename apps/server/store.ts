@@ -62,6 +62,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
       CREATE TABLE IF NOT EXISTS idempotency (user_id TEXT NOT NULL REFERENCES users(id), key TEXT NOT NULL, request_hash TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES jobs(id), PRIMARY KEY(user_id,key));
       CREATE TABLE IF NOT EXISTS inputs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS input_deletions (input_id TEXT PRIMARY KEY REFERENCES inputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS outputs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS outputs_job ON outputs(job_id);
       CREATE TABLE IF NOT EXISTS output_favorites (user_id TEXT NOT NULL REFERENCES users(id), output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY(user_id,output_id));
@@ -136,6 +137,12 @@ export class Store {
         this.db.exec("COMMIT");
         return job;
       }
+      // Submission can wait for worker discovery before reaching this transaction.
+      // Recheck references here so a concurrent deletion cannot strand a new job.
+      for (const id of input.images ?? []) {
+        this.input(id, userId);
+        if (this.db.prepare("SELECT 1 FROM input_deletions WHERE input_id=?").get(id)) throw new ApiError(409, "INPUT_DELETION_PENDING", "This reference image is being deleted. Choose another image.");
+      }
       const at = now();
       const job: StoredJob = { id: randomUUID(), userId, input, snapshot, placements, modelId: input.modelId, modelName, prompt: input.prompt, parameters, status: "queued", stage: "Waiting for a worker", progress: null, createdAt: at, updatedAt: at, workerId: null, outputs: [], error: null, promptId: null, submissionStarted: false };
       this.db.prepare("INSERT INTO jobs VALUES(?,?,?,?,?,?)").run(job.id, userId, job.status, json(job), at, at);
@@ -188,6 +195,23 @@ export class Store {
     const { id, url, name, width, height, mimeType } = JSON.parse(row.body) as StoredInput;
     return { id, url, name, width, height, mimeType };
   }); }
+  beginInputDeletion(id: string, userId: string): StoredInput {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const input = this.input(id, userId);
+      const referenced = this.db.prepare("SELECT 1 FROM jobs, json_each(jobs.body, '$.input.images') AS image WHERE jobs.status IN ('queued','preparing','running','interrupted') AND image.value=? LIMIT 1").get(id);
+      if (referenced) throw new ApiError(409, "INPUT_IN_USE", "Wait for generations using this image to finish, or cancel queued jobs, before deleting it.");
+      this.db.prepare("INSERT INTO input_deletions(input_id,created_at) VALUES(?,?) ON CONFLICT(input_id) DO NOTHING").run(id, now());
+      this.db.exec("COMMIT");
+      return input;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  pendingInputDeletions(): Array<{ inputId: string; userId: string }> {
+    return this.db.prepare("SELECT inputs.id AS inputId, inputs.user_id AS userId FROM input_deletions JOIN inputs ON inputs.id=input_deletions.input_id ORDER BY input_deletions.created_at").all() as Array<{ inputId: string; userId: string }>;
+  }
+  finishInputDeletion(id: string, userId: string): void {
+    this.db.prepare("DELETE FROM inputs WHERE id=? AND user_id=? AND EXISTS (SELECT 1 FROM input_deletions WHERE input_id=inputs.id)").run(id, userId);
+  }
   saveOutput(jobId: string, output: StoredOutput) {
     const job = this.job(jobId);
     const existing = this.db.prepare("SELECT job_id FROM outputs WHERE id=?").get(output.id) as { job_id: string } | undefined;

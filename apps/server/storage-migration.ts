@@ -15,8 +15,10 @@ export function storageStatus(db: DatabaseSync) {
     coalesce(sum(CASE WHEN json_extract(body,'$.object.backend')='s3' THEN 1 ELSE 0 END),0) AS s3,
     coalesce(sum(CASE WHEN json_extract(body,'$.object.backend')='s3' THEN 0 ELSE 1 END),0) AS local,
     coalesce(sum(json_extract(body,'$.bytes')),0) AS bytes FROM ${table}`).get();
+  const pendingInputs = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_deletions'").get()
+    ? (db.prepare("SELECT count(*) AS count FROM input_deletions").get() as { count: number }).count : 0;
   return { inputs: counts("inputs"), outputs: counts("outputs"),
-    pendingDeletions: (db.prepare("SELECT count(*) AS count FROM output_deletions").get() as { count: number }).count };
+    pendingDeletions: (db.prepare("SELECT count(*) AS count FROM output_deletions").get() as { count: number }).count + pendingInputs };
 }
 
 async function localBytes(store: Store, table: "inputs" | "outputs", row: AssetRow, asset: StoredInput | StoredOutput): Promise<Buffer> {
@@ -52,7 +54,8 @@ export async function migrateAssets(store: Store, progress?: (migrated: number) 
   for (const table of ["inputs", "outputs"] as const) {
     const rows = store.db.prepare(`SELECT id,body${table === "outputs" ? ",job_id" : ""} FROM ${table} ORDER BY id`).all() as AssetRow[];
     for (const row of rows) {
-      if (table === "outputs" && store.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(row.id)) { skippedDeletions++; continue; }
+      const pendingDeletion = table === "inputs" ? store.db.prepare("SELECT 1 FROM input_deletions WHERE input_id=?").get(row.id) : store.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(row.id);
+      if (pendingDeletion) { skippedDeletions++; continue; }
       const asset = JSON.parse(row.body) as StoredInput | StoredOutput;
       if (asset.object) { await objects.get(asset.object, MAX_OUTPUT_BYTES); verified++; continue; }
       const bytes = await localBytes(store, table, row, asset);

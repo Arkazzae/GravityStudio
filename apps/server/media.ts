@@ -61,6 +61,27 @@ export async function inputBytes(store: Store, id: string, userId: string): Prom
 export async function outputBytes(store: Store, jobId: string, id: string, userId: string): Promise<Buffer> {
   return readStored(store, store.output(jobId, id, userId), `outputs/${jobId}/${id}`);
 }
+export async function deleteInput(store: Store, id: string, userId: string): Promise<void> {
+  const input = store.beginInputDeletion(id, userId);
+  const failed = () => new ApiError(503, "INPUT_DELETE_FAILED", "Could not delete this imported image from storage. Try again.");
+  if (!input.object && !input.path) throw failed();
+  if (input.object !== undefined) {
+    try { await objectStorage(store, input.object, `inputs/${id}`, input.bytes).delete(input.object); }
+    catch { throw failed(); }
+  }
+  if (input.path !== undefined) {
+    const root = resolve(store.directory, "inputs");
+    const expectedPath = join(root, `${id}.png`);
+    try {
+      if (!/^[a-f0-9-]{36}$/.test(id) || input.mimeType !== "image/png" || resolve(input.path) !== expectedPath) throw new Error("Invalid input path");
+      if (!(await lstat(root)).isDirectory() || !(await lstat(expectedPath)).isFile()) throw new Error("Invalid input file");
+      await unlink(expectedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw failed();
+    }
+  }
+  store.finishInputDeletion(id, userId);
+}
 export async function saveOutput(store: Store, jobId: string, ordinal: number, bytes: Uint8Array): Promise<SavedOutput> {
   if (!bytes.length || bytes.length > MAX_OUTPUT_BYTES) throw new ApiError(502, "INVALID_OUTPUT", "The worker returned an image outside the supported size limit.");
   let width: number, height: number, mimeType: string, extension: string;
@@ -123,7 +144,25 @@ export async function deleteOutput(store: Store, jobId: string, id: string, user
   return store.finishOutputDeletion(jobId, id, userId);
 }
 
-export async function recoverOutputDeletions(store: Store, options: { local?: boolean; remote?: boolean; continue?: () => boolean } = {}): Promise<void> {
+type DeletionRecoveryOptions = { local?: boolean; remote?: boolean; continue?: () => boolean };
+
+export async function recoverInputDeletions(store: Store, options: DeletionRecoveryOptions = {}): Promise<void> {
+  for (const pending of store.pendingInputDeletions()) {
+    if (options.continue && !options.continue()) break;
+    try {
+      const input = store.input(pending.inputId, pending.userId);
+      if (input.object ? options.remote === false : options.local === false) continue;
+      await deleteInput(store, pending.inputId, pending.userId);
+    } catch (error) { console.error("Pending imported image deletion could not finish:", pending.inputId, error instanceof Error ? error.message : error); }
+  }
+}
+
+export async function recoverMediaDeletions(store: Store, options: DeletionRecoveryOptions = {}): Promise<void> {
+  await recoverOutputDeletions(store, options);
+  await recoverInputDeletions(store, options);
+}
+
+export async function recoverOutputDeletions(store: Store, options: DeletionRecoveryOptions = {}): Promise<void> {
   for (const pending of store.pendingOutputDeletions()) {
     if (options.continue && !options.continue()) break;
     try {
