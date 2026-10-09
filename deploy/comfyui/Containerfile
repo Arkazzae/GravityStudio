@@ -1,0 +1,39 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG COMFY_COMMIT=b0b743566f65daafc423b4fea8a2fbda94b3384a
+ARG COMFY_ARCHIVE_SHA256=b691a14719be82528f9fe29913a5f0e07f5a6a4dd208bcd9ff36e5260ffd1fd6
+ARG RUNTIME_REVISION
+ARG RUNTIME_PROFILE_ID
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1 \
+    HOME=/data/user \
+    GRAVITY_RUNTIME_REVISION=${RUNTIME_REVISION} \
+    GRAVITY_RUNTIME_PROFILE_ID=${RUNTIME_PROFILE_ID} \
+    GRAVITY_COMFY_COMMIT=${COMFY_COMMIT}
+
+COPY fetch_source.py /opt/gravity/fetch_source.py
+RUN python3 /opt/gravity/fetch_source.py "$COMFY_COMMIT" "$COMFY_ARCHIVE_SHA256"
+COPY requirements.lock /opt/gravity/requirements.lock
+# Framework and accelerator packages come from the digest-pinned base image.
+# --no-deps prevents pip replacing ROCm packages with CUDA packages.
+RUN python3 -m pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /opt/gravity/requirements.lock
+COPY bootstrap.py smoke.py /opt/gravity/
+RUN mkdir -p /models /data/input /data/output /data/temp /data/user && chmod -R a+rX /opt/gravity /opt/ComfyUI
+
+LABEL io.gravity.runtime.revision=${RUNTIME_REVISION} \
+      io.gravity.runtime.profile=${RUNTIME_PROFILE_ID} \
+      org.opencontainers.image.source="https://github.com/Comfy-Org/ComfyUI" \
+      org.opencontainers.image.revision=${COMFY_COMMIT}
+WORKDIR /opt/ComfyUI
+USER 1000:1000
+EXPOSE 8188
+STOPSIGNAL SIGINT
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8188/system_stats',timeout=3).read(1048576)"
+ENTRYPOINT ["python3", "/opt/gravity/bootstrap.py"]

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "platform": "linux/amd64",
+  "python": "3.12",
+  "comfyui": {
+    "version": "0.39.0",
+    "commit": "b0b743566f65daafc423b4fea8a2fbda94b3384a",
+    "archiveUrl": "https://codeload.github.com/Comfy-Org/ComfyUI/tar.gz/b0b743566f65daafc423b4fea8a2fbda94b3384a",
+    "archiveSha256": "b691a14719be82528f9fe29913a5f0e07f5a6a4dd208bcd9ff36e5260ffd1fd6"
+  },
+  "profiles": {
+    "cuda": {
+      "id": "comfyui-cuda",
+      "baseImage": "docker.io/pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca",
+      "torch": "2.10.0",
+      "toolkit": "12.8",
+      "architectures": ["sm_80", "sm_86", "sm_89", "sm_90", "sm_100", "sm_120"]
+    },
+    "rocm": {
+      "id": "comfyui-rocm",
+      "baseImage": "docker.io/rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1@sha256:96a2fb24dec9896e2f8238178f0c49d0dcc4c7dcc597be09e4564316bd86d191",
+      "torch": "2.9.1",
+      "toolkit": "7.2.1",
+      "architectures": ["gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201"]
+    }
+  },
+  "sources": [
+    "https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.39.0",
+    "https://pytorch.org/get-started/previous-versions/",
+    "https://hub.docker.com/r/pytorch/pytorch/tags?name=2.10.0-cuda12.8-cudnn9-runtime",
+    "https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installrad/native_linux/install-pytorch.html",
+    "https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityrad/native_linux/native_linux_compatibility.html"
+  ]
+}
