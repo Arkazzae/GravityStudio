@@ -211,7 +211,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.fill('input[name="username"]', 'browser-owner');
   await browser.fill('input[name="password"]', 'test-password-strong-123');
   await browser.clickText('Sign in');
-  await browser.until("document.body.innerText.includes('Hardware & setup')", 'Owner signs back in');
+  await browser.until("document.querySelector('h1')?.textContent === 'Settings'", 'Owner signs back in');
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });

@@ -92,7 +92,7 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
           </div>}</Popover>
           <IconChip aria-label="Reset settings to defaults" title="Reset settings to defaults" disabled={!model || busy} onClick={() => { if (model) setDraft(modelDraft(draft, model)); }}><RotateCcw /></IconChip>
         </div></div>
-        {error ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error}</p> : !connected ? <p role="status" className="px-1 text-xs text-ink-2">Waiting for the studio server. Your prompt is kept here.</p> : !model?.ready ? <p className="px-1 text-xs text-ink-2">Connect a worker and enable a model in Hardware & setup.</p> : null}
+        {error ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error}</p> : !connected ? <p role="status" className="px-1 text-xs text-ink-2">Waiting for the studio server. Your prompt is kept here.</p> : !model?.ready ? <p className="px-1 text-xs text-ink-2">Choose a model in Models. Manage your GPUs in Settings.</p> : null}
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="max-h-28 sm:grow" /></div>
     </div>

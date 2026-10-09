@@ -40,7 +40,7 @@ journalctl --user -u gravity-studio.service -n 50 --no-pager
 curl --fail http://127.0.0.1:4321/api/health
 ```
 
-Adjust the health-check URL if you changed the web address or port. Open the studio and create its owner using `setup.key` in the configured data directory. Select GPUs in **Hardware & setup**, run **Set up generation**, then download or activate a model from **Models**.
+Adjust the health-check URL if you changed the web address or port. Open the studio and create its owner using `setup.key` in the configured data directory. Select GPUs in **Settings**, run **Set up generation**, then download or activate a model from **Models**.
 
 ## Start after boot
 

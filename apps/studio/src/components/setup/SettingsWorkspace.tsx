@@ -81,7 +81,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
 
   return <div className="min-h-0 flex-1 overflow-auto"><div className="mx-auto w-full max-w-[900px] px-5 py-8 sm:px-10 sm:py-12">
     {!onboarding && <Link href="/image" className="mb-7 inline-flex items-center gap-2 text-sm text-ink-2 hover:text-ink"><ArrowLeft size={15} />Back to images</Link>}
-    <h1 className="text-[28px] font-medium tracking-[-.025em]">{onboarding ? 'Set up your studio.' : 'Hardware & setup'}</h1>
+    <h1 className="text-[28px] font-medium tracking-[-.025em]">{onboarding ? 'Set up your studio.' : 'Settings'}</h1>
     <p className="mt-3 max-w-[65ch] text-sm leading-relaxed text-ink-2">Choose the GPUs your studio can use. We’ll set up generation and handle the configuration.</p>
     {error && <div className="error-notice mt-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
     <section className="mt-9" aria-labelledby="gpu-selection-title">

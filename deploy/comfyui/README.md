@@ -14,7 +14,7 @@ These results cover that installation and those workloads. Other AMD configurati
 
 ## Set up from the studio
 
-Run the studio directly on the GPU host. In **Hardware & setup**, select the GPU checkboxes and choose **Set up generation**. The server checks Docker and Podman with their GPU prerequisites, prefers Podman when both are ready, chooses free loopback ports and builds the runtime. After each selected GPU passes its smoke test, its worker is connected automatically.
+Run the studio directly on the GPU host. In **Settings**, select the GPU checkboxes and choose **Set up generation**. The server checks Docker and Podman with their GPU prerequisites, prefers Podman when both are ready, chooses free loopback ports and builds the runtime. After each selected GPU passes its smoke test, its worker is connected automatically.
 
 Use **Models** to download catalog weights or import a Hugging Face SDXL / Illustrious checkpoint. These files are shared by all managed workers. Runtime setup itself downloads only the image and Python dependencies.
 

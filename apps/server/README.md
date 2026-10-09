@@ -1,6 +1,6 @@
 # Studio API
 
-The web application proxies `/api/*` to the API process. Generation, catalog and image operations require an owner session or a bearer token created in **Hardware & setup → Advanced settings → API access**. Runtime configuration and model downloads require the owner's browser session.
+The web application proxies `/api/*` to the API process. Generation, catalog and image operations require an owner session or a bearer token created in **Settings → Advanced settings → API access**. Runtime configuration and model downloads require the owner's browser session.
 
 The examples below use `GRAVITY_TOKEN` from your environment. Tokens are displayed once when created; the server stores only their hashes.
 

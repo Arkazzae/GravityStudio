@@ -32,7 +32,7 @@ For development, use `pnpm dev` instead of the build/start commands. The web app
 
 ### Set up generation
 
-In **Hardware & setup**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
+In **Settings**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
 
 Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Downloads are checked before activation. Models requiring Hugging Face access need their license accepted and `HF_TOKEN` configured on the server. Catalog entries without a download source can use files already placed in the shared model directory.
 
@@ -52,7 +52,7 @@ See [runtime installation](deploy/comfyui/README.md) for device permissions, sel
 
 ### Different hardware
 
-Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Adjust these limits under **Hardware & setup → Advanced settings**.
+Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Adjust these limits under **Settings → Advanced settings**.
 
 Model memory budgets start as editable estimates. A successful connection confirms the ComfyUI API and required files/nodes; it does not certify model speed, image quality or fit on a particular card. The runtime smoke test separately checks actual GPU execution. GPU fixtures cover dual R9700, triple RTX 3090, B100 and mixed-vendor configurations.
 
@@ -60,7 +60,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 ## API and MCP
 
-Create a token under **Hardware & setup → Advanced settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an owner browser session.
+Create a token under **Settings → Advanced settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an owner browser session.
 
 The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model listing, image submission, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its generation.
 
