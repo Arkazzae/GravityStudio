@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, ImageIcon, Repeat2, X } from '@/components/ui/icons';
+import { FavoriteButton } from '@/components/ui/FavoriteButton';
 import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { ZoomableImage } from './ZoomableImage';
@@ -17,18 +18,23 @@ const labels: Record<string, string> = {
   scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength',
 };
 
-export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse }: {
+export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError }: {
   items: ViewerEntry[];
   openId: string;
   models: StudioModel[];
   onClose: () => void;
   onSelect: (id: string) => void;
   onReuse: (job: Job) => void;
+  onFavorite: (job: Job, output: Job['outputs'][number]) => void;
+  favoriteBusy: ReadonlySet<string>;
+  favoriteError?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const reusing = useRef(false);
+  const previousIndex = useRef(0);
   const [id, setId] = useState(openId);
-  const index = items.findIndex(entry => entry.id === id);
+  const selectedIndex = items.findIndex(entry => entry.id === id);
+  const index = selectedIndex === -1 && items.length ? Math.min(previousIndex.current, items.length - 1) : selectedIndex;
   const item = items[index];
 
   useEffect(() => {
@@ -41,10 +47,15 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
       if (element.open) element.close();
       if (reusing.current) document.getElementById('image-prompt')?.focus({ preventScroll: true });
       else if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+      else (document.querySelector<HTMLElement>('[aria-label="Image filter"] button[aria-pressed="true"]') || document.getElementById('image-prompt'))?.focus({ preventScroll: true });
     };
   }, []);
 
-  useEffect(() => { if (index === -1) onClose(); }, [index, onClose]);
+  useEffect(() => {
+    if (!item) { onClose(); return; }
+    previousIndex.current = index;
+    if (item.id !== id) { setId(item.id); onSelect(item.id); }
+  }, [id, index, item, onClose, onSelect]);
 
   const step = useCallback((offset: number) => {
     if (items.length < 2 || index === -1) return;
@@ -103,12 +114,14 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
           </details>
         </div>
         <footer className="flex flex-col gap-2 border-t border-line p-4">
+          {favoriteError && <p role="alert" className="error-notice text-xs">{favoriteError}</p>}
           <button type="button" onClick={() => { reusing.current = true; onReuse(item.job); onClose(); }}
             className="flex h-11 items-center justify-center gap-2 rounded-xl bg-volt text-[14px] font-semibold text-on-volt shadow-key transition-[background-color,box-shadow,translate] duration-150 ease-[var(--ease-out-quint)] hover:bg-volt-hi active:translate-y-[2px] active:shadow-key-down focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt motion-reduce:transition-none motion-reduce:active:translate-y-0">
             <Repeat2 className="size-[18px]" strokeWidth={2} />Use these settings
           </button>
           <div className="flex gap-2">
             <a href={item.output.url} download aria-label="Download image" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11]"><Download className="size-[18px]" strokeWidth={1.8} />Download</a>
+            <FavoriteButton favorite={!!item.output.favorite} busy={favoriteBusy.has(`${item.job.id}:${item.output.id}`)} onClick={() => onFavorite(item.job, item.output)} variant="viewer" />
             <a href={item.output.url} target="_blank" rel="noopener noreferrer" aria-label="Open the file in a new tab" title="Open the file in a new tab" className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/[0.06] text-ink-2 transition-colors hover:bg-white/[0.11] hover:text-ink"><ExternalLink className="size-[18px]" strokeWidth={1.8} /></a>
           </div>
         </footer>

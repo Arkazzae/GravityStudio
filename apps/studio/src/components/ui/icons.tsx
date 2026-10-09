@@ -4,25 +4,25 @@ import { forwardRef, type CSSProperties, type SVGProps } from 'react';
 import {
   Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
-  ExportSquare, Folder, Gallery, Grid3, Import, InfoCircle as InfoCircleIcon, Layer, Logout, MessageQuestion,
+  ExportSquare, Folder, Gallery, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, MessageQuestion,
   Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
   Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
 import { cn } from '@/lib/utils';
 import styles from './icons.module.css';
 
-export type IconProps = SVGProps<SVGSVGElement> & { size?: number | string };
+export type IconProps = SVGProps<SVGSVGElement> & { size?: number | string; variant?: 'Linear' | 'Bold' };
 
 /** Semantic names keep the interface independent of the icon package's naming. */
 function icon(Component: Icon, name: string, rotation?: number) {
-  const StudioIcon = forwardRef<SVGSVGElement, IconProps>(function StudioIcon({ size = 24, strokeWidth, className, style, ...props }, ref) {
+  const StudioIcon = forwardRef<SVGSVGElement, IconProps>(function StudioIcon({ size = 24, variant = 'Linear', strokeWidth, className, style, ...props }, ref) {
     const appearance = {
       ...(strokeWidth !== undefined ? { '--studio-icon-stroke-width': strokeWidth } : {}),
       ...(rotation !== undefined ? { transform: `rotate(${rotation}deg)` } : {}),
       ...style,
     } as CSSProperties;
     return <Component aria-hidden={props['aria-label'] || props['aria-labelledby'] ? undefined : true} focusable="false"
-      {...props} ref={ref} variant="Linear" size={size} strokeWidth={strokeWidth}
+      {...props} ref={ref} variant={variant} size={size} strokeWidth={strokeWidth}
       className={cn(strokeWidth !== undefined && styles.strokeWidth, className)} style={appearance} />;
   });
   StudioIcon.displayName = name;
@@ -46,6 +46,7 @@ export const EyeOff = /* @__PURE__ */ icon(EyeSlash, 'EyeOff');
 export const ExternalLink = /* @__PURE__ */ icon(ExportSquare, 'ExternalLink');
 export const FolderClosed = /* @__PURE__ */ icon(Folder, 'FolderClosed');
 export const HardDrive = /* @__PURE__ */ icon(Driver2, 'HardDrive');
+export const Heart = /* @__PURE__ */ icon(HeartIcon, 'Heart');
 export const ImageIcon = /* @__PURE__ */ icon(Gallery, 'ImageIcon');
 export const InfoCircle = /* @__PURE__ */ icon(InfoCircleIcon, 'InfoCircle');
 export const Layers2 = /* @__PURE__ */ icon(Layer, 'Layers2');

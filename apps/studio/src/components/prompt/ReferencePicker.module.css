@@ -50,6 +50,7 @@
 .card:hover .caption, .card:focus-within .caption { opacity: 1; }
 .mark { pointer-events: none; position: absolute; top: 9px; left: 9px; display: grid; width: 22px; height: 22px; place-items: center; border: 2px solid #ffffff5c; border-radius: 7px; background: #121516c9; color: transparent; transition: background .12s, border-color .12s; }
 .mark svg { width: 13px; height: 13px; }
+.favoriteAction { position: absolute; top: 8px; right: 8px; }
 .card[data-selected='true'] .mark { border-color: var(--color-volt); background: var(--color-volt); color: #10231f; }
 
 .empty { display: flex; min-height: 300px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--asset-muted); text-align: center; font-size: 14px; padding: 24px; }

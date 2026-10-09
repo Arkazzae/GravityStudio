@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Boxes, HardDrive, LayoutGrid, LoaderCircle, LogOut, Rows3, Settings, UserRound } from '@/components/ui/icons';
 import { Logo } from '@/components/layout/Logo';
@@ -11,6 +11,7 @@ import { ModelLibrary } from '@/components/setup/ModelLibrary';
 import { GalleryGrid } from '@/components/gallery/GalleryGrid';
 import { PromptDock, initialDraft, modelDraft, type Draft } from '@/components/prompt/PromptDock';
 import { api, errorMessage, type Bootstrap, type Catalog, type Job, type StudioState } from '@/lib/api';
+import { favoriteKey, useFavorites } from '@/lib/use-favorites';
 import { ServerActivity } from './ServerActivity';
 import { StudioDialog } from './StudioDialog';
 
@@ -24,7 +25,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [dockHeight, setDockHeight] = useState(170);
   const [zoom, setZoom] = useState(.35);
   const [square, setSquare] = useState(false);
-  const [queueOnly, setQueueOnly] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'queue' | 'favorites'>('all');
   const [onboarding, setOnboarding] = useState(false);
   const [panel, setPanel] = useState<'settings' | 'models' | null>(settingsPage ? 'settings' : modelsPage ? 'models' : null);
   const modelsTrigger = useRef<HTMLButtonElement>(null);
@@ -52,6 +53,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     try { localStorage.setItem(`gravity:image-draft:${draftOwner}`, JSON.stringify(draft)); } catch { /* Keep the current in-memory draft. */ }
   }, [draft, draftOwner, bootstrap?.authenticated]);
   const sessionExpired = useCallback(() => { setBootstrap(current => current ? { ...current, authenticated: false } : null); setState(null); setConnected(false); }, []);
+  const favorites = useFavorites(authenticated ? bootstrap?.user?.id || null : null, sessionExpired);
   const checkSession = useCallback(async () => {
     setError('');
     try { setBootstrap(await api<Bootstrap>('/bootstrap')); }
@@ -77,8 +79,10 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', wake); };
   }, [authenticated, refresh, refreshCatalog]);
   const pending = state?.jobs.filter(job => ['queued', 'preparing', 'running'].includes(job.status)) || [];
-  const jobs = (queueOnly ? state?.jobs.filter(job => job.status !== 'succeeded' && job.status !== 'cancelled') : state?.jobs) || [];
-  const imageCount = state?.jobs.reduce((total, job) => total + job.outputs.filter(output => output.mimeType.startsWith('image/')).length, 0) || 0;
+  const allJobs = useMemo(() => (state?.jobs || []).map(job => ({ ...job, outputs: job.outputs.map(output => ({ ...output, favorite: favorites.ready ? favorites.keys.has(favoriteKey(job.id, output.id)) : !!output.favorite })) })), [state?.jobs, favorites.ready, favorites.keys]);
+  const assetJobs = useMemo(() => [...allJobs, ...favorites.jobs.filter(job => !allJobs.some(entry => entry.id === job.id))], [allJobs, favorites.jobs]);
+  const jobs = filter === 'favorites' ? favorites.jobs : filter === 'queue' ? allJobs.filter(job => job.status !== 'succeeded' && job.status !== 'cancelled') : allJobs;
+  const imageCount = jobs.reduce((total, job) => total + job.outputs.filter(output => output.mimeType.startsWith('image/')).length, 0);
   const showSettings = panel === 'settings';
   const showModels = panel === 'models';
   async function signOut() {
@@ -104,9 +108,9 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     </header>
     {error && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-y border-[#e8997038] bg-[#67412c33] px-4 py-2 text-xs text-[#ffc3aa]"><span>{error}</span><button className="shrink-0 underline underline-offset-3" onClick={() => { void refresh(); void refreshCatalog(); }}>Try again</button></div>}
     <main className="relative flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" aria-label="Image filter"><button onClick={() => setQueueOnly(false)} aria-pressed={!queueOnly} className={`rounded-lg px-3 py-1.5 text-xs ${!queueOnly ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>All images</button><button onClick={() => setQueueOnly(true)} aria-pressed={queueOnly} className={`rounded-lg px-3 py-1.5 text-xs ${queueOnly ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>Queue{pending.length ? ` ${pending.length}` : ''}</button></div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
-        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}><GalleryGrid jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => setPanel('models')} onOpenSettings={() => setPanel('settings')} /></div>
-        <PromptDock onOpenModels={() => setPanel('models')} jobs={state?.jobs || []} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
+        <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
+        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => setPanel('models')} onOpenSettings={() => setPanel('settings')} />}</div>
+        <PromptDock onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} onOpenModels={() => setPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
     {showSettings && <StudioDialog panel="settings" title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
       <SettingsWorkspace initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />

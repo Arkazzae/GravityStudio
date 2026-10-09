@@ -29,7 +29,7 @@ export interface Job {
   id: string; modelId: string; modelName?: string; prompt: string; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
   stage?: string; progress: number | null; createdAt: string;
-  outputs: Array<{ id: string; url: string; width?: number; height?: number; mimeType: string }>;
+  outputs: Array<{ id: string; url: string; width?: number; height?: number; mimeType: string; favorite?: boolean }>;
   error: string | null;
 }
 export interface StudioState { jobs: Job[]; workers: Array<Worker & { connected?: boolean; status?: string; error?: string }>; hardware: Hardware }

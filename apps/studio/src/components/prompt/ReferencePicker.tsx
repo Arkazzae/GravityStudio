@@ -1,26 +1,33 @@
 'use client';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Boxes, Check, FolderClosed, ImageIcon, LoaderCircle, Search } from '@/components/ui/icons';
+import { Boxes, Check, FolderClosed, Heart, ImageIcon, LoaderCircle, Search } from '@/components/ui/icons';
+import { FavoriteButton } from '@/components/ui/FavoriteButton';
 import { api, errorMessage, type InputImage, type Job } from '@/lib/api';
+import { favoriteKey } from '@/lib/use-favorites';
 import dialogStyles from '@/components/studio/StudioDialog.module.css';
 import styles from './ReferencePicker.module.css';
 
 interface Asset {
   id: string; url: string; label: string; search: string; mimeType: string;
   source: 'generated' | 'import'; day?: string; createdAt?: string;
+  favorite?: boolean; job?: Job; output?: Job['outputs'][number];
 }
-type Category = 'all' | 'image' | 'imports';
-const categories = [{ id: 'all', label: 'All Assets', icon: Boxes }, { id: 'image', label: 'Image', icon: ImageIcon }, { id: 'imports', label: 'Imports', icon: FolderClosed }] as const;
+type Category = 'all' | 'favorites' | 'image' | 'imports';
+const categories = [{ id: 'all', label: 'All Assets', icon: Boxes }, { id: 'favorites', label: 'Favorites', icon: Heart }, { id: 'image', label: 'Image', icon: ImageIcon }, { id: 'imports', label: 'Imports', icon: FolderClosed }] as const;
 const dateLabel = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
-export function ReferencePicker({ jobs, max = 1, onPick, onClose }: {
+export function ReferencePicker({ jobs, max = 1, onPick, onClose, onFavorite, favoriteBusy, favoriteError }: {
   jobs: Job[];
   max?: number;
   onPick: (files: File[], signal: AbortSignal) => Promise<{ ok: boolean; error?: string }>;
   onClose: () => void;
+  onFavorite: (job: Job, output: Job['outputs'][number]) => void;
+  favoriteBusy: ReadonlySet<string>;
+  favoriteError?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const request = useRef<AbortController | null>(null);
+  const selectedAssets = useRef(new Map<string, Asset>());
   const gallery = useRef<HTMLDivElement>(null);
   const [folder, setFolder] = useState<Category>('image');
   const [query, setQuery] = useState('');
@@ -37,19 +44,20 @@ export function ReferencePicker({ jobs, max = 1, onPick, onClose }: {
       id: output.id, url: output.url, mimeType: output.mimeType, label: job.prompt || job.modelName || job.modelId,
       search: `${job.prompt} ${job.modelName || job.modelId} ${output.width || ''} ${output.height || ''}`.toLowerCase(),
       source: 'generated' as const, day: job.createdAt.slice(0, 10), createdAt: job.createdAt,
+      favorite: !!output.favorite, job, output,
     }))).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     ...imports.map(input => ({ id: input.id, url: input.url, mimeType: 'image/png', label: input.name,
       search: `${input.name} imported ${input.width} ${input.height}`.toLowerCase(), source: 'import' as const })),
   ], [jobs, imports]);
   const chosen = useMemo(() => {
     const byId = new Map(pool.map(asset => [asset.id, asset]));
-    return picked.map(id => byId.get(id)).filter((asset): asset is Asset => !!asset);
+    return picked.map(id => byId.get(id) || selectedAssets.current.get(id)).filter((asset): asset is Asset => !!asset);
   }, [pool, picked]);
   const groups = useMemo(() => {
     const text = query.trim().toLowerCase();
     const grouped = new Map<string, Asset[]>();
     for (const asset of pool) {
-      if ((folder === 'imports' && asset.source !== 'import') || (text && !asset.search.includes(text))) continue;
+      if ((folder === 'imports' && asset.source !== 'import') || (folder === 'favorites' && !asset.favorite) || (text && !asset.search.includes(text))) continue;
       const day = asset.day || 'imports';
       const group = grouped.get(day) || [];
       group.push(asset); grouped.set(day, group);
@@ -81,6 +89,8 @@ export function ReferencePicker({ jobs, max = 1, onPick, onClose }: {
   useEffect(() => { if (gallery.current) gallery.current.scrollTop = 0; }, [folder, query]);
 
   function toggle(id: string) {
+    const asset = pool.find(entry => entry.id === id);
+    if (asset) selectedAssets.current.set(id, asset);
     setError('');
     setPicked(current => current.includes(id) ? current.filter(entry => entry !== id)
       : limit === 1 ? [id] : current.length >= limit ? current : [...current, id]);
@@ -133,15 +143,16 @@ export function ReferencePicker({ jobs, max = 1, onPick, onClose }: {
       <div className={styles.body}>
         <nav className={styles.sidebar} aria-label="Asset categories">
           {categories.map(({ id, label, icon: Icon }) => <div key={id}>
-            {id !== 'all' && <p className={styles.sectionLabel}>{id === 'image' ? 'Type' : 'Folders'}</p>}
+            {(id === 'image' || id === 'imports') && <p className={styles.sectionLabel}>{id === 'image' ? 'Type' : 'Folders'}</p>}
             <button type="button" className={styles.navItem} aria-current={folder === id ? 'page' : undefined} onClick={() => setFolder(id)}>
-              <Icon className={id === 'imports' ? styles.folderIcon : undefined} /><span className={styles.navLabel}>{label}</span><span className={styles.count}>{id === 'imports' ? imports.length : pool.length}</span>
+              <Icon className={id === 'imports' ? styles.folderIcon : undefined} /><span className={styles.navLabel}>{label}</span><span className={styles.count}>{id === 'imports' ? imports.length : id === 'favorites' ? pool.filter(asset => asset.favorite).length : pool.length}</span>
             </button>
           </div>)}
         </nav>
         <div ref={gallery} className={styles.gallery} aria-label="Asset gallery" aria-busy={loading}>
           {loading && <p className={styles.loadStatus} role="status">Loading imported images…</p>}
           {loadError && <p className={styles.loadError} role="alert">Imported images could not be loaded. {loadError} <button type="button" onClick={() => setLoadRevision(current => current + 1)}>Try again</button></p>}
+          {favoriteError && <p className={styles.loadError} role="alert">{favoriteError}</p>}
           {groups.map(([day, group]) => <section key={day} className={styles.group} aria-label={day === 'imports' ? 'Imported images' : dateLabel(day)}>
             <h3 className={styles.groupHeader}>{day === 'imports' ? 'Imported images' : <time dateTime={day}>{dateLabel(day)}</time>}</h3>
             <div className={styles.grid}>{group.map(asset => {
@@ -151,12 +162,13 @@ export function ReferencePicker({ jobs, max = 1, onPick, onClose }: {
                   <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" className={styles.media} />
                   <span className={styles.cardOverlay} /><span className={styles.caption}>{asset.label}</span>
                 </button><span className={styles.mark} aria-hidden="true"><Check strokeWidth={3} /></span>
+                {asset.job && asset.output && <div className={styles.favoriteAction}><FavoriteButton favorite={!!asset.favorite} busy={busy || favoriteBusy.has(favoriteKey(asset.job.id, asset.output.id))} onClick={() => onFavorite(asset.job!, asset.output!)} /></div>}
               </article>;
             })}</div>
           </section>)}
-          {!groups.length && !loading && !loadError && <div className={styles.empty}>
-            <FolderClosed strokeWidth={1.5} /><h3>{query.trim() ? 'No matching assets' : 'No assets here'}</h3>
-            <p>{query.trim() ? 'Try a different search.' : folder === 'imports' ? 'Upload a reference image from your device to find it here.' : 'Generate or upload an image to use it as a reference.'}</p>
+          {!groups.length && !loading && !loadError && !(folder === 'favorites' && favoriteError) && <div className={styles.empty}>
+            <FolderClosed strokeWidth={1.5} /><h3>{query.trim() ? 'No matching assets' : folder === 'favorites' ? 'No favorites yet.' : 'No assets here'}</h3>
+            <p>{query.trim() ? 'Try a different search.' : folder === 'favorites' ? 'Use the heart on a generated image to save it here.' : folder === 'imports' ? 'Upload a reference image from your device to find it here.' : 'Generate or upload an image to use it as a reference.'}</p>
           </div>}
         </div>
       </div>
