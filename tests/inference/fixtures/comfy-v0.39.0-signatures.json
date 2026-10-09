@@ -1,0 +1,28 @@
+{
+  "commit": "b0b743566f65daafc423b4fea8a2fbda94b3384a",
+  "sources": {"comfy_extras/nodes_custom_sampler.py": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe", "comfy_extras/nodes_edit_model.py": "8fe4edaa13707df052ddf883fade1190f7b68416d54c7026cefefd489a13ee7e", "comfy_extras/nodes_flux.py": "71c9d804a9acfb7a828fecb8fcc4b93e28f4417f0c4259a68910f4027059741f", "comfy_extras/nodes_post_processing.py": "4ee06e8e5911c844ba49d97e54c90081c539d57e6dc53f1185900e3a79ce4c98", "nodes.py": "fe624b0c1b6a3cd124a2214e5700b61337589144c2f0668900a04f8ccc031e38"},
+  "nodes": {
+    "CFGGuider": {"optional": {}, "outputs": ["GUIDER"], "required": {"cfg": "FLOAT", "model": "MODEL", "negative": "CONDITIONING", "positive": "CONDITIONING"}},
+    "CLIPLoader": {"optional": {"device": ["default", "cpu"]}, "outputs": ["CLIP"], "required": {"clip_name": "COMBO", "type": ["stable_diffusion", "stable_cascade", "sd3", "stable_audio", "mochi", "ltxv", "pixart", "cosmos", "lumina2", "wan", "hidream", "chroma", "ace", "omnigen2", "qwen_image", "hunyuan_image", "flux2", "ovis", "longcat_image", "cogvideox", "lens", "pixeldit", "ideogram4", "boogu", "krea2", "joyimage", "mage", "minimax", "yue2"]}},
+    "CLIPSetLastLayer": {"optional": {}, "outputs": ["CLIP"], "required": {"clip": "CLIP", "stop_at_clip_layer": "INT"}},
+    "CLIPTextEncode": {"optional": {}, "outputs": ["CONDITIONING"], "required": {"clip": "CLIP", "text": "STRING"}},
+    "CheckpointLoaderSimple": {"optional": {}, "outputs": ["MODEL", "CLIP", "VAE"], "required": {"ckpt_name": "COMBO"}},
+    "ConditioningZeroOut": {"optional": {}, "outputs": ["CONDITIONING"], "required": {"conditioning": "CONDITIONING"}},
+    "EmptyFlux2LatentImage": {"optional": {}, "outputs": ["LATENT"], "required": {"batch_size": "INT", "height": "INT", "width": "INT"}},
+    "EmptyLatentImage": {"optional": {}, "outputs": ["LATENT"], "required": {"batch_size": "INT", "height": "INT", "width": "INT"}},
+    "Flux2Scheduler": {"optional": {}, "outputs": ["SIGMAS"], "required": {"height": "INT", "steps": "INT", "width": "INT"}},
+    "ImageScale": {"optional": {}, "outputs": ["IMAGE"], "required": {"crop": "COMBO", "height": "INT", "image": "IMAGE", "upscale_method": "COMBO", "width": "INT"}},
+    "ImageScaleToTotalPixels": {"optional": {}, "outputs": ["IMAGE"], "required": {"image": "IMAGE", "megapixels": "FLOAT", "resolution_steps": "INT", "upscale_method": "COMBO"}},
+    "KSampler": {"optional": {}, "outputs": ["LATENT"], "required": {"cfg": "FLOAT", "denoise": "FLOAT", "latent_image": "LATENT", "model": "MODEL", "negative": "CONDITIONING", "positive": "CONDITIONING", "sampler_name": "COMBO", "scheduler": "COMBO", "seed": "INT", "steps": "INT"}},
+    "KSamplerSelect": {"optional": {}, "outputs": ["SAMPLER"], "required": {"sampler_name": "COMBO"}},
+    "LoadImage": {"optional": {}, "outputs": ["IMAGE", "MASK"], "required": {"image": "COMBO"}},
+    "RandomNoise": {"optional": {}, "outputs": ["NOISE"], "required": {"noise_seed": "INT"}},
+    "ReferenceLatent": {"optional": {"latent": "LATENT"}, "outputs": ["CONDITIONING"], "required": {"conditioning": "CONDITIONING"}},
+    "SamplerCustomAdvanced": {"optional": {}, "outputs": ["LATENT", "LATENT"], "required": {"guider": "GUIDER", "latent_image": "LATENT", "noise": "NOISE", "sampler": "SAMPLER", "sigmas": "SIGMAS"}},
+    "SaveImage": {"optional": {}, "outputs": ["IMAGE"], "required": {"filename_prefix": "STRING", "images": "IMAGE"}},
+    "UNETLoader": {"optional": {}, "outputs": ["MODEL"], "required": {"unet_name": "COMBO", "weight_dtype": ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]}},
+    "VAEDecode": {"optional": {}, "outputs": ["IMAGE"], "required": {"samples": "LATENT", "vae": "VAE"}},
+    "VAEEncode": {"optional": {}, "outputs": ["LATENT"], "required": {"pixels": "IMAGE", "vae": "VAE"}},
+    "VAELoader": {"optional": {}, "outputs": ["VAE"], "required": {"vae_name": "COMBO"}}
+  }
+}

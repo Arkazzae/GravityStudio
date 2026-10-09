@@ -36,8 +36,8 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
 export const DEFAULT_MODELS: readonly ModelManifest[] = [
   {
     id: "sdxl-base", name: "SDXL Base 1.0", familyId: "sdxl", revision: "1",
-    description: "Text and image generation using the SDXL checkpoint recipe.",
-    artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: "sd_xl_base_1.0.safetensors", source: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0" }],
+    description: "Text and image generation using the SDXL checkpoint recipe.", license: "CreativeML Open RAIL++-M",
+    artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: "sd_xl_base_1.0.safetensors", sha256: "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b", source: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/462165984030d82259a11f4367a4eed129e94a7b/sd_xl_base_1.0.safetensors" }],
   },
   {
     id: "wai-illustrious-v17", name: "WAI Illustrious v17", familyId: "sdxl", revision: "1",
@@ -46,21 +46,21 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
     artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: "waiIllustriousSDXL_v170.safetensors", sha256: "f116b0c78ff441467b0cdc8f1936e1ed18ea31e9997c7b132b1b8db533f0bd04", source: "https://civitai.com/models/827184?modelVersionId=2883731" }],
   },
   {
-    id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", familyId: "flux-2-klein-4b", revision: "1",
-    description: "Distilled image generation and reference editing.",
+    id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", familyId: "flux-2-klein-4b", revision: "2",
+    description: "Distilled image generation and reference editing.", license: "Apache-2.0",
     artifacts: [
-      { role: "diffusion", folder: "diffusion_models", filename: "flux-2-klein-4b.safetensors", sha256: "ec3d4e733a771f61c052fb4856c48b336c55eaf2c65487c2a1faeb9bbda7a343" },
-      { role: "text-encoder", folder: "text_encoders", filename: "qwen_3_4b.safetensors", sha256: "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a" },
-      { role: "vae", folder: "vae", filename: "flux2-vae.safetensors", sha256: "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5" },
+      { role: "diffusion", folder: "diffusion_models", filename: "flux-2-klein-4b.safetensors", sha256: "ec3d4e733a771f61c052fb4856c48b336c55eaf2c65487c2a1faeb9bbda7a343", source: "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/blob/5f526678002e43af5551dadb73ce2e8c91b43afe/split_files/diffusion_models/flux-2-klein-4b.safetensors" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen_3_4b.safetensors", sha256: "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a", source: "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/blob/5f526678002e43af5551dadb73ce2e8c91b43afe/split_files/text_encoders/qwen_3_4b.safetensors" },
+      { role: "vae", folder: "vae", filename: "flux2-vae.safetensors", sha256: "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3", source: "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/blob/5f526678002e43af5551dadb73ce2e8c91b43afe/split_files/vae/flux2-vae.safetensors" },
     ],
   },
   {
     id: "krea-2-turbo", name: "Krea 2 Turbo", familyId: "krea-2", revision: "1",
-    description: "Text to image with the standard Krea 2 encoder and sampler.",
+    description: "Text to image with the standard Krea 2 encoder and sampler.", license: "Krea 2 Community License",
     artifacts: [
-      { role: "diffusion", folder: "diffusion_models", filename: "krea2_turbo_fp8_scaled.safetensors", sha256: "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1" },
-      { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_4b_bf16.safetensors", sha256: "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34" },
-      { role: "vae", folder: "vae", filename: "qwen_image_vae.safetensors", sha256: "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f" },
+      { role: "diffusion", folder: "diffusion_models", filename: "krea2_turbo_fp8_scaled.safetensors", sha256: "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/diffusion_models/krea2_turbo_fp8_scaled.safetensors" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_4b_bf16.safetensors", sha256: "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/text_encoders/qwen3vl_4b_bf16.safetensors" },
+      { role: "vae", folder: "vae", filename: "qwen_image_vae.safetensors", sha256: "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/vae/qwen_image_vae.safetensors" },
     ],
   },
 ];
