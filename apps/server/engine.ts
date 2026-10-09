@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ApiError, type GenerationInput, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
-import { ComfyClient, compileGeneration, checkCapabilities, FAMILY_RECIPES, InferenceError, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats } from "../../packages/inference/index.ts";
+import { ComfyClient, compileGeneration, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
 import { inputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
@@ -14,7 +16,9 @@ interface WorkerState {
   checkedAt: number;
   version?: string;
   error?: string;
+  /** Retained offline for installed-file display; scheduling still requires connected. */
   discovery?: ComfyDiscovery;
+  identity?: string;
 }
 const terminal = new Set(["succeeded", "failed", "cancelled"]);
 const canonical = (value: unknown): string => {
@@ -32,6 +36,14 @@ const modelIdentity = (snapshot: ExecutionSnapshot) => canonical({
   model: { familyId: snapshot.model.familyId, revision: snapshot.model.revision, artifacts: [...snapshot.model.artifacts].sort((a, b) => a.role.localeCompare(b.role)) },
 });
 type Admission = { kind: "ready" } | { kind: "wait" | "reject"; reason: string; reclaimable?: boolean; ramPressure?: boolean };
+
+async function localArtifactsInstalled(directory: string, artifacts: ModelArtifact[]): Promise<boolean> {
+  return (await Promise.all(artifacts.map(async artifact => {
+    if (!isRelativeFile(artifact.filename)) return false;
+    try { const file = await lstat(join(directory, "models", artifact.folder, artifact.filename)); return file.isFile() && !file.isSymbolicLink() && file.size > 0; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  }))).every(Boolean);
+}
 
 export class Engine {
   store: Store;
@@ -96,22 +108,31 @@ export class Engine {
     this.workerRefreshRevision = revision;
     this.workerRefresh = (async () => {
       await Promise.all(this.store.settings().workers.filter(worker => worker.enabled).map(async worker => {
+        const identity = workerIdentity(worker);
         const warm = this.warmWorkers.get(worker.id);
-        if (warm && warm.worker !== workerIdentity(worker)) this.warmWorkers.delete(worker.id);
+        if (warm && warm.worker !== identity) this.warmWorkers.delete(worker.id);
         const state = this.workers.get(worker.id);
-        if (!force && state && Date.now() - state.checkedAt < 20_000) return;
+        if (!force && state?.identity === identity && Date.now() - state.checkedAt < 20_000) return;
         const client = this.client(worker);
         try {
           const health = await client.health();
           if (!health.healthy) throw new Error(health.error);
           const discovery = await client.discover();
-          if (revision === this.workerRevision) this.workers.set(worker.id, { connected: true, checkedAt: Date.now(), discovery, version: health.version });
-        } catch (error) { if (revision === this.workerRevision) { this.warmWorkers.delete(worker.id); this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error) }); } }
+          if (revision === this.workerRevision) this.workers.set(worker.id, { connected: true, checkedAt: Date.now(), discovery, version: health.version, identity });
+        } catch (error) { if (revision === this.workerRevision) { this.warmWorkers.delete(worker.id); this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error), identity, ...(state?.identity === identity && state.discovery ? { discovery: state.discovery } : {}) }); } }
       }));
     })().finally(() => { this.workerRefresh = undefined; });
     return this.workerRefresh;
   }
-  invalidateWorkers() { this.workerRevision++; this.workers.clear(); this.warmWorkers.clear(); }
+  invalidateWorkers() {
+    this.workerRevision++;
+    const identities = new Map(this.store.settings().workers.map(worker => [worker.id, workerIdentity(worker)]));
+    for (const [id, state] of this.workers) {
+      if (state.identity && state.discovery && identities.get(id) === state.identity) this.workers.set(id, { connected: false, checkedAt: 0, identity: state.identity, discovery: state.discovery });
+      else this.workers.delete(id);
+    }
+    this.warmWorkers.clear();
+  }
   beginRuntimeSetup() {
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation setup is already running.");
     if (this.store.activeJobs().length || this.flights.size) throw new ApiError(409, "JOBS_ACTIVE", "Finish or cancel queued generations before changing the GPUs in use.");
@@ -127,18 +148,22 @@ export class Engine {
   async catalog() {
     await this.refreshWorkers();
     const settings = settingsView(this.store);
-    const models = modelRegistry(this.store).map(model => {
+    const models = await Promise.all(modelRegistry(this.store).map(async model => {
       const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
       const resolved = configuredModel(configuration, this.store);
       const snapshot = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0 }, resolved);
       const available = this.availableWorkers(configuration, snapshot);
       const card = modelCard(resolved, configuration, available.map(worker => worker.id));
       const family = FAMILY_RECIPES[model.familyId];
-      return { ...card, unavailableReason: card.missingReasons.join(" "),
+      const installed = await localArtifactsInstalled(this.store.directory, resolved.artifacts) || settings.workers.some(worker => {
+        const state = this.workers.get(worker.id);
+        return state?.identity === workerIdentity(worker) && !!state.discovery && resolved.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
+      });
+      return { ...card, installed, unavailableReason: card.missingReasons.join(" "),
         limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
         capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1" },
       };
-    });
+    }));
     return { models, families: Object.values(FAMILY_RECIPES).map(({ id, name }) => ({ id, name })) };
   }
   async submit(userId: string, value: unknown, key: string) {
@@ -164,7 +189,7 @@ export class Engine {
     if (!workers.length) {
       const issues = this.store.settings().workers.filter(worker => configuration.workerIds.includes(worker.id)).flatMap(worker => {
         const state = this.workers.get(worker.id);
-        return state?.discovery ? checkCapabilities(snapshot, state.discovery).issues.map(issue => issue.message) : [state?.error ?? "Worker is not connected."];
+        return state?.connected && state.discovery ? checkCapabilities(snapshot, state.discovery).issues.map(issue => issue.message) : [state?.error ?? "Worker is not connected."];
       });
       throw new ApiError(409, "MODEL_UNAVAILABLE", issues[0] ?? "Connect a compatible worker with the required model files.");
     }

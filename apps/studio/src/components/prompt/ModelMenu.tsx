@@ -8,8 +8,9 @@ import { modelBrand } from '@/lib/model-brand';
 import type { StudioModel } from '@/lib/api';
 
 export function ModelMenu({ models, value, onChange, referenceCount, onManage, disabled = false }: { models: StudioModel[]; value: string; onChange: (id: string) => void; referenceCount: number; onManage: () => void; disabled?: boolean }) {
-  const selected = models.find(model => model.id === value);
-  const rows: ModelPickerRow[] = models.map(model => {
+  const installed = models.filter(model => model.installed);
+  const selected = installed.find(model => model.id === value);
+  const rows: ModelPickerRow[] = installed.map(model => {
     const maxImages = model.capabilities?.maxImages ?? model.limits?.maxImages ?? 0;
     const incompatible = referenceCount > maxImages;
     return {

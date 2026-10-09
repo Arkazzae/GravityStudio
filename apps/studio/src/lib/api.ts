@@ -1,7 +1,7 @@
 export interface Bootstrap { configured: boolean; authenticated: boolean; setupRequired?: boolean; setupKeyRequired?: boolean; user?: { id: string; username: string } }
 export interface ParameterRange { min: number; max: number; step?: number; default: number }
 export interface StudioModel {
-  id: string; name: string; family: string; description?: string; ready: boolean;
+  id: string; name: string; family: string; description?: string; ready: boolean; installed: boolean;
   unavailableReason?: string; missingReasons?: string[]; requiredArtifactRoles?: string[];
   operations?: Array<'text-to-image' | 'image-to-image' | 'reference'>;
   dimensions?: { multiple: number; min: number; max: number; maxPixels: number };

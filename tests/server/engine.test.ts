@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { completed, PNG } from "../inference/fake-comfy.ts";
 import { engineFixture, GiB, until } from "./helpers/engine-fixture.ts";
@@ -24,6 +25,62 @@ async function warmBothWorkers(fixture: Awaited<ReturnType<typeof engineFixture>
   await until(() => fixture.store.job(first.id).status === "succeeded" && fixture.store.job(second.id).status === "succeeded");
   return { first, second };
 }
+
+test("catalog installation reflects complete configured files independently of GPU readiness", async t => {
+  const fixture = await engineFixture({ count: 0 }); t.after(fixture.close);
+  const qwen = async () => (await fixture.engine.catalog()).models.find(model => model.id === "qwen-image-2.1")!;
+  const missing = await qwen();
+  assert.equal(missing.installed, false);
+  const paths = missing.artifacts.map(artifact => join(fixture.directory, "models", artifact.folder, artifact.filename));
+  for (let index = 0; index < paths.length; index++) {
+    await mkdir(join(paths[index], ".."), { recursive: true });
+    await writeFile(paths[index], index === paths.length - 1 ? "" : "fixture model bytes");
+  }
+  assert.equal((await qwen()).installed, false, "an empty required file is not an installed model");
+  await rm(paths[2]);
+  await symlink(paths[0], paths[2]);
+  assert.equal((await qwen()).installed, false, "symlinks are treated like the model library's installed-file check");
+  await rm(paths[2]);
+  await writeFile(paths[2], "fixture model bytes");
+  const complete = await qwen();
+  assert.equal(complete.installed, true);
+  assert.equal(complete.ready, false, "downloaded files stay listed even with no running GPU worker");
+  await fixture.restart();
+  assert.equal((await qwen()).installed, true, "local installation does not depend on an in-memory discovery cache");
+  const settings = fixture.store.settings();
+  settings.modelConfigurations.find(model => model.modelId === missing.id)!.artifacts.vae = "different-vae.safetensors";
+  fixture.store.saveSettings(settings);
+  assert.equal((await qwen()).installed, false, "installation checks the user's configured filenames");
+});
+
+test("catalog keeps a remote worker's last known files offline without transferring evidence to another endpoint", async t => {
+  const fixture = await engineFixture(); t.after(fixture.close);
+  const sdxl = async () => (await fixture.engine.catalog()).models.find(model => model.id === "sdxl-base")!;
+  assert.equal((await sdxl()).installed, true);
+  let settings = fixture.store.settings();
+  fixture.engine.client(settings.workers[0]).health = async () => ({ healthy: false, error: "Fixture GPU offline" });
+  await fixture.engine.refreshWorkers(true);
+  const offline = await sdxl();
+  assert.equal(offline.ready, false);
+  assert.equal(offline.installed, true, "offline is not evidence that a downloaded checkpoint disappeared");
+  await assert.rejects(fixture.queue(), { code: "MODEL_UNAVAILABLE", message: "Fixture GPU offline" });
+  settings.policy.maxConcurrentJobs = 2;
+  settings = fixture.store.saveSettings(settings);
+  fixture.engine.invalidateWorkers();
+  assert.equal(fixture.engine.workers.get(settings.workers[0].id)?.connected, false);
+  assert.equal(fixture.engine.workers.get(settings.workers[0].id)?.checkedAt, 0);
+  assert.equal((await sdxl()).installed, true, "saving generation policy preserves installed files on the same offline worker");
+  assert.equal((await sdxl()).ready, false, "retained inventory does not mark the worker connected");
+  settings.workers[0].baseUrl += "/replacement";
+  fixture.store.saveSettings(settings);
+  fixture.engine.invalidateWorkers();
+  assert.equal(fixture.engine.workers.has(settings.workers[0].id), false, "a changed identity drops its cached inventory");
+  fixture.engine.client(settings.workers[0]).health = async () => ({ healthy: false, error: "Replacement GPU offline" });
+  assert.equal((await sdxl()).installed, false, "a changed endpoint cannot inherit cached artifact availability");
+  await fixture.restart();
+  fixture.engine.client(settings.workers[0]).health = async () => ({ healthy: false, error: "Fixture GPU offline" });
+  assert.equal((await sdxl()).installed, false, "a cold offline worker without local files provides no installation evidence");
+});
 
 test("generation through Engine, SQLite and Comfy HTTP saves the actual output once", async t => {
   const fixture = await engineFixture(); t.after(fixture.close);
