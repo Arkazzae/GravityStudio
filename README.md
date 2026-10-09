@@ -13,8 +13,9 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
+- A prompt assistant with Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
 
-This first version focuses on image generation. LLM serving, video, audio, training and an OpenAI-compatible API are outside this release.
+This first version focuses on image generation. Managed LLM serving, a standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
 
 ## Start the studio
 
@@ -73,7 +74,17 @@ Open **Settings → Integrations** to save, replace, remove or check a provider 
 
 Keys are encrypted with AES-256-GCM before being written to SQLite. The server uses `GRAVITY_CREDENTIALS_KEY` when supplied (32 random bytes encoded as base64), otherwise it creates a private `credentials.key` file in the data directory. Keep this master key stable and back it up securely: losing it makes saved keys unreadable. For deployments, supply it through your secret manager and keep it separate from database backups. Encryption protects a database copy; someone with access to the running server or both the database and master key can still recover credentials. Use HTTPS when accessing Studio over a network.
 
-The saved Hugging Face token is used for model downloads; `HF_TOKEN` remains a fallback for existing installations. The other providers currently support credential management and authenticated access checks. Checks do not generate content or prove access to every model. Cloud generation and prompt assistant features can build on these connections separately.
+The saved Hugging Face token is used for model downloads; `HF_TOKEN` remains a fallback for existing installations. The Gemini key also powers the prompt assistant. The remaining named providers currently support credential management and authenticated access checks. Checks do not generate content or prove access to every model.
+
+### Prompt assistant
+
+Save a Gemini key in **Settings → Integrations**, or configure the **OpenAI-compatible endpoint** there with its API base URL (including `/v1` where required) and optional separate key. This connects to an existing server, such as llama.cpp; Studio does not start or schedule that text runtime. Changing the endpoint address clears its assistant selection and discards its previous key. Supply a replacement key when the new destination needs one.
+
+In **Models → Language** or **Settings → Assistant**, load the available models and choose **Use for assistant**. Compatible endpoints must support model listing and chat completions with JSON output. Discovery lists candidates; a successful refinement confirms support for the request format. Studio never silently switches providers or retries an ambiguous generation.
+
+Open **AI** in the prompt dock to **Refine** the current prompt or **Rewrite** it with an instruction. Guidance follows the selected image model's family. Only text is sent to the provider; reference images stay in Studio. Generation uses the resulting prompt without another automatic refinement. Undo restores the preceding prompt until you edit it, and Cancel stops waiting and aborts the upstream request. The provider may still charge for work it has already performed.
+
+Refinement requires the owner's browser session. Existing Studio API tokens and MCP clients cannot invoke paid text requests. Responses have time and size limits, incomplete output is rejected, and replies cannot replace a draft edited during the request. Quoted lettering and image markers are preserved; edit the original prompt directly when changing them. Cloud adapters are covered with protocol fixtures; no live paid-provider inference is part of the automated tests.
 
 ## Data and deployment
 

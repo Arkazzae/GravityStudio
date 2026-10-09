@@ -72,11 +72,29 @@ These endpoints require the owner's browser session. Mutations and access checks
 
 Provider IDs are `huggingface`, `civitai`, `gemini`, `openai`, `anthropic` and `nanogpt`. `credential` is either `null` or `{ suffix, updatedAt }`; `suffix` contains only the last four characters. Saving does not automatically contact a provider. Checks use fixed HTTPS endpoints, reject redirects, have a timeout and never relay upstream response bodies or secrets. A failed check preserves the saved key. One check per provider may run at a time; replacing or deleting a key during a check invalidates its result.
 
-Checks use authenticated read operations: Hugging Face account identity, Civitai account identity, Gemini / OpenAI / Anthropic model listing and NanoGPT usage. They do not generate content or verify billing, model licenses or access to every model. Hugging Face downloads use the saved key; cloud inference is not part of this release.
+Checks use authenticated read operations: Hugging Face account identity, Civitai account identity, Gemini / OpenAI / Anthropic model listing and NanoGPT usage. They do not generate content or verify billing, model licenses or access to every model. Hugging Face downloads and the Gemini prompt assistant use their saved keys.
 
 Provider references: [Hugging Face account identity](https://huggingface.co/docs/huggingface_hub/package_reference/hf_api#huggingface_hub.HfApi.whoami), [Civitai authentication](https://github.com/civitai/civitai-developer-docs/blob/main/site/guide/authentication.md), [Gemini models](https://ai.google.dev/api/models), [OpenAI models](https://developers.openai.com/api/reference/resources/models/methods/list), [Anthropic models](https://platform.claude.com/docs/en/api/models/list), [NanoGPT usage](https://docs.nano-gpt.com/api-reference/endpoint/usage).
 
 See [integration key storage](../../README.md#integration-keys) for master key configuration, backups and the limits of encryption.
+
+## Text models and prompt refinement
+
+These operations require the owner's browser session, with an allowed `Origin` for mutations and refinement. Existing bearer tokens and MCP clients cannot invoke them. No request accepts an arbitrary upstream address: the owner configures the connection separately.
+
+| Method | Path | Request or result |
+| --- | --- | --- |
+| GET | `/api/text/settings` | `{ revision, connection: { baseUrl, credential }, assistant }`; secrets are never returned |
+| PUT | `/api/text/connection` | `{ revision, baseUrl, apiKey? }`; omitted key preserves it for the same URL, `null` removes it |
+| GET | `/api/text/models?provider=gemini` | `{ provider, models: [{ id, name, inputTokenLimit?, outputTokenLimit? }] }`; also accepts `openai-compatible` |
+| PUT | `/api/text/assistant` | `{ revision, provider, modelId }`; set both provider and model ID to `null` to disable |
+| POST | `/api/prompts/refine` | `{ settingsRevision, imageModelId, prompt, instruction? }`; returns `{ prompt, originalPrompt, provider, modelId, usage? }` |
+
+Settings use optimistic revisions; stale writes or refinements return HTTP 409. Choosing a model validates it against that connection's catalog. Discovery is cached for up to 60 seconds; `refresh=true` explicitly checks the provider again. Changing the compatible endpoint's URL clears its selected assistant and previous key. Compatible keys are stored separately from the named OpenAI integration.
+
+Refinement accepts up to 16,000 prompt characters and 2,000 instruction characters. At least one must contain text. Requests use the image family's instructions, return validated JSON and preserve quoted passages and image markers. Reference image files are never sent. One refinement may run at a time, with a 45-second deadline covering discovery, generation and reading the response. Browser disconnects abort the upstream request. Incomplete output, malformed JSON and provider failures leave the original prompt unchanged; failed generation requests are not automatically retried.
+
+This operation proposes text only: it does not submit an image job. The browser applies the proposal only if its draft still matches, provides Undo and uses the resulting prompt for a separate image submission. These endpoints are not an incoming OpenAI-compatible chat API.
 
 ## MCP
 
