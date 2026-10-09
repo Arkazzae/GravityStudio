@@ -185,9 +185,9 @@ export class ManagedTextContainer {
     }
     const inspected = await this.#run({ program: result.engine, args: ["image", "inspect", "--format", "{{json .}}", image] }, { signal });
     const info = JSON.parse(inspected.stdout) as { Id?: string; Architecture?: string; Os?: string; RepoDigests?: string[]; Config?: { Labels?: Record<string, string> } };
-    if (!info.Id || !/^sha256:[a-f\d]{64}$/.test(info.Id) || info.Architecture !== "amd64" || info.Os !== "linux" ||
+    if (!info.Id || !/^(?:sha256:)?[a-f\d]{64}$/.test(info.Id) || info.Architecture !== "amd64" || info.Os !== "linux" ||
       !info.RepoDigests?.includes(image) || info.Config?.Labels?.["org.opencontainers.image.revision"] !== lock.revision) throw new Error("The local text runtime image does not match its pinned digest, architecture and source revision.");
-    this.#prepared.set(this.#gpuKey(gpu), { engine: result.engine, groups: result.preflight.supplementalGroupIds, imageId: info.Id });
+    this.#prepared.set(this.#gpuKey(gpu), { engine: result.engine, groups: result.preflight.supplementalGroupIds, imageId: `sha256:${info.Id.replace(/^sha256:/, "")}` });
   }
 
   prepare(gpu: GpuDevice, inventory: HardwareInventory, signal?: AbortSignal): Promise<void> {

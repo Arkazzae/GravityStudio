@@ -75,6 +75,23 @@ test("preparation pulls and verifies an immutable image without starting a proce
   assert.deepEqual(await f.runtime.status(), { running: false, containerId: null, gpuId: null, baseUrl: null });
 });
 
+test("Podman image IDs without a sha256 prefix retain immutable image verification", async t => {
+  const f = await fixture(t);
+  const run = f.options.run!;
+  const runtime = new ManagedTextContainer(f.directory, { ...f.options, async run(command, options) {
+    const result = await run(command, options);
+    if (command.args[0] === "image" && command.args[1] === "inspect") {
+      const image = JSON.parse(result.stdout);
+      image.Id = image.Id.replace(/^sha256:/, "");
+      result.stdout = JSON.stringify(image);
+    }
+    return result;
+  } });
+  await runtime.start(f.hardware.gpus[0], f.hardware, f.modelPath);
+  assert.equal((await runtime.status()).running, true);
+  await runtime.stop();
+});
+
 test("AMD startup selects only its UUID and keeps model and API key private", async t => {
   const f = await fixture(t, { async portAvailable(port) { return port !== 18401; } });
   const result = await f.runtime.start(f.hardware.gpus[1], f.hardware, f.modelPath);
