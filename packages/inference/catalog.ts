@@ -1,0 +1,127 @@
+import { InferenceError } from "./types.ts";
+import type { ArtifactRole, FamilyId, FamilyRecipe, ModelManifest, SamplingDefaults } from "./types.ts";
+
+const base: SamplingDefaults = {
+  width: 1024, height: 1024, steps: 30, cfg: 7,
+  sampler: "euler", scheduler: "normal", negativePrompt: "", clipSkip: 1,
+};
+
+export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
+  sdxl: {
+    id: "sdxl", name: "SDXL / Illustrious", revision: "1",
+    operations: ["text-to-image", "image-to-image"], artifacts: ["checkpoint"],
+    defaults: base, dimensions: { multiple: 8, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 1,
+  },
+  "flux-2-klein-4b": {
+    id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", revision: "1",
+    operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
+    defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+  },
+  "flux-2-klein-9b": {
+    id: "flux-2-klein-9b", name: "FLUX.2 Klein 9B", revision: "1",
+    operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
+    defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+  },
+  "krea-2": {
+    id: "krea-2", name: "Krea 2", revision: "1",
+    operations: ["text-to-image"], artifacts: ["diffusion", "text-encoder", "vae"],
+    defaults: { ...base, steps: 8, cfg: 1, scheduler: "simple" },
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 0,
+  },
+};
+
+/** These manifests describe existing worker files; discovery determines availability. No download occurs. */
+export const DEFAULT_MODELS: readonly ModelManifest[] = [
+  {
+    id: "sdxl-base", name: "SDXL Base 1.0", familyId: "sdxl", revision: "1",
+    description: "Text and image generation using the SDXL checkpoint recipe.",
+    artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: "sd_xl_base_1.0.safetensors", source: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0" }],
+  },
+  {
+    id: "wai-illustrious-v17", name: "WAI Illustrious v17", familyId: "sdxl", revision: "1",
+    description: "An Illustrious fine-tune using the shared SDXL recipe.",
+    defaults: { cfg: 7, sampler: "euler_ancestral", scheduler: "normal", clipSkip: 2, negativePrompt: "bad quality, worst quality, worst detail, sketch, censor" },
+    artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: "waiIllustriousSDXL_v170.safetensors", sha256: "f116b0c78ff441467b0cdc8f1936e1ed18ea31e9997c7b132b1b8db533f0bd04", source: "https://civitai.com/models/827184?modelVersionId=2883731" }],
+  },
+  {
+    id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", familyId: "flux-2-klein-4b", revision: "1",
+    description: "Distilled image generation and reference editing.",
+    artifacts: [
+      { role: "diffusion", folder: "diffusion_models", filename: "flux-2-klein-4b.safetensors", sha256: "ec3d4e733a771f61c052fb4856c48b336c55eaf2c65487c2a1faeb9bbda7a343" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen_3_4b.safetensors", sha256: "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a" },
+      { role: "vae", folder: "vae", filename: "flux2-vae.safetensors", sha256: "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5" },
+    ],
+  },
+  {
+    id: "krea-2-turbo", name: "Krea 2 Turbo", familyId: "krea-2", revision: "1",
+    description: "Text to image with the standard Krea 2 encoder and sampler.",
+    artifacts: [
+      { role: "diffusion", folder: "diffusion_models", filename: "krea2_turbo_fp8_scaled.safetensors", sha256: "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_4b_bf16.safetensors", sha256: "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34" },
+      { role: "vae", folder: "vae", filename: "qwen_image_vae.safetensors", sha256: "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f" },
+    ],
+  },
+];
+
+export function isRelativeFile(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512 &&
+    !/[\\\x00-\x1f\x7f:\[\]]/.test(value) && !value.startsWith("/") &&
+    value.split("/").every(part => part !== "" && part !== "." && part !== "..");
+}
+
+const artifactFolders: Record<ArtifactRole, string> = {
+  checkpoint: "checkpoints", diffusion: "diffusion_models", "text-encoder": "text_encoders", vae: "vae",
+};
+const allowedDefaults = new Set(Object.keys(base));
+
+export function validateModel(manifest: ModelManifest): void {
+  const fail = (message: string): never => { throw new InferenceError("INVALID_MODEL", message); };
+  if (!manifest || typeof manifest !== "object") fail("A model manifest must be an object.");
+  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license"].includes(key))) fail("The model manifest has an unknown field.");
+  if (typeof manifest.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(manifest.id)) fail("Model IDs use lowercase letters, numbers, dots, hyphens or underscores.");
+  if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 160) fail("Set a model name of at most 160 characters.");
+  if (typeof manifest.revision !== "string" || !/^[a-zA-Z0-9._-]{1,96}$/.test(manifest.revision)) fail("Set a stable model revision.");
+  for (const value of [manifest.description, manifest.license]) if (value !== undefined && (typeof value !== "string" || value.length > 4000)) fail("Model descriptions and licenses must be bounded text.");
+  if (!Object.hasOwn(FAMILY_RECIPES, manifest.familyId)) fail("This model architecture has no recipe.");
+  const family = FAMILY_RECIPES[manifest.familyId];
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== family.artifacts.length) fail("List exactly the model files required by the family.");
+  const roles = new Set<string>();
+  for (const artifact of manifest.artifacts) {
+    if (!artifact || !family.artifacts.includes(artifact.role) || roles.has(artifact.role)) fail("Each required model role needs one artifact.");
+    if (Object.keys(artifact).some(key => !["role", "folder", "filename", "sha256", "source"].includes(key))) fail("The model artifact has an unknown field.");
+    roles.add(artifact.role);
+    if (artifact.folder !== artifactFolders[artifact.role] || !isRelativeFile(artifact.filename)) fail("Model files must be relative to their matching ComfyUI model folder.");
+    if (artifact.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(artifact.sha256)) fail("Model SHA-256 values use 64 lowercase hexadecimal characters.");
+    if (artifact.source !== undefined) {
+      try { const source = new URL(artifact.source); if (source.protocol !== "https:" || source.username || source.password) fail("Model source URLs must use HTTPS without credentials."); }
+      catch { fail("Set a valid HTTPS model source URL."); }
+    }
+  }
+  if (manifest.operations !== undefined && (!Array.isArray(manifest.operations) || !manifest.operations.length || new Set(manifest.operations).size !== manifest.operations.length || manifest.operations.some(op => !family.operations.includes(op)))) fail("A model can only enable operations its family supports.");
+  if (manifest.defaults !== undefined) {
+    if (!manifest.defaults || typeof manifest.defaults !== "object" || Array.isArray(manifest.defaults) || Object.keys(manifest.defaults).some(key => !allowedDefaults.has(key))) fail("The model has an unknown default parameter.");
+    for (const [key, value] of Object.entries(manifest.defaults)) {
+      const expected = typeof base[key as keyof SamplingDefaults];
+      if (typeof value !== expected || typeof value === "number" && !Number.isFinite(value) || typeof value === "string" && value.length > 16_000) fail(`Invalid model default: ${key}.`);
+    }
+  }
+}
+
+export function listModels(models: readonly ModelManifest[] = DEFAULT_MODELS): ModelManifest[] {
+  const seen = new Set<string>();
+  for (const model of models) {
+    validateModel(model);
+    if (seen.has(model.id)) throw new InferenceError("INVALID_MODEL", `Duplicate model ID: ${model.id}.`);
+    seen.add(model.id);
+  }
+  return structuredClone(models) as ModelManifest[];
+}
+
+export function getModel(id: string, models: readonly ModelManifest[] = DEFAULT_MODELS): ModelManifest {
+  const model = models.find(item => item.id === id);
+  if (!model) throw new InferenceError("MODEL_NOT_FOUND", "The selected model is not in the catalog.");
+  validateModel(model);
+  return structuredClone(model);
+}
