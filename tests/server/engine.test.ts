@@ -97,7 +97,7 @@ test("generation through Engine, SQLite and Comfy HTTP saves the actual output o
   const saved = fixture.store.job(job.id);
   assert.equal(saved.outputs.length, 1);
   const output = fixture.store.output(job.id, saved.outputs[0].id, fixture.owner.id);
-  assert.deepEqual(await readFile(output.path), Buffer.from(PNG));
+  assert.deepEqual(await readFile(output.path!), Buffer.from(PNG));
   assert.equal(output.width, 1); assert.equal(output.height, 1);
   assert.equal(fixture.workers[0].state.submissions.length, 1);
   await assert.rejects(fixture.queue({ prompt: "A different request" }, key), { code: "IDEMPOTENCY_CONFLICT" });

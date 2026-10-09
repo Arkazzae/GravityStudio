@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Engine } from "../../../apps/server/engine.ts";
 import { Store } from "../../../apps/server/store.ts";
+import type { AssetObjectStore } from "../../../apps/server/object-store.ts";
 import { settingsView } from "../../../apps/server/settings.ts";
 import type { GenerationInput, WorkerSettings } from "../../../packages/contracts/index.ts";
 import type { HardwareInventory } from "../../../packages/hardware/src/types.ts";
@@ -27,12 +28,12 @@ export function inventory(): HardwareInventory {
   };
 }
 
-export async function engineFixture(options: { count?: number; location?: "local" | "remote"; maxConcurrent?: number } = {}) {
+export async function engineFixture(options: { count?: number; location?: "local" | "remote"; maxConcurrent?: number; objectStore?: AssetObjectStore } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gravity-engine-"));
   const workers = await Promise.all(Array.from({ length: options.count ?? 1 }, () => fakeComfy()));
   const stats = workers.map((_, index) => ({ system: { ram_total: 64 * GiB, ram_free: 64 * GiB, comfyui_version: "fixture" }, devices: [{ name: `Remote GPU ${index}`, type: "cuda", index: 0, vram_total: 16 * GiB, vram_free: 16 * GiB }] }));
   workers.forEach((worker, index) => { worker.state.responseOverride = path => path === "/system_stats" ? { body: JSON.stringify(stats[index]) } : undefined; });
-  const store = new Store(directory);
+  const store = new Store(directory, { objectStore: options.objectStore });
   const owner = store.createOwner("owner", "fixture-only-password-hash");
   const settings = settingsView(store);
   settings.policy = { ramReserveBytes: 2 * GiB, vramReserveBytes: GiB, maxConcurrentJobs: options.maxConcurrent ?? 3, idleUnloadSeconds: 0 };
@@ -57,7 +58,7 @@ export async function engineFixture(options: { count?: number; location?: "local
     },
     async restart() {
       await context.engine.stop(); context.store.close();
-      context.store = new Store(directory); context.engine = makeEngine();
+      context.store = new Store(directory, { objectStore: options.objectStore }); context.engine = makeEngine();
     },
     async close() {
       await context.engine.stop(); context.store.close();

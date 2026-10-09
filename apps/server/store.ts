@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ApiError, type GenerationInput, type JobStatus, type Owner, type PublicInput, type PublicJob, type SavedOutput, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
+import type { AssetObjectStore, StoredObject } from "./object-store.ts";
 
 export interface PlacementSnapshot { worker: WorkerSettings; memory: { ramBytes: number; vramBytes: number } }
 export interface StoredJob extends Omit<PublicJob, "outputs"> {
@@ -13,8 +14,8 @@ export interface StoredJob extends Omit<PublicJob, "outputs"> {
   promptId: string | null;
   submissionStarted: boolean;
 }
-export interface StoredInput extends PublicInput { path: string; userId: string; bytes: number }
-export interface StoredOutput extends SavedOutput { path: string }
+export interface StoredInput extends PublicInput { path?: string; object?: StoredObject; userId: string; bytes: number }
+export interface StoredOutput extends SavedOutput { path?: string; object?: StoredObject }
 const now = () => new Date().toISOString();
 const json = (value: unknown) => JSON.stringify(value);
 const jobColumns = `jobs.body, (SELECT json_group_array(favorites.output_id) FROM output_favorites AS favorites JOIN outputs ON outputs.id=favorites.output_id WHERE favorites.user_id=jobs.user_id AND outputs.job_id=jobs.id) AS favorite_ids`;
@@ -41,8 +42,10 @@ const allowedTransitions: Record<JobStatus, readonly JobStatus[]> = {
 export class Store {
   db: DatabaseSync;
   directory: string;
-  constructor(directory: string) {
+  readonly objectStore: AssetObjectStore | null;
+  constructor(directory: string, options: { objectStore?: AssetObjectStore | null } = {}) {
     this.directory = directory;
+    this.objectStore = options.objectStore ?? null;
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(directory, "studio.sqlite"));
     chmodSync(join(directory, "studio.sqlite"), 0o600);
@@ -64,6 +67,12 @@ export class Store {
       CREATE TABLE IF NOT EXISTS output_favorites (user_id TEXT NOT NULL REFERENCES users(id), output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY(user_id,output_id));
       CREATE TABLE IF NOT EXISTS output_deletions (output_id TEXT PRIMARY KEY REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);
     `);
+    const locations = this.db.prepare(`SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM inputs WHERE json_type(body,'$.object') IS NOT NULL
+      UNION SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM outputs WHERE json_type(body,'$.object') IS NOT NULL`).all() as Array<{ store_id: string | null }>;
+    if (locations.some(location => !this.objectStore || location.store_id !== this.objectStore.id)) {
+      this.db.close();
+      throw new ApiError(503, "MEDIA_STORE_CHANGED", "Saved images require their original object storage configuration. Restore the endpoint, bucket and prefix before starting Studio.");
+    }
   }
   close() { this.db.close(); }
   metadata<T>(key: string): T | undefined {
@@ -175,8 +184,16 @@ export class Store {
     if (!row) throw new ApiError(404, "INPUT_NOT_FOUND", "This reference image does not exist.");
     return JSON.parse(row.body);
   }
-  inputs(userId: string): PublicInput[] { return (this.db.prepare("SELECT body FROM inputs WHERE user_id=?").all(userId) as { body: string }[]).map(row => { const { path: _path, userId: _user, bytes: _bytes, ...value } = JSON.parse(row.body) as StoredInput; return value; }); }
+  inputs(userId: string): PublicInput[] { return (this.db.prepare("SELECT body FROM inputs WHERE user_id=?").all(userId) as { body: string }[]).map(row => {
+    const { id, url, name, width, height, mimeType } = JSON.parse(row.body) as StoredInput;
+    return { id, url, name, width, height, mimeType };
+  }); }
   saveOutput(jobId: string, output: StoredOutput) {
+    const job = this.job(jobId);
+    const existing = this.db.prepare("SELECT job_id FROM outputs WHERE id=?").get(output.id) as { job_id: string } | undefined;
+    if (existing && existing.job_id !== jobId) throw new ApiError(409, "OUTPUT_ID_CONFLICT", "This output belongs to another generation.");
+    if (this.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(output.id)) throw new ApiError(409, "OUTPUT_DELETION_PENDING", "This image is being deleted.");
+    if (!existing && ["succeeded", "failed", "cancelled"].includes(job.status)) throw new ApiError(409, "JOB_FINISHED", "A finished generation cannot acquire new or deleted outputs.");
     this.db.prepare("INSERT INTO outputs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body").run(output.id, jobId, json(output));
   }
   output(jobId: string, id: string, userId: string): StoredOutput {
@@ -218,5 +235,5 @@ export class Store {
 }
 export function publicJob(job: StoredJob): PublicJob {
   const { userId: _user, snapshot: _snapshot, placements: _placements, promptId: _prompt, submissionStarted: _submitted, ...result } = job;
-  return { ...result, outputs: result.outputs.map(output => ({ ...output, favorite: output.favorite === true })) };
+  return { ...result, outputs: result.outputs.map(({ id, url, mimeType, width, height, bytes, sha256, favorite }) => ({ id, url, mimeType, width, height, bytes, sha256, favorite: favorite === true })) };
 }

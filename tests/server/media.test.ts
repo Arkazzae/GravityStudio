@@ -33,20 +33,20 @@ test("failed file deletion keeps the output and favorite until a successful retr
   const f = await completed(t);
   const original = f.store.job(f.job.id);
   const [first, second] = f.outputs.map(output => f.store.output(f.job.id, output.id, f.owner.id));
-  await rm(first.path);
-  await mkdir(first.path);
+  await rm(first.path!);
+  await mkdir(first.path!);
   await assert.rejects(deleteOutput(f.store, f.job.id, first.id, f.owner.id), { code: "OUTPUT_DELETE_FAILED", status: 503 });
   assert.deepEqual(f.store.job(f.job.id), original);
   assert.equal(f.store.favorites(f.owner.id)[0].outputs.length, 2);
   assert.equal(f.store.pendingOutputDeletions().length, 1);
   assert.throws(() => f.store.setOutputFavorite(f.job.id, first.id, f.owner.id, false), { code: "OUTPUT_DELETION_PENDING" });
 
-  await rm(first.path, { recursive: true });
-  await writeFile(first.path, PNG);
+  await rm(first.path!, { recursive: true });
+  await writeFile(first.path!, PNG);
   const deleted = await deleteOutput(f.store, f.job.id, first.id, f.owner.id);
   assert.deepEqual(deleted, { ...original, outputs: [original.outputs[1]] });
-  await assert.rejects(readFile(first.path), { code: "ENOENT" });
-  assert.deepEqual(await readFile(second.path), Buffer.from(PNG));
+  await assert.rejects(readFile(first.path!), { code: "ENOENT" });
+  assert.deepEqual(await readFile(second.path!), Buffer.from(PNG));
   assert.deepEqual(f.store.favorites(f.owner.id)[0].outputs.map(output => output.id), [second.id]);
   assert.deepEqual(f.store.pendingOutputDeletions(), []);
   assert.throws(() => f.store.output(f.job.id, first.id, f.owner.id), { code: "OUTPUT_NOT_FOUND" });
@@ -59,8 +59,8 @@ test("restart finishes deletion intents before unlink and after a failed databas
   f.store.beginOutputDeletion(f.job.id, first.id, f.owner.id);
   f.store.db.exec("CREATE TRIGGER fixture_delete_failure BEFORE DELETE ON outputs BEGIN SELECT RAISE(ABORT, 'fixture database failure'); END");
   await assert.rejects(deleteOutput(f.store, f.job.id, second.id, f.owner.id), /fixture database failure/);
-  assert.deepEqual(await readFile(first.path), Buffer.from(PNG));
-  await assert.rejects(readFile(second.path), { code: "ENOENT" });
+  assert.deepEqual(await readFile(first.path!), Buffer.from(PNG));
+  await assert.rejects(readFile(second.path!), { code: "ENOENT" });
   assert.deepEqual(f.store.job(f.job.id), original);
   assert.equal(f.store.pendingOutputDeletions().length, 2);
 
@@ -70,7 +70,7 @@ test("restart finishes deletion intents before unlink and after a failed databas
   assert.deepEqual(f.store.job(f.job.id), { ...original, outputs: [] });
   assert.deepEqual(f.store.pendingOutputDeletions(), []);
   assert.deepEqual(f.store.favorites(f.owner.id), []);
-  for (const output of [first, second]) await assert.rejects(readFile(output.path), { code: "ENOENT" });
+  for (const output of [first, second]) await assert.rejects(readFile(output.path!), { code: "ENOENT" });
   const retry = f.store.idempotentJob(f.owner.id, "delete-output", "delete-output");
   assert.equal(retry!.id, f.job.id);
   assert.deepEqual(retry!.outputs, []);
@@ -85,9 +85,11 @@ test("deletion refuses stored paths and symlinks outside the output's own regula
   await assert.rejects(deleteOutput(f.store, f.job.id, output.id, f.owner.id), { code: "OUTPUT_DELETE_FAILED" });
   assert.deepEqual(await readFile(otherPath), Buffer.from(PNG));
 
-  f.store.saveOutput(f.job.id, output);
-  await rm(output.path);
-  await symlink(otherPath, output.path);
+  // Repair the intentionally corrupted fixture without bypassing the production
+  // guard against overwriting an image while its deletion is pending.
+  f.store.db.prepare("UPDATE outputs SET body=? WHERE id=?").run(JSON.stringify(output), output.id);
+  await rm(output.path!);
+  await symlink(otherPath, output.path!);
   await assert.rejects(deleteOutput(f.store, f.job.id, output.id, f.owner.id), { code: "OUTPUT_DELETE_FAILED" });
   assert.deepEqual(await readFile(otherPath), Buffer.from(PNG));
   assert.equal(f.store.job(f.job.id).outputs.length, 2);

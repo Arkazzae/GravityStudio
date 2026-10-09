@@ -7,7 +7,7 @@ import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
 import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
-import { deleteOutput, MAX_INPUT_BYTES, recoverOutputDeletions, saveInput } from "./media.ts";
+import { deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverOutputDeletions, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
@@ -65,7 +65,7 @@ export interface ServerOptions {
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
-  await recoverOutputDeletions(store);
+  await recoverOutputDeletions(store, { remote: false });
   const credentials = new CredentialVault(store);
   const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
   await localText.initialize();
@@ -76,7 +76,22 @@ export async function createStudioServer(options: ServerOptions) {
   const limiter = new LoginLimiter();
   const origins = new Set(options.allowedOrigins.map(origin => new URL(origin).origin));
   const integrationChecks = new Map<string, Promise<unknown>>();
+  const mediaOperations = new Set<Promise<unknown>>();
+  const mediaOperation = async <T,>(run: () => Promise<T>): Promise<T> => {
+    if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+    const operation = run(); mediaOperations.add(operation);
+    try { return await operation; } finally { mediaOperations.delete(operation); }
+  };
   let stopping = false;
+  let deletionTimer: ReturnType<typeof setTimeout> | undefined;
+  let deletionRecovery: Promise<void> | undefined;
+  function retryRemoteDeletions() {
+    if (stopping || deletionRecovery) return;
+    deletionRecovery = recoverOutputDeletions(store, { local: false, continue: () => !stopping }).finally(() => {
+      deletionRecovery = undefined;
+      if (!stopping) { deletionTimer = setTimeout(retryRemoteDeletions, 30_000); deletionTimer.unref(); }
+    });
+  }
   const server = createServer(async (request, response) => {
     const requestId = randomUUID();
     response.setHeader("X-Request-Id", requestId);
@@ -276,15 +291,19 @@ export async function createStudioServer(options: ServerOptions) {
           const suppliedName = request.headers["x-filename"];
           let name = typeof suppliedName === "string" ? suppliedName : "reference.png";
           try { name = decodeURIComponent(name); } catch { /* Plain filenames containing % remain valid. */ }
-          const input = await saveInput(store, user.id, await readBytes(request, MAX_INPUT_BYTES), name);
+          const input = await mediaOperation(async () => saveInput(store, user.id, await readBytes(request, MAX_INPUT_BYTES), name));
           return json(response, input, 201);
         }
       }
       const inputRoute = path.match(/^\/api\/inputs\/([a-f0-9-]{36})$/);
       if (inputRoute && method === "GET") {
         const input = store.input(inputRoute[1], user.id);
-        response.writeHead(200, { ...safeHeaders, "Content-Type": input.mimeType, "Content-Length": input.bytes });
-        await pipeline(createReadStream(input.path), response); return;
+        await mediaOperation(async () => {
+          const bytes = input.object !== undefined ? await inputBytes(store, input.id, user.id) : null;
+          if (!bytes && !input.path) throw new ApiError(503, "MEDIA_STORAGE_UNAVAILABLE", "This reference image has no available storage location.");
+          response.writeHead(200, { ...safeHeaders, "Content-Type": input.mimeType, "Content-Length": input.bytes });
+          if (bytes) response.end(bytes); else await pipeline(createReadStream(input.path!), response);
+        }); return;
       }
       const favoriteRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})\/favorite$/);
       if (favoriteRoute && method === "PUT") {
@@ -293,11 +312,15 @@ export async function createStudioServer(options: ServerOptions) {
         return json(response, { job: publicJob(store.setOutputFavorite(favoriteRoute[1], favoriteRoute[2], user.id, body.favorite)) });
       }
       const outputRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})$/);
-      if (outputRoute && method === "DELETE") return json(response, { job: publicJob(await deleteOutput(store, outputRoute[1], outputRoute[2], user.id)) });
+      if (outputRoute && method === "DELETE") return json(response, { job: publicJob(await mediaOperation(() => deleteOutput(store, outputRoute[1], outputRoute[2], user.id))) });
       if (outputRoute && method === "GET") {
         const output = store.output(outputRoute[1], outputRoute[2], user.id);
-        response.writeHead(200, { ...safeHeaders, "Content-Type": output.mimeType, "Content-Length": output.bytes, "Content-Disposition": `inline; filename="${output.id}.${output.mimeType.split("/")[1]}"` });
-        await pipeline(createReadStream(output.path), response); return;
+        await mediaOperation(async () => {
+          const bytes = output.object !== undefined ? await outputBytes(store, outputRoute[1], output.id, user.id) : null;
+          if (!bytes && !output.path) throw new ApiError(503, "MEDIA_STORAGE_UNAVAILABLE", "This image has no available storage location.");
+          response.writeHead(200, { ...safeHeaders, "Content-Type": output.mimeType, "Content-Length": output.bytes, "Content-Disposition": `inline; filename="${output.id}.${output.mimeType.split("/")[1]}"` });
+          if (bytes) response.end(bytes); else await pipeline(createReadStream(output.path!), response);
+        }); return;
       }
       if (path === "/api/tokens") {
         requireSession();
@@ -322,5 +345,13 @@ export async function createStudioServer(options: ServerOptions) {
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
-  return Object.assign(server, { closeOperations: async () => { stopping = true; await text.close(); await Promise.all([localText.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
+  server.once('listening', retryRemoteDeletions);
+  return Object.assign(server, { closeOperations: async () => {
+    stopping = true; clearTimeout(deletionTimer);
+    const failures: unknown[] = [];
+    try { await text.close(); } catch (error) { failures.push(error); }
+    const drained = await Promise.allSettled([localText.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values()), Promise.allSettled(mediaOperations), deletionRecovery]);
+    for (const result of drained) if (result.status === 'rejected') failures.push(result.reason);
+    if (failures.length) throw new AggregateError(failures, 'Studio operations could not shut down cleanly.');
+  } });
 }

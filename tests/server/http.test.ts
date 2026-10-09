@@ -255,7 +255,7 @@ test("output deletion is owner scoped, protects active jobs and removes one imag
   const outputs = [await saveOutput(api.store, job.id, 0, PNG), await saveOutput(api.store, job.id, 1, PNG)];
   api.store.patchJob(job.id, { outputs });
   const paths = outputs.map(output => `/jobs/${job.id}/outputs/${output.id}`);
-  const files = outputs.map(output => api.store.output(job.id, output.id, owner.id).path);
+  const files = outputs.map(output => api.store.output(job.id, output.id, owner.id).path!);
   assert.equal((await fetch(`${api.url}/api${paths[0]}`, { method: "DELETE", headers: { Origin: origin } })).status, 401);
   assert.equal((await fetch(`${api.url}/api${paths[0]}`, { method: "DELETE", headers: { Cookie: api.cookie() } })).status, 403);
   assert.equal((await api.request(paths[0], "DELETE", undefined, { Origin: "https://attacker.example" })).status, 403);
@@ -280,7 +280,7 @@ test("output deletion is owner scoped, protects active jobs and removes one imag
   api.store.setOutputFavorite(foreign.id, privateOutput.id, "foreign-owner", true);
   assert.equal((await api.request(`/jobs/${foreign.id}/outputs/${privateOutput.id}`, "DELETE")).status, 404);
   assert.equal((await api.request(`/jobs/${job.id}/outputs/${privateOutput.id}`, "DELETE")).status, 404);
-  assert.deepEqual(await readFile(api.store.output(foreign.id, privateOutput.id, "foreign-owner").path), Buffer.from(PNG));
+  assert.deepEqual(await readFile(api.store.output(foreign.id, privateOutput.id, "foreign-owner").path!), Buffer.from(PNG));
 
   const response = await api.request(paths[0], "DELETE");
   assert.equal(response.status, 200);
