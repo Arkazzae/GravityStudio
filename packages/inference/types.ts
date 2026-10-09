@@ -1,4 +1,4 @@
-export type FamilyId = "sdxl" | "flux-2-klein-4b" | "flux-2-klein-9b" | "krea-2";
+export type FamilyId = "sdxl" | "flux-2-klein-4b" | "flux-2-klein-9b" | "krea-2" | "qwen-image-2.1";
 export type Operation = "text-to-image" | "image-to-image" | "reference";
 export type ArtifactRole = "checkpoint" | "diffusion" | "text-encoder" | "vae";
 export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae";

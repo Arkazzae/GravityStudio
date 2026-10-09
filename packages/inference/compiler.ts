@@ -129,6 +129,29 @@ function kleinGraph(model: ModelManifest, p: ResolvedParameters, images: InputIm
   return graph;
 }
 
+function qwenImage21Graph(model: ModelManifest, p: ResolvedParameters, images: InputImage[]): WorkflowGraph {
+  const graph: WorkflowGraph = {
+    model: { class_type: "UNETLoader", inputs: { unet_name: artifact(model, "diffusion"), weight_dtype: "default" } },
+    cache: { class_type: "QwenImage21Cache", inputs: { model: ["model", 0], device: "auto", dtype: "default" } },
+    clip: { class_type: "CLIPLoader", inputs: { clip_name: artifact(model, "text-encoder"), type: "qwen_image", device: "default" } },
+    vae: { class_type: "VAELoader", inputs: { vae_name: artifact(model, "vae") } },
+    conditioning: { class_type: "TextEncodeQwenImage21", inputs: { clip: ["clip", 0], prompt: p.prompt, negative_prompt: p.negativePrompt, resolution: 1024 } },
+    // The official workflow's custom-size branch preserves the requested canvas.
+    // Reference encoding keeps aspect ratio and a separate, bounded pixel budget.
+    latent: { class_type: "EmptyLatentImage", inputs: { width: p.width, height: p.height, batch_size: 1 } },
+  };
+  if (images.length) graph.conditioning.inputs.vae = ["vae", 0];
+  for (const [index, image] of images.entries()) {
+    const id = `reference_${index}`;
+    graph[id] = { class_type: "LoadImage", inputs: { image: imageName(image) } };
+    graph.conditioning.inputs[`images.image_${index + 1}`] = [id, 0];
+  }
+  graph.sample = { class_type: "KSampler", inputs: { model: ["cache", 0], positive: ["conditioning", 0], negative: ["conditioning", 1], latent_image: ["latent", 0], seed: p.seed, steps: p.steps, cfg: p.cfg, sampler_name: p.sampler, scheduler: p.scheduler, denoise: 1 } };
+  graph.decode = { class_type: "VAEDecode", inputs: { samples: ["sample", 0], vae: ["vae", 0] } };
+  graph.output = { class_type: "SaveImage", inputs: { images: ["decode", 0], filename_prefix: "grav" } };
+  return graph;
+}
+
 export function compileGeneration(request: GenerationRequest, model?: ModelManifest): ExecutionSnapshot {
   check(request && typeof request === "object" && !Array.isArray(request) && Object.keys(request).every(key => requestKeys.has(key)), "Unknown generation parameter.");
   check(Object.values(request).every(value => value !== null), "Generation parameters cannot be null.");
@@ -147,7 +170,7 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
     schemaVersion: 1,
     recipe: { familyId: family.id, revision: family.revision, operation },
     model: structuredClone(model), parameters, inputs: structuredClone(images),
-    graph: model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : sampledGraph(model, parameters, images),
+    graph: model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : model.familyId === "qwen-image-2.1" ? qwenImage21Graph(model, parameters, images) : sampledGraph(model, parameters, images),
     outputs: [{ node: "output", field: "images" }],
   };
   return { ...content, hash: snapshotHash(content) };

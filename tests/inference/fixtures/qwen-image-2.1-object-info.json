@@ -1,0 +1,107 @@
+{
+  "TextEncodeQwenImage21": {
+    "input": {
+      "required": {
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "prompt": [
+          "STRING",
+          {}
+        ],
+        "negative_prompt": [
+          "STRING",
+          {}
+        ],
+        "resolution": [
+          "INT",
+          {
+            "min": 0,
+            "max": 4096,
+            "step": 32
+          }
+        ],
+        "images": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "image": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              },
+              "names": [
+                "image_1",
+                "image_2",
+                "image_3",
+                "image_4",
+                "image_5",
+                "image_6",
+                "image_7",
+                "image_8",
+                "image_9",
+                "image_10",
+                "image_11",
+                "image_12",
+                "image_13",
+                "image_14",
+                "image_15",
+                "image_16"
+              ],
+              "min": 0
+            }
+          }
+        ]
+      },
+      "optional": {
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING",
+      "LATENT"
+    ]
+  },
+  "QwenImage21Cache": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "device": [
+          "COMBO",
+          {
+            "options": [
+              "auto",
+              "gpu",
+              "cpu",
+              "off"
+            ]
+          }
+        ],
+        "dtype": [
+          "COMBO",
+          {
+            "options": [
+              "default",
+              "int8",
+              "int4"
+            ]
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ]
+  }
+}

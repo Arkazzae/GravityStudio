@@ -30,6 +30,12 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
     defaults: { ...base, steps: 8, cfg: 1, scheduler: "simple" },
     dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 0,
   },
+  "qwen-image-2.1": {
+    id: "qwen-image-2.1", name: "Qwen Image 2.1", revision: "1",
+    operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
+    defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
+    dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,
+  },
 };
 
 /** These manifests describe existing worker files; discovery determines availability. No download occurs. */
@@ -61,6 +67,15 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
       { role: "diffusion", folder: "diffusion_models", filename: "krea2_turbo_fp8_scaled.safetensors", sha256: "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/diffusion_models/krea2_turbo_fp8_scaled.safetensors" },
       { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_4b_bf16.safetensors", sha256: "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/text_encoders/qwen3vl_4b_bf16.safetensors" },
       { role: "vae", folder: "vae", filename: "qwen_image_vae.safetensors", sha256: "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/vae/qwen_image_vae.safetensors" },
+    ],
+  },
+  {
+    id: "qwen-image-2.1", name: "Qwen Image 2.1", familyId: "qwen-image-2.1", revision: "1",
+    description: "BF16 image generation and instruction editing with up to ten references, including transparent PNG output.", license: "Qwen Research License (non-commercial)",
+    artifacts: [
+      { role: "diffusion", folder: "diffusion_models", filename: "qwen_image_2.1_bf16.safetensors", sha256: "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/diffusion_models/qwen_image_2.1_bf16.safetensors" },
+      { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_8b_bf16.safetensors", sha256: "68bdc82bc1b66851162ae656225e7e2068166b603db19bd5d5a3b90eb12669a9", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/text_encoders/qwen3vl_8b_bf16.safetensors" },
+      { role: "vae", folder: "vae", filename: "qwen_image_2.1_vae_bf16.safetensors", sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/vae/qwen_image_2.1_vae_bf16.safetensors" },
     ],
   },
 ];

@@ -34,14 +34,49 @@ export function comboOptions(schema: unknown[] | undefined): unknown[] | undefin
   return undefined;
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function expandInputs(schema: NodeInfo, invalid: (message: string) => void) {
+  const required = { ...schema.input?.required };
+  const optional = { ...schema.input?.optional };
+  for (const [group, input] of Object.entries({ ...required, ...optional })) {
+    if (!Array.isArray(input) || input[0] !== "COMFY_AUTOGROW_V3") continue;
+    const template = record(record(input[1])?.template);
+    const names = template?.names;
+    const min = template?.min;
+    const nested = record(template?.input);
+    const nestedRequired = record(nested?.required);
+    const nestedOptional = record(nested?.optional);
+    // Match ComfyUI's named autogrow expansion: the group itself is not a
+    // socket; each declared name becomes a typed, dot-prefixed socket.
+    const requiredTemplates = Object.values(nestedRequired ?? {});
+    const optionalTemplates = Object.values(nestedOptional ?? {});
+    const item = requiredTemplates[0] ?? optionalTemplates[0];
+    if (!Array.isArray(names) || names.length > 100 || !names.every(name => typeof name === "string" && name.length > 0 && !name.includes(".")) ||
+        new Set(names).size !== names.length || !Number.isSafeInteger(min) || Number(min) < 0 || Number(min) > names.length ||
+        requiredTemplates.length + optionalTemplates.length !== 1 || !Array.isArray(item) || typeof item[0] !== "string" || item[0].startsWith("COMFY_")) {
+      invalid(`dynamic input ${group} has an unsupported schema.`);
+      continue;
+    }
+    delete required[group];
+    delete optional[group];
+    names.forEach((name, index) => {
+      const target = requiredTemplates.length > 0 && index < Number(min) ? required : optional;
+      target[`${group}.${name}`] = item;
+    });
+  }
+  return { required, inputs: { ...required, ...optional } };
+}
+
 function validateGraph(graph: WorkflowGraph, info: Record<string, NodeInfo>): CapabilityIssue[] {
   const issues: CapabilityIssue[] = [];
   for (const [id, node] of Object.entries(graph)) {
     const schema = info[node.class_type];
     const invalid = (message: string) => issues.push({ code: "INVALID_NODE_INPUT", message: `${node.class_type}: ${message}`, node: id });
     if (!schema) { issues.push({ code: "MISSING_NODE", message: `Install a worker version that provides ${node.class_type}.`, node: id }); continue; }
-    const required = schema.input?.required ?? {};
-    const inputs = { ...required, ...schema.input?.optional };
+    const { required, inputs } = expandInputs(schema, invalid);
     for (const key of Object.keys(required)) if (!(key in node.inputs)) invalid(`missing required input ${key}.`);
     for (const [name, value] of Object.entries(node.inputs)) {
       const input = inputs[name];
