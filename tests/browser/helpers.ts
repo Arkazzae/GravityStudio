@@ -15,6 +15,8 @@ export async function openBrowser(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'gravity-browser-'));
   const child = spawn(browserBinary, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-extensions', '--disable-component-update', '--disable-sync', '--disable-crash-reporter', '--remote-debugging-port=0', `--user-data-dir=${directory}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
+  let spawnError: Error | undefined;
+  child.once('error', error => { spawnError = error; });
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4000); });
   let socket: WebSocket | undefined;
   const requests = new Map<number, Pending>();
@@ -25,8 +27,12 @@ export async function openBrowser(t: TestContext) {
     rmSync(directory, { recursive: true, force: true });
   });
   const portFile = join(directory, 'DevToolsActivePort');
-  for (let attempt = 0; !existsSync(portFile) && child.exitCode === null && attempt < 100; attempt++) await delay(100);
-  if (!existsSync(portFile)) throw new Error(`Chromium could not start. ${stderr}`);
+  const startupDeadline = Date.now() + 30_000;
+  while (!existsSync(portFile) && !spawnError && child.exitCode === null && child.signalCode === null && Date.now() < startupDeadline) await delay(100);
+  if (spawnError || child.exitCode !== null || child.signalCode !== null || !existsSync(portFile)) {
+    const reason = spawnError ? spawnError.message : child.signalCode ? `terminated by ${child.signalCode}` : child.exitCode !== null ? `exited with code ${child.exitCode}` : 'CDP did not become available within 30 seconds';
+    throw new Error(`Chromium could not start (${browserBinary}): ${reason}.${stderr ? `\n${stderr}` : ''}`);
+  }
   const port = Number(readFileSync(portFile, 'utf8').split('\n')[0]);
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl: string }>;
   const page = targets.find(target => target.type === 'page');
