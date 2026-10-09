@@ -119,7 +119,7 @@ export function PromptAssistant({ draft, setDraft, model, connected, submitting,
       const result = await api<RefinementResult>('/prompts/refine', {
         method: 'POST',
         body: JSON.stringify({ prompt: draft.prompt, imageModelId: model.id, ...(command.trim() ? { instruction: command.trim() } : {}), settingsRevision: settings.revision }),
-        signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(90_000)]),
+        signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(selection.provider === 'local' ? 210_000 : 90_000)]),
       });
       if (pending.controller.signal.aborted || request.current !== pending || latest.current.sessionIdentity !== pending.identity) return;
       if (latest.current.context !== pending.context) throw new Error('Your prompt or image settings changed. Run the assistant again to use this draft.');
@@ -187,7 +187,7 @@ export function PromptAssistant({ draft, setDraft, model, connected, submitting,
       {error ? <p role="alert" className="px-2 pb-1.5 pt-1 text-[11.5px] leading-5 text-[#ffc3aa]">{error}</p> : null}
       <div className="mt-1 border-t border-white/[0.06] px-2 pb-1 pt-2">
         {unavailable ? <p role="status" className="text-[11.5px] leading-5 text-ink-2">{unavailable}</p>
-          : <p title={selection?.modelId} className="truncate text-[11.5px] leading-5 text-ink-2">{selection?.provider === 'gemini' ? 'Gemini' : 'Custom endpoint'} · {selection?.modelId}</p>}
+          : <p title={selection?.modelId} className="truncate text-[11.5px] leading-5 text-ink-2">{selection?.provider === 'local' ? 'Local Studio' : selection?.provider === 'gemini' ? 'Gemini' : 'Custom endpoint'} · {selection?.modelId}</p>}
         {onOpenSettings ? <button type="button" disabled={busy} onClick={() => { close(); onOpenSettings(); }} className={cn(small, '-ml-1.5 mt-0.5 disabled:opacity-50')}>{selection ? 'Assistant settings' : 'Choose assistant model'}</button> : null}
       </div>
     </div>

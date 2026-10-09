@@ -13,9 +13,9 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
-- A prompt assistant with Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
+- A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
 
-This first version focuses on image generation. Managed LLM serving, a standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
+This first version focuses on image generation and prompt assistance. A standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
 
 ## Start the studio
 
@@ -77,6 +77,10 @@ Keys are encrypted with AES-256-GCM before being written to SQLite. The server u
 The saved Hugging Face token is used for model downloads; `HF_TOKEN` remains a fallback for existing installations. The Gemini key also powers the prompt assistant. The remaining named providers currently support credential management and authenticated access checks. Checks do not generate content or prove access to every model.
 
 ### Prompt assistant
+
+For a local assistant, open **Models → Language → Local Studio**, download **MiMo V2.6 Distill Qwen 9B**, then choose **Use for assistant**. Studio downloads verified Q8_0 weights and a pinned llama.cpp GPU image, and manages one container for this runtime. GPU selection follows the enabled Studio GPUs by default; an optional checkbox selection assigns a different set to the assistant. [Runtime details](deploy/llamacpp/README.md) describe supported builds and requirements.
+
+Models can remain together in VRAM when their weights, working-memory budgets and reserves fit. MiMo loads on demand and stays warm for subsequent requests. Image admission accounts for its retained reservation and can unload it when idle under memory pressure. Active requests retain their reservation until they finish; cancellation and uncertain failures require a confirmed container stop before releasing memory. The idle-unload interval in Generation also applies to MiMo; zero disables time-based unloading. **Unload from GPU** explicitly releases the local model. Memory budgets are conservative estimates, not a guarantee of fit for every workload.
 
 Save a Gemini key in **Settings → Integrations**, or configure the **OpenAI-compatible endpoint** there with its API base URL (including `/v1` where required) and optional separate key. This connects to an existing server, such as llama.cpp; Studio does not start or schedule that text runtime. Changing the endpoint address clears its assistant selection and discards its previous key. Supply a replacement key when the new destination needs one.
 

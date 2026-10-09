@@ -14,6 +14,10 @@ import type { AddressInfo } from 'node:net';
 import { Store } from '../../apps/server/store.ts';
 import { Engine } from '../../apps/server/engine.ts';
 import { ModelLibrary } from '../../apps/server/models.ts';
+import { LOCAL_TEXT_MODEL } from '../../apps/server/text-models.ts';
+import type { LocalTextRuntime } from '../../apps/server/local-text.ts';
+import type { LocalTextStatus } from '../../packages/contracts/text.ts';
+import { ApiError } from '../../packages/contracts/index.ts';
 import type { RuntimeSetupStatus } from '../../apps/server/runtime.ts';
 import { createStudioServer } from '../../apps/server/http.ts';
 import { dualR9700 } from '../hardware/fixtures.ts';
@@ -54,8 +58,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     { id: 'browser-comfy', baseUrl: comfy.url, deviceId: 'amd:9700b' },
     { id: 'browser-comfy-first', baseUrl: otherComfy.url, deviceId: 'amd:9700a' },
   ];
-  // Only container execution and upstream provider responses are fixtures; the owner API,
-  // model download, validation, activation, settings and generation use their real code.
+  // Container execution, managed text lifecycle and upstream responses are fixtures.
+  // Owner APIs, image downloads, settings, generation and prompt refinement use their real code.
   const runtime = {
     status: () => structuredClone(runtimeState),
     managedWorkers: async () => store.settings().workers.length ? structuredClone(managedBindings) : [],
@@ -106,14 +110,59 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   let textRequests = 0;
   let textAborts = 0;
   let finishTextResponse: (() => void) | undefined;
-  const server = await createStudioServer({ store, engine, runtime, models, integrationFetch: async (input, init) => {
+  const localModel = { id: LOCAL_TEXT_MODEL.id, name: LOCAL_TEXT_MODEL.name, inputTokenLimit: 5888, outputTokenLimit: 2048 };
+  const localState: LocalTextStatus = {
+    revision: 0, model: { ...LOCAL_TEXT_MODEL }, phase: 'idle', ready: false, installed: false, busy: false, message: '', error: null, download: null, gpuId: null, gpuIds: [],
+    gpus: inventory.gpus.map(gpu => ({ id: gpu.id, name: gpu.name, memoryBytes: gpu.memory.totalBytes, supported: true, ...(gpu.pciAddress ? { pciAddress: gpu.pciAddress } : {}) })),
+  };
+  let localPreparations = 0;
+  let localRuns = 0;
+  let localReleases = 0;
+  let localUnloadFails = false;
+  const localText: NonNullable<Parameters<typeof createStudioServer>[0]['localText']> = {
+    initialize: async () => {},
+    status: async () => structuredClone(localState),
+    prepare: async body => {
+      assert.deepEqual(body, { modelId: LOCAL_TEXT_MODEL.id });
+      localPreparations++;
+      Object.assign(localState, { phase: 'downloading', busy: true, message: 'Downloading and verifying MiMo Q8_0', download: { receivedBytes: 0, totalBytes: LOCAL_TEXT_MODEL.sizeBytes } });
+      return structuredClone(localState);
+    },
+    configure: async body => {
+      const input = body as { revision: number; gpuIds: string[] };
+      assert.equal(input.revision, localState.revision);
+      assert.ok(input.gpuIds.every(id => inventory.gpus.some(gpu => gpu.id === id)));
+      localState.revision++; localState.gpuIds = [...input.gpuIds];
+      return structuredClone(localState);
+    },
+    models: async () => ({ provider: 'local', models: localState.ready ? [localModel] : [] }),
+    run: async (modelId, signal, work) => {
+      assert.equal(modelId, LOCAL_TEXT_MODEL.id); assert.equal(localState.ready, true);
+      signal.throwIfAborted(); localRuns++;
+      Object.assign(localState, { phase: 'running', busy: true, gpuId: localState.gpuIds[0] || inventory.gpus[0].id });
+      try { return await work({ provider: 'openai-compatible', baseUrl: 'http://localhost:8080/v1', apiKey: 'browser-local-runtime-secret' }, localModel); }
+      finally { Object.assign(localState, { phase: signal.aborted ? 'ready' : 'loaded', busy: false, ...(signal.aborted ? { gpuId: null } : {}) }); }
+    },
+    release: async () => {
+      localReleases++;
+      if (localUnloadFails) {
+        localUnloadFails = false; localState.phase = 'failed'; localState.error = 'Could not confirm the local model stopped. Retry unloading it.';
+        throw new ApiError(503, 'LOCAL_TEXT_STOP_FAILED', localState.error);
+      }
+      Object.assign(localState, { phase: 'ready', gpuId: null, error: null, message: 'GPU memory released' });
+      return structuredClone(localState);
+    },
+    evictIdle: async () => { if (localState.phase !== 'loaded') return false; Object.assign(localState, { phase: 'ready', gpuId: null }); return true; },
+    close: async () => {},
+  } satisfies Pick<LocalTextRuntime, 'initialize' | 'status' | 'prepare' | 'configure' | 'release' | 'models' | 'run' | 'evictIdle' | 'close'>;
+  const server = await createStudioServer({ store, engine, runtime, models, localText, integrationFetch: async (input, init) => {
     integrationRequests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
     return Response.json({ data: [] }, { status: integrationResponseStatus });
   }, textFetch: async (input, init) => {
     const url = String(input);
     if (url.endsWith('/models')) return Response.json({ data: [{ id: 'fixture-text' }] });
-    assert.equal(url, 'http://127.0.0.1:18081/v1/chat/completions');
-    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer browser-text-key-ef56');
+    assert.ok(['http://127.0.0.1:18081/v1/chat/completions', 'http://localhost:8080/v1/chat/completions'].includes(url));
+    assert.equal(new Headers(init?.headers).get('authorization'), url.startsWith('http://localhost:8080/') ? 'Bearer browser-local-runtime-secret' : 'Bearer browser-text-key-ef56');
     textRequests++;
     if (holdTextResponse) await new Promise<void>((resolve, reject) => {
       const aborted = () => { textAborts++; reject(new DOMException('Aborted', 'AbortError')); };
@@ -960,6 +1009,78 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate(`(() => { const panel = document.querySelector(${JSON.stringify(assistantScope)}), rect = panel.getBoundingClientRect(); return rect.width <= 366 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && panel.scrollWidth <= panel.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth; })()`), true, 'The prompt assistant fits a narrow viewport');
   await browser.screenshot(join(output, 'prompt-assistant-mobile.png'));
   await browser.key('Escape');
+  await browser.fill('#image-prompt', assistantDraft);
+
+  await browser.click('header button[aria-label="Models"]');
+  await browser.click('#models-tab-language');
+  await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language models opens before local setup');
+  await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'local');
+  const localScope = '#models-panel-language section[aria-label="Local language model"]';
+  await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes(${JSON.stringify(LOCAL_TEXT_MODEL.name)})`, 'The bundled MiMo model appears in Local Studio');
+  assert.equal(await browser.evaluate("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]').value"), 'local');
+  assert.equal(await browser.evaluate("!!document.querySelector('#models-panel-language input[type=url]')"), false, 'Managed local models require no manual endpoint URL');
+  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Use Studio GPUs automatically\"]').checked"), true, 'Local models follow Studio GPUs by default');
+  await browser.click('input[aria-label="Use Studio GPUs automatically"]');
+  await browser.until("document.querySelectorAll('input[type=checkbox][name=local-text-gpu]:checked').length === 2", 'An override exposes both detected GPUs as checked boxes');
+  await browser.click('input[name="local-text-gpu"][value="amd:9700a"]');
+  await clickScopedText(localScope, 'Download model');
+  await browser.until(`!!document.querySelector(${JSON.stringify(`${localScope} progress`)})`, 'The model download starts from the panel');
+  assert.deepEqual(localState.gpuIds, ['amd:9700b'], 'Download automatically saves the chosen GPU override');
+  assert.equal(localPreparations, 1, 'One click starts exactly one managed setup');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#models-panel-language button')).some(button => button.textContent.trim() === 'Use for assistant')"), false, 'The local model cannot be selected while it is still downloading');
+  localState.download!.receivedBytes = LOCAL_TEXT_MODEL.sizeBytes / 2;
+  await browser.until(`document.querySelector(${JSON.stringify(`${localScope} progress`)})?.value === 50`, 'Download progress is refreshed from the server');
+  await browser.screenshot(join(output, 'local-language-download-mobile.png'));
+  await browser.click('button[aria-label="Close models"]');
+  assert.equal(localState.busy, true, 'Closing Models leaves managed setup running');
+  await browser.click('header button[aria-label="Models"]');
+  await browser.click('#models-tab-language');
+  await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language model controls reopen during setup');
+  await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'local');
+  await browser.until(`document.querySelector(${JSON.stringify(`${localScope} progress`)})?.value === 50`, 'Reopening Models restores the ongoing download');
+  assert.equal(localPreparations, 1, 'Reopening the modal does not restart setup');
+  Object.assign(localState, { phase: 'ready', ready: true, installed: true, busy: false, download: null, message: 'MiMo is ready.' });
+  await browser.until("Array.from(document.querySelectorAll('#models-panel-language button')).some(button => button.textContent.trim() === 'Use for assistant' && !button.matches(':disabled'))", 'The installed and prepared model becomes selectable');
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await modelFrame(false);
+  await browser.evaluate("document.querySelectorAll('#models-dialog, #models-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
+  await browser.screenshot(join(output, 'local-language-ready-desktop.png'));
+  await clickScopedText('#models-panel-language', 'Use for assistant');
+  await browser.until("Array.from(document.querySelectorAll('#models-panel-language [role=status]')).some(status => status.textContent.includes('Assistant model saved'))", 'MiMo is saved through the real assistant settings API');
+  assert.deepEqual(await browser.evaluate("fetch('/api/text/settings').then(response => response.json()).then(settings => settings.assistant)"), { provider: 'local', modelId: LOCAL_TEXT_MODEL.id });
+  await browser.click('button[aria-label="Close models"]');
+  await browser.fill('#image-prompt', originalAssistantPrompt);
+  await openAssistant();
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(assistantScope)}).textContent`), /Local Studio · mimo-v2.6-distill-qwen-9b/, 'The dock identifies the managed local provider');
+  assistantPrompt = 'A ceramic teapot on an oak table in a bright kitchen.';
+  await clickScopedText(assistantScope, 'Refine prompt');
+  await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(assistantPrompt)}`, 'The real refinement service uses the managed local endpoint');
+  assert.equal(localRuns, 1);
+  assert.equal(localState.phase, 'loaded', 'An idle local model remains loaded after a successful request');
+  assert.equal(localState.gpuId, 'amd:9700b', 'The local runtime uses the saved GPU selection');
+  assert.equal(store.jobs(store.owner()!.id).length, assistantJobs, 'Local refinement does not create image jobs');
+  await browser.key('Escape');
+  await browser.click('header button[aria-label="Models"]');
+  await browser.click('#models-tab-language');
+  await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('Loaded on GPU 2')`, 'Language models reports resident GPU usage');
+  assert.equal(await browser.evaluate("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]').value"), 'local', 'The saved local provider is selected when Models reopens');
+  await modelFrame(false);
+  await browser.screenshot(join(output, 'local-language-loaded-desktop.png'));
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await modelFrame(true);
+  await browser.screenshot(join(output, 'local-language-loaded-mobile.png'));
+  localUnloadFails = true;
+  await clickScopedText(localScope, 'Unload from GPU');
+  await browser.until(`Array.from(document.querySelectorAll(${JSON.stringify(`${localScope} button`)})).some(button => button.textContent.trim() === 'Retry unload')`, 'A failed stop keeps a visible retry action');
+  assert.equal(localState.gpuId, 'amd:9700b', 'A failed stop preserves the resident GPU allocation');
+  await clickScopedText(localScope, 'Retry unload');
+  await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('Ready to use') && !document.querySelector(${JSON.stringify(`${localScope} [role=alert]`)})`, 'Retry confirms the model stopped and clears its error');
+  assert.equal(localState.gpuId, null); assert.equal(localReleases, 2);
+  await browser.click('input[aria-label="Use Studio GPUs automatically"]');
+  await clickScopedText(localScope, 'Apply GPU selection');
+  await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('GPU selection saved')`, 'An installed model can return to automatic Studio GPU selection');
+  assert.deepEqual(localState.gpuIds, []);
+  await browser.click('button[aria-label="Close models"]');
   await browser.fill('#image-prompt', assistantDraft);
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');
