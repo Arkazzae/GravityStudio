@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkCapabilities, compileGeneration, getModel, verifySnapshot } from "../../packages/inference/index.ts";
+import { checkCapabilities, compileGeneration, FAMILY_RECIPES, getModel, verifySnapshot } from "../../packages/inference/index.ts";
 import type { ComfyDiscovery, InputImage } from "../../packages/inference/index.ts";
 import qwenObjectInfo from "./fixtures/qwen-image-2.1-object-info.json" with { type: "json" };
 import { sdxlObjectInfo } from "./fake-comfy.ts";
@@ -53,13 +53,57 @@ test("Qwen references retain slot order, VAE conditioning and the requested outp
     assert.deepEqual(link, [`reference_${index}`, 0]);
     assert.equal(snapshot.graph[`reference_${index}`].inputs.image, `grav/request/reference-${index}.png`);
   }
-  assert.equal(snapshot.graph.conditioning.inputs.resolution, 1024);
+  assert.equal(snapshot.graph.conditioning.inputs.resolution, 992);
   assert.deepEqual(snapshot.graph.sample.inputs.latent_image, ["latent", 0]);
-  assert.deepEqual(snapshot.graph.latent.inputs, { width: 1536, height: 1024, batch_size: 1 });
+  assert.deepEqual(snapshot.graph.latent.inputs, { width: 1568, height: 1056, batch_size: 1 });
   assert.equal(snapshot.parameters.denoise, 1);
   assert.equal(snapshot.graph.sample.inputs.denoise, 1);
   assert.equal(snapshot.graph.sample.inputs.cfg, 1);
   assert.equal(snapshot.inputs.length, 10);
+});
+
+test("Qwen reference edits avoid reported sampling grids and save exactly the requested dimensions", () => {
+  for (const [width, height, sampleWidth, sampleHeight] of [[1024, 1024, 1056, 1056], [1536, 1024, 1568, 1056], [768, 1024, 768, 1024]]) {
+    const snapshot = compileGeneration({ ...request, operation: "reference", images: references.slice(0, 1), width, height });
+    assert.equal(snapshot.recipe.revision, "2");
+    assert.deepEqual([snapshot.parameters.width, snapshot.parameters.height], [width, height]);
+    assert.deepEqual(snapshot.graph.latent.inputs, { width: sampleWidth, height: sampleHeight, batch_size: 1 });
+    assert.equal(snapshot.graph.conditioning.inputs.resolution, 992);
+    if (sampleWidth !== width) {
+      assert.equal(snapshot.graph.output_resize.class_type, "ImageScale");
+      assert.deepEqual(snapshot.graph.output_resize.inputs, { image: ["decode", 0], upscale_method: "bicubic", width, height, crop: "disabled" });
+      assert.deepEqual(snapshot.graph.output.inputs.images, ["output_resize", 0]);
+    } else {
+      assert.equal("output_resize" in snapshot.graph, false);
+      assert.deepEqual(snapshot.graph.output.inputs.images, ["decode", 0]);
+    }
+    assert.equal(checkCapabilities(snapshot, discovery()).available, true);
+    verifySnapshot(snapshot);
+
+    const textOnly = compileGeneration({ ...request, width, height });
+    assert.deepEqual(textOnly.graph.latent.inputs, { width, height, batch_size: 1 });
+    assert.equal(textOnly.graph.conditioning.inputs.resolution, 1024);
+    assert.equal("output_resize" in textOnly.graph, false);
+    assert.deepEqual(textOnly.graph.output.inputs.images, ["decode", 0]);
+  }
+});
+
+test("every affected Qwen reference canvas stays within the pixel budget after adjustment", () => {
+  const { min, max, multiple, maxPixels } = FAMILY_RECIPES[modelId].dimensions;
+  let affected = 0;
+  for (let width = min; width <= max; width += multiple) {
+    for (let height = min; height <= max; height += multiple) {
+      if (width * height > maxPixels || (width / 16) * (height / 16) % 2048 !== 0) continue;
+      affected++;
+      const snapshot = compileGeneration({ ...request, operation: "reference", images: references.slice(0, 1), width, height });
+      const sampleWidth = Number(snapshot.graph.latent.inputs.width), sampleHeight = Number(snapshot.graph.latent.inputs.height);
+      assert(sampleWidth * sampleHeight <= maxPixels, `${width}x${height} exceeds the sampling budget`);
+      assert.notEqual((sampleWidth / 16) * (sampleHeight / 16) % 2048, 0, `${width}x${height} still uses an affected grid`);
+      assert.equal(snapshot.graph.output_resize.inputs.width, width);
+      assert.equal(snapshot.graph.output_resize.inputs.height, height);
+    }
+  }
+  assert(affected > 0);
 });
 
 test("Qwen enforces its 32-pixel grid, native pixel budget and ten-reference contract", () => {

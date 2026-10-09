@@ -31,7 +31,7 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
     dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 0,
   },
   "qwen-image-2.1": {
-    id: "qwen-image-2.1", name: "Qwen Image 2.1", revision: "1",
+    id: "qwen-image-2.1", name: "Qwen Image 2.1", revision: "2",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
     dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,

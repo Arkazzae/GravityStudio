@@ -130,15 +130,20 @@ function kleinGraph(model: ModelManifest, p: ResolvedParameters, images: InputIm
 }
 
 function qwenImage21Graph(model: ModelManifest, p: ResolvedParameters, images: InputImage[]): WorkflowGraph {
+  // Reference edits can become noisy on these sampling grids in ComfyUI v0.39.0:
+  // https://github.com/Comfy-Org/ComfyUI/issues/16435
+  // Use a nearby grid, then restore the requested output size after decoding.
+  const resizeOutput = images.length > 0 && (p.width / 16) * (p.height / 16) % 2048 === 0;
+  const width = p.width + (resizeOutput ? 32 : 0), height = p.height + (resizeOutput ? 32 : 0);
+  check(width * height <= FAMILY_RECIPES[model.familyId].dimensions.maxPixels, "The reference canvas exceeds this recipe's sampling pixel budget.");
   const graph: WorkflowGraph = {
     model: { class_type: "UNETLoader", inputs: { unet_name: artifact(model, "diffusion"), weight_dtype: "default" } },
     cache: { class_type: "QwenImage21Cache", inputs: { model: ["model", 0], device: "auto", dtype: "default" } },
     clip: { class_type: "CLIPLoader", inputs: { clip_name: artifact(model, "text-encoder"), type: "qwen_image", device: "default" } },
     vae: { class_type: "VAELoader", inputs: { vae_name: artifact(model, "vae") } },
-    conditioning: { class_type: "TextEncodeQwenImage21", inputs: { clip: ["clip", 0], prompt: p.prompt, negative_prompt: p.negativePrompt, resolution: 1024 } },
-    // The official workflow's custom-size branch preserves the requested canvas.
+    conditioning: { class_type: "TextEncodeQwenImage21", inputs: { clip: ["clip", 0], prompt: p.prompt, negative_prompt: p.negativePrompt, resolution: images.length ? 992 : 1024 } },
     // Reference encoding keeps aspect ratio and a separate, bounded pixel budget.
-    latent: { class_type: "EmptyLatentImage", inputs: { width: p.width, height: p.height, batch_size: 1 } },
+    latent: { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
   };
   if (images.length) graph.conditioning.inputs.vae = ["vae", 0];
   for (const [index, image] of images.entries()) {
@@ -148,7 +153,8 @@ function qwenImage21Graph(model: ModelManifest, p: ResolvedParameters, images: I
   }
   graph.sample = { class_type: "KSampler", inputs: { model: ["cache", 0], positive: ["conditioning", 0], negative: ["conditioning", 1], latent_image: ["latent", 0], seed: p.seed, steps: p.steps, cfg: p.cfg, sampler_name: p.sampler, scheduler: p.scheduler, denoise: 1 } };
   graph.decode = { class_type: "VAEDecode", inputs: { samples: ["sample", 0], vae: ["vae", 0] } };
-  graph.output = { class_type: "SaveImage", inputs: { images: ["decode", 0], filename_prefix: "grav" } };
+  if (resizeOutput) graph.output_resize = { class_type: "ImageScale", inputs: { image: ["decode", 0], upscale_method: "bicubic", width: p.width, height: p.height, crop: "disabled" } };
+  graph.output = { class_type: "SaveImage", inputs: { images: [resizeOutput ? "output_resize" : "decode", 0], filename_prefix: "grav" } };
   return graph;
 }
 
