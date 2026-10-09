@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1132.0",
     "@gravity/hardware": "workspace:*",
     "@gravity/inference": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
-    "zod": "4.5.4",
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "zod": "4.5.4"
   }
 }
