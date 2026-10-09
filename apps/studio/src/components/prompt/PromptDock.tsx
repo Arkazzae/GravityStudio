@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { GenerateButton } from '@/components/ui/GenerateButton';
+import { FileDropOverlay } from '@/components/ui/FileDropOverlay';
 import { ModelMenu } from './ModelMenu';
 import { ReferencePicker } from './ReferencePicker';
 import { ImageReferenceInput } from './ImageReferenceInput';
@@ -9,6 +10,8 @@ import { DockSettings } from './DockSettings';
 import { PromptAssistant } from './PromptAssistant';
 import { imageSizeProblem, type ImageAspectRatio } from '@/lib/image-settings';
 import { api, errorMessage, type InputImage, type StudioModel, type Job } from '@/lib/api';
+import { imageFileProblem } from '@/lib/image-files';
+import { useFileIntake } from '@/lib/use-file-intake';
 
 export interface Draft { aspect?: ImageAspectRatio | 'custom'; modelId: string; prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfg: number; seed: string; denoise: number; images: InputImage[] }
 export const initialDraft: Draft = { aspect: 'auto', modelId: '', prompt: '', negativePrompt: '', width: 1024, height: 1024, steps: 30, cfg: 7, seed: '', denoise: .75, images: [] };
@@ -19,6 +22,10 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   const referenceTrigger = useRef<HTMLButtonElement>(null);
   const prompt = useRef<HTMLTextAreaElement>(null);
   const lastAttempt = useRef<{ body: string; key: string } | null>(null);
+  const pendingUpload = useRef<AbortController | null>(null);
+  const uploadIdentity = `${sessionIdentity}\0${draft.modelId}`;
+  const latestIdentity = useRef(uploadIdentity);
+  latestIdentity.current = uploadIdentity;
   const [busy, setBusy] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -33,6 +40,13 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   const sizeError = model ? imageSizeProblem(model, draft.width, draft.height) : null;
   const canSubmit = connected && model?.ready && !!draft.prompt.trim() && draft.images.length <= maxImages && !sizeError && !busy && !assistantBusy && !uploading;
   const update = (change: Partial<Draft>) => setDraft(current => ({ ...current, ...change }));
+  const { dragging } = useFileIntake({ onFiles: files => { void upload(files); } });
+  useEffect(() => () => { pendingUpload.current?.abort(); }, []);
+  useEffect(() => {
+    pendingUpload.current?.abort();
+    pendingUpload.current = null;
+    setUploading(false);
+  }, [uploadIdentity]);
   useLayoutEffect(() => { if (!prompt.current) return; prompt.current.style.height = '0px'; prompt.current.style.height = `${Math.min(160, Math.max(40, prompt.current.scrollHeight))}px`; }, [draft.prompt]);
   useEffect(() => {
     const element = prompt.current;
@@ -50,21 +64,33 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   useEffect(() => { if (!dock.current) return; const observer = new ResizeObserver(([entry]) => onHeight(entry.contentRect.height + 24)); observer.observe(dock.current); return () => observer.disconnect(); }, [onHeight]);
   async function upload(files: File[], signal?: AbortSignal): Promise<{ ok: boolean; error?: string }> {
     const reject = (message: string) => { setError(message); return { ok: false, error: message }; };
-    if (!files.length || uploading) return reject(uploading ? 'Wait for the current upload to finish.' : 'Choose an image to add.');
+    if (!files.length || pendingUpload.current) return reject(pendingUpload.current ? 'Wait for the current upload to finish.' : 'Choose an image to add.');
+    if (!connected) return reject('Wait for the studio server before adding images.');
+    if (!maxImages) return reject('Choose a model that supports reference images to add these files.');
     if (files.length + draft.images.length > maxImages) return reject(`This model accepts up to ${maxImages} reference image${maxImages === 1 ? '' : 's'}.`);
-    if (files.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type))) return reject('Choose PNG, JPEG, or WebP images.');
+    const problem = imageFileProblem(files);
+    if (problem) return reject(problem);
+    const controller = new AbortController();
+    pendingUpload.current = controller;
+    const requestSignal = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
     setUploading(true); setError('');
     const added: InputImage[] = [];
     try {
       for (const file of files) {
-        signal?.throwIfAborted();
-        added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name) }, body: file, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000) }));
+        requestSignal.throwIfAborted();
+        added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name) }, body: file, signal: AbortSignal.any([requestSignal, AbortSignal.timeout(45_000)]) }));
       }
-      signal?.throwIfAborted();
-      setDraft(current => ({ ...current, images: [...current.images, ...added] }));
+      requestSignal.throwIfAborted();
+      if (latestIdentity.current !== uploadIdentity) return { ok: false };
+      setDraft(current => current.modelId === draft.modelId && current.images.length + added.length <= maxImages ? { ...current, images: [...current.images, ...added] } : current);
       return { ok: true };
-    } catch (error) { return signal?.aborted ? { ok: false } : reject(errorMessage(error)); }
-    finally { setUploading(false); }
+    } catch (error) {
+      if (requestSignal.aborted || latestIdentity.current !== uploadIdentity) return { ok: false };
+      if ((error as { status?: number }).status === 401) onSessionExpired();
+      return reject(errorMessage(error));
+    } finally {
+      if (pendingUpload.current === controller) { pendingUpload.current = null; setUploading(false); }
+    }
   }
   async function submit() {
     if (!canSubmit) return;
@@ -81,9 +107,9 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   return <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-4">
     <div ref={dock} data-workspace-scroll="dock" className="animate-dock-in pointer-events-auto flex max-h-[70dvh] w-full max-w-[1120px] flex-col gap-3 overflow-y-auto rounded-dock border border-white/[0.07] bg-raise p-3 shadow-dock transition-colors duration-200 focus-within:border-white/[0.14] sm:flex-row">
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className={`flex items-start gap-3 pl-1 pt-0.5 ${draft.images.length > 1 ? "flex-col" : ""}`} onDragOver={event => { if (maxImages) event.preventDefault(); }} onDrop={event => { event.preventDefault(); if (maxImages) void upload(Array.from(event.dataTransfer.files)); }}>
+        <div className={`flex items-start gap-3 pl-1 pt-0.5 ${draft.images.length > 1 ? "flex-col" : ""}`}>
           <ImageReferenceInput browseRef={referenceTrigger} images={draft.images} maxImages={maxImages} uploading={uploading} onUpload={files => { void upload(files); }} onRemove={id => update({ images: draft.images.filter(image => image.id !== id) })} onClear={() => update({ images: [] })} onBrowse={onBrowse} />
-          <label htmlFor="image-prompt" className="sr-only">{draft.images.length ? 'Edit instructions' : 'Image prompt'}</label><textarea ref={prompt} id="image-prompt" value={draft.prompt} maxLength={16000} onChange={event => update({ prompt: event.target.value })} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} onPaste={event => { if (maxImages && event.clipboardData.files.length) { event.preventDefault(); void upload(Array.from(event.clipboardData.files)); } }} rows={1} placeholder={draft.images.length > 1 ? 'Describe how to use these references. Refer to them by number.' : draft.images.length ? 'Describe what you want to change in this image.' : 'Describe the shot you want.'} className="max-h-40 min-h-10 min-w-0 w-full resize-none bg-transparent py-2 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-2" />
+          <label htmlFor="image-prompt" className="sr-only">{draft.images.length ? 'Edit instructions' : 'Image prompt'}</label><textarea ref={prompt} id="image-prompt" value={draft.prompt} maxLength={16000} onChange={event => update({ prompt: event.target.value })} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} rows={1} placeholder={draft.images.length > 1 ? 'Describe how to use these references. Refer to them by number.' : draft.images.length ? 'Describe what you want to change in this image.' : 'Describe the shot you want.'} className="max-h-40 min-h-10 min-w-0 w-full resize-none bg-transparent py-2 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-2" />
         </div>
         <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1.5 max-sm:[&>div:first-child]:min-w-0 max-sm:[&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
           <ModelMenu disabled={uploading} onManage={onOpenModels} models={models} value={draft.modelId} referenceCount={draft.images.length} onChange={id => { const next = models.find(model => model.id === id); if (next) setDraft(modelDraft(draft, next)); }} />
@@ -96,6 +122,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
+    {dragging && <FileDropOverlay target="references" className="fixed inset-4 top-[60px]" title={maxImages ? 'Drop images to add references' : 'This model does not support reference images'} detail={uploading ? 'Wait for the current upload to finish.' : maxImages ? `PNG, JPEG or WebP · 20 MiB per image · ${Math.max(0, maxImages - draft.images.length)} of ${maxImages} slots available` : 'Choose a model that accepts reference images.'} />}
     {(browsing || assetsVisited) && <ReferencePicker open={browsing} triggerRef={referenceTrigger} jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={onCloseAssets} unavailableReason={maxImages < 1 ? 'Choose a model that supports reference images to use these assets.' : undefined} />}
   </div>;
 }
