@@ -33,34 +33,49 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   inventory.gpus = inventory.gpus.map((gpu, index) => ({ ...gpu, name: 'AMD Radeon AI PRO R9700', pciAddress: index ? '0000:07:00.0' : '0000:03:00.0' }));
   const engine = new Engine(store, { detect: async () => ({ ...inventory, detectedAt: new Date().toISOString() }), pollMs: 100 });
   const comfy = await fakeComfy();
+  const otherComfy = await fakeComfy();
   const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
   const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
   comfy.state.outputBytes = Uint8Array.from(await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="768" height="1024"><rect width="768" height="1024" fill="#24323b"/><rect x="70" y="80" width="628" height="864" rx="4" fill="#344b4c"/><text x="384" y="488" text-anchor="middle" font-family="sans-serif" font-size="26" fill="#d1fe17">COMFYUI PROTOCOL FIXTURE</text><text x="384" y="535" text-anchor="middle" font-family="sans-serif" font-size="18" fill="#e8edeb">Browser integration test · no model inference</text></svg>')).png().toBuffer());
   let completeAutomatically = true;
   const completion = setInterval(() => {
     if (!completeAutomatically) return;
-    const pending = comfy.state.pending.splice(0);
-    for (const prompt of pending) comfy.state.history[String(prompt[1])] = completed(prompt);
+    for (const worker of [comfy, otherComfy]) {
+      const pending = worker.state.pending.splice(0);
+      for (const prompt of pending) worker.state.history[String(prompt[1])] = completed(prompt);
+    }
   }, 150);
   const frontendPort = await freePort();
   const origin = `http://127.0.0.1:${frontendPort}`;
   let runtimeState: RuntimeSetupStatus = { phase: 'idle', busy: false, message: '', error: null, engine: null, workerCount: 0, updatedAt: null };
   let chosenGpuIds: string[] = [];
   let runtimeOperation: Promise<void> | undefined;
+  const managedBindings = [
+    { id: 'browser-comfy', baseUrl: comfy.url, deviceId: 'amd:9700b' },
+    { id: 'browser-comfy-first', baseUrl: otherComfy.url, deviceId: 'amd:9700a' },
+  ];
   // Only container execution and the Hugging Face response are fixtures; the owner API,
   // model download, validation, activation, settings and generation use their real code.
   const runtime = {
     status: () => structuredClone(runtimeState),
+    managedWorkers: async () => store.settings().workers.length ? structuredClone(managedBindings) : [],
     start: (body: Record<string, unknown>) => {
       chosenGpuIds = body.gpuIds as string[];
       runtimeState = { ...runtimeState, phase: 'building', busy: true, message: 'Preparing the image engine…' };
       runtimeOperation = delay(750).then(async () => {
         const settings = store.settings();
-        settings.workers = [{ id: 'browser-comfy', name: 'GPU 2', baseUrl: comfy.url, enabled: true, deviceIds: chosenGpuIds, location: 'local', maxConcurrentJobs: 1 }];
+        settings.workers = [
+          { id: 'browser-comfy', name: 'GPU 2', baseUrl: comfy.url, enabled: chosenGpuIds.includes('amd:9700b'), deviceIds: ['amd:9700b'], location: 'local', maxConcurrentJobs: 1 },
+          { id: 'browser-comfy-first', name: 'GPU 1', baseUrl: otherComfy.url, enabled: chosenGpuIds.includes('amd:9700a'), deviceIds: ['amd:9700a'], location: 'local', maxConcurrentJobs: 1 },
+        ];
+        const enabledIds = settings.workers.filter(worker => worker.enabled).map(worker => worker.id);
+        for (const configuration of settings.modelConfigurations) if (configuration.workerIds.some(id => settings.workers.some(worker => worker.id === id))) configuration.workerIds = [...enabledIds];
+        settings.policy.maxConcurrentJobs = enabledIds.length;
         store.saveSettings(settings);
         await mkdir(join(directory, 'runtime'), { recursive: true });
         await writeFile(join(directory, 'runtime/plan.json'), JSON.stringify({ workers: settings.workers }));
-        runtimeState = { ...runtimeState, phase: 'ready', busy: false, engine: 'podman', workerCount: 1, message: 'Ready', updatedAt: new Date().toISOString() };
+        engine.invalidateWorkers();
+        runtimeState = { ...runtimeState, phase: 'ready', busy: false, engine: 'podman', workerCount: enabledIds.length, message: 'Ready', updatedAt: new Date().toISOString() };
       });
       return structuredClone(runtimeState);
     },
@@ -70,8 +85,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const source = checkpointUrl.replace('/blob/', '/resolve/');
   const modelId = `hf-${createHash('sha256').update(source).digest('hex').slice(0, 16)}`;
   const filename = `${modelId}/checkpoint.safetensors`;
-  comfy.state.info.CheckpointLoaderSimple.input!.required!.ckpt_name = [[filename]];
-  comfy.state.responseOverride = path => path === '/models/checkpoints' ? { body: JSON.stringify([filename]) } : undefined;
+  for (const worker of [comfy, otherComfy]) {
+    worker.state.info.CheckpointLoaderSimple.input!.required!.ckpt_name = [[filename]];
+    worker.state.responseOverride = path => path === '/models/checkpoints' ? { body: JSON.stringify([filename]) } : undefined;
+  }
   const header = Buffer.from(JSON.stringify({ fixture: { dtype: 'F32', shape: [1], data_offsets: [0, 4] } }));
   const prefix = Buffer.alloc(8); prefix.writeBigUInt64LE(BigInt(header.length));
   const fixtureCheckpoint = Buffer.concat([prefix, header, Buffer.alloc(4)]);
@@ -85,7 +102,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await engine.start();
   const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = ''; child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); }); child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); });
-  t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await comfy.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await Promise.all([comfy.close(), otherComfy.close()]); store.close(); await rm(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ } if (child.exitCode !== null) throw new Error(`Next could not start: ${logs}`); if (attempt === 99) throw new Error(`Next startup timed out: ${logs}`); await delay(100); }
   const browser = await openBrowser(t);
   async function clickScopedText(scope: string, label: string) {
@@ -437,8 +454,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(comfy.state.submissions.filter(item => item.prompt_id === unknown.id).length, 1, 'Closing does not resubmit');
   await browser.click('header button[aria-label="Settings"]');
   await browser.until("document.querySelector('#settings-dialog[open]')?.innerText.includes('GPUs to use')", 'Mobile settings dialog');
+  await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
+  await clickScopedText('#settings-dialog', 'Apply GPU selection');
+  await browser.until("document.querySelector('#settings-dialog')?.innerText.includes('2 GPUs ready for generation')", 'Both selected GPUs are ready');
+  assert.deepEqual(store.settings().workers.map(worker => worker.enabled), [true, true]);
+  assert.deepEqual(store.settings().modelConfigurations.find(configuration => configuration.modelId === modelId)?.workerIds, ['browser-comfy', 'browser-comfy-first']);
+  const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Connections', 'Model files', 'API access']);
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
     await browser.until(`document.querySelector('#settings-tab-${section}')?.getAttribute('aria-selected') === 'true' && document.querySelector('#settings-panel-${section}')?.hidden === false`, `${key} selects the ${section} section`);
@@ -446,18 +470,66 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(await browser.evaluate(`document.querySelector('#settings-panel-${section}').getAttribute('aria-labelledby')`), `settings-tab-${section}`, 'The selected panel is labelled by its tab');
   }
   await browser.click('#settings-tab-gpus');
+  await settingsKey('ArrowDown', 'generation');
+  await browser.fill('#settings-panel-generation input[name="ramReserveGiB"]', '9');
+  await browser.fill('#settings-panel-generation input[name="vramReserveGiB"]', '1.5');
+  await browser.fill('#settings-panel-generation input[name="maxConcurrentJobs"]', '1');
+  await browser.fill('#settings-panel-generation select[name="idleUnloadSeconds"]', '300');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').textContent.includes('Keep models ready')"), true, 'Retention is controlled in Generation');
   await settingsKey('ArrowDown', 'connections');
   const workerNameInput = '#settings-panel-connections input[maxlength="80"]';
+  await browser.until("document.querySelector('#settings-panel-connections')?.innerText.includes('Assigned GPU')", 'Managed worker shows its assigned GPU');
+  assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-connections input[name=worker-gpu]')"), false, 'Managed worker GPU assignment cannot be remapped with a radio');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-connections input[type=url]').readOnly"), true, 'Managed endpoint is read-only');
+  assert.equal(await browser.evaluate("(() => { const label = Array.from(document.querySelectorAll('#settings-panel-connections label')).find(label => label.textContent.startsWith('Worker location')); const control = label?.querySelector('input,select'); return !!control && (control.readOnly || control.disabled); })()"), true, 'Managed worker location is read-only');
+  assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-connections input[type=checkbox], #settings-panel-connections button[aria-label=\"Remove selected worker\"]')"), false, 'Managed enable and remove controls are absent');
+  await clickScopedText('#settings-panel-connections', 'Choose GPUs');
+  await browser.until("document.querySelector('#settings-tab-gpus')?.getAttribute('aria-selected') === 'true'", 'Managed connection links to the shared GPU checkboxes');
+  assert.equal(await browser.evaluate("document.querySelectorAll('input[name=runtime-gpu]:checked').length"), 2);
+  await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#settings-panel-gpus button')).find(button => button.textContent.trim() === 'Apply GPU selection')?.disabled"), true, 'Unsaved settings block applying a changed GPU selection');
+  assert.deepEqual(chosenGpuIds.slice().sort(), ['amd:9700a', 'amd:9700b'], 'Editing GPU checkboxes does not start setup');
+  await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
+  assert.equal(await browser.evaluate("document.querySelectorAll('input[name=runtime-gpu]:checked').length"), 2, 'GPU selection is restored before returning to the draft');
+  await browser.click('#settings-tab-connections');
+  await clickScopedText('#settings-panel-connections', 'Add worker');
+  await browser.until("document.querySelectorAll('#settings-panel-connections input[type=radio][name=worker-gpu]').length === 2", 'A manual worker retains one-GPU radio assignment');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-connections input[type=url]').readOnly"), false, 'Manual endpoints remain editable');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-connections input[type=url]').value"), '', 'A new manual worker starts without an assumed endpoint');
+  await browser.fill('#settings-panel-connections input[type=url]', comfy.url);
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-connections input[type=url]').readOnly"), false, 'Typing a managed endpoint does not convert an unsaved manual worker into a managed connection');
+  await browser.click('#settings-panel-connections button[aria-label="Remove selected worker"]');
+  await browser.until("!document.querySelector('#settings-panel-connections input[name=worker-gpu]')", 'Removing the unsaved manual worker returns to the managed worker');
   await browser.fill(workerNameInput, 'Unsaved browser worker');
+  await browser.click('#settings-tab-connections');
   await settingsKey('ArrowDown', 'models');
+  await browser.fill('#settings-panel-models select', modelId);
+  const modelWorkers = '#settings-panel-models input[type="checkbox"][name="model-worker"]';
+  const selectedModelWorkers = `Array.from(document.querySelectorAll('${modelWorkers}:checked')).map(input => input.value)`;
+  await browser.until(`document.querySelectorAll('${modelWorkers}').length === 2`, 'Model supports assignment to both workers');
+  assert.equal(await browser.evaluate(`document.querySelector('${modelWorkers}').closest('fieldset').querySelector('legend').textContent.trim()`), 'Workers for this model');
+  assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy', 'browser-comfy-first'], 'An existing multi-worker assignment opens with both checkboxes checked');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-models input[name=model-auto-workers]').checked"), true, 'Imported models initially follow all Studio GPUs');
+  await browser.click(`${modelWorkers}[value="browser-comfy-first"]`);
+  assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy'], 'Unchecking one worker preserves the other selection');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-models input[name=model-auto-workers]').checked"), false, 'An explicit worker choice switches the model to manual assignment');
   const checkpointInput = '#settings-panel-models input[list="artifacts-checkpoint"]';
   await browser.fill(checkpointInput, 'unsaved-browser-checkpoint.safetensors');
+  await browser.click('#settings-tab-models');
   await settingsKey('ArrowUp', 'connections');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(workerNameInput)}).value`), 'Unsaved browser worker', 'Changing tabs preserves an unsaved connection name');
   await settingsKey('ArrowDown', 'models');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(checkpointInput)}).value`), 'unsaved-browser-checkpoint.safetensors', 'Changing tabs preserves an unsaved model filename');
+  assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy'], 'Changing tabs preserves the worker selection draft');
+  await browser.click(`${modelWorkers}[value="browser-comfy-first"]`);
+  assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy', 'browser-comfy-first'], 'Both workers can be selected together');
+  await browser.click('#settings-tab-generation');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=ramReserveGiB]').value"), '9', 'Changing tabs preserves the RAM reserve draft');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=vramReserveGiB]').value"), '1.5', 'Changing tabs preserves the VRAM reserve draft');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=maxConcurrentJobs]').value"), '1', 'Changing tabs preserves the concurrency draft');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation select[name=idleUnloadSeconds]').value"), '300', 'Changing tabs preserves the model retention draft');
   await settingsKey('Home', 'gpus');
-  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-connections').hidden && document.querySelector('#settings-panel-models').hidden"), true, 'Inactive sections remain mounted and hidden');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').hidden && document.querySelector('#settings-panel-connections').hidden && document.querySelector('#settings-panel-models').hidden"), true, 'Inactive sections remain mounted and hidden');
   await settingsKey('End', 'api');
   await browser.until("document.body.innerText.includes('API & MCP access')", 'API access settings');
   await browser.fill('input[placeholder="My MCP client"]', 'Browser test MCP');
@@ -473,6 +545,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"New access token\"]').value"), token, 'A newly created token remains available after changing sections');
   assert.equal(store.settings().workers[0].name, 'GPU 2', 'Tab navigation does not save the connection draft');
   assert.equal(store.settings().modelConfigurations.some(configuration => Object.values(configuration.artifacts).includes('unsaved-browser-checkpoint.safetensors')), false, 'Tab navigation does not save model file drafts');
+  assert.deepEqual(store.settings().policy, savedPolicy, 'Tab navigation does not save generation policy drafts');
+  assert.deepEqual(store.settings().modelConfigurations.find(configuration => configuration.modelId === modelId)?.workerIds, ['browser-comfy', 'browser-comfy-first'], 'Changing worker checkboxes does not save automatically');
   const apiResponse = await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(apiResponse.status, 200, 'The token authenticates API requests');
   const mcp = await fetch(`${origin}/api/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'browser-integration', version: '1.0.0' } } }) });
@@ -486,6 +560,18 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('[aria-label="Revoke Browser test MCP"]');
   await browser.until("document.body.innerText.includes('No access tokens yet.')", 'Token revoked');
   assert.equal((await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
+  await browser.click('#settings-tab-connections');
+  await browser.fill(workerNameInput, 'GPU 2');
+  await browser.click('#settings-tab-models');
+  await browser.fill(checkpointInput, filename);
+  await browser.click('#settings-tab-generation');
+  await clickScopedText('#settings-dialog', 'Save settings');
+  await browser.until("document.querySelector('#settings-dialog')?.innerText.includes('Configuration saved.')", 'Generation settings save through the owner API');
+  assert.deepEqual(store.settings().policy, { ...savedPolicy, ramReserveBytes: 9 * 1024 ** 3, vramReserveBytes: 1.5 * 1024 ** 3, maxConcurrentJobs: 1, idleUnloadSeconds: 300 });
+  assert.deepEqual(store.settings().modelConfigurations.find(configuration => configuration.modelId === modelId)?.workerIds, ['browser-comfy', 'browser-comfy-first'], 'Saving settings retains both model workers');
+  assert.equal(store.settings().modelConfigurations.find(configuration => configuration.modelId === modelId)?.workerSelection, 'manual', 'Saving preserves the explicit worker selection policy');
+  assert.deepEqual(store.settings().workers.map(worker => ({ id: worker.id, baseUrl: worker.baseUrl, deviceId: worker.deviceIds[0] })), managedBindings, 'Saving the generation policy preserves managed GPU bindings');
+  assert.equal('managedWorkers' in store.settings(), false, 'Managed runtime metadata stays outside persisted settings');
   await browser.click('button[aria-label="Close settings"]');
   await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes before account controls are used');
   await browser.click('[aria-label="Account"]');
