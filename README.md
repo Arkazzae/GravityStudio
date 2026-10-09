@@ -2,7 +2,7 @@
 
 A self-hosted image studio for your GPU server. Write a prompt, add reference images, and keep generations in a private gallery. A shared ComfyUI runtime serves multiple model families; adding a checkpoint does not create another container.
 
-**Development preview.** The application, queue, protocol integration and setup flow have automated tests. The managed GPU images still need validation on physical AMD and NVIDIA systems before a production release.
+**Development preview.** The application, queue, protocol integration and setup flow have automated tests. The managed ROCm runtime has completed real image generations on one dual Radeon AI PRO R9700 host. NVIDIA hardware and other AMD configurations remain unverified; see [runtime validation](deploy/comfyui/README.md#hardware-validation) for the tested scope.
 
 ## What is included
 

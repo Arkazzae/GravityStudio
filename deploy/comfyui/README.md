@@ -2,7 +2,15 @@
 
 Gravity builds one shared image per backend and starts one ComfyUI worker per selected GPU. Three NVIDIA cards therefore use three worker containers built from the same CUDA image. Compatible model families share each worker and one model directory; adding a checkpoint does not create another container.
 
-The installer currently targets **Linux x86_64**. Its automated tests use hardware fixtures and mocked container commands. These images have not yet been built or qualified on real GPUs in this project. A detected card, a successful runtime smoke test and a validated model workload are separate states.
+The installer currently targets **Linux x86_64**. Its automated tests use hardware fixtures and mocked container commands. The managed ROCm runtime has also been built and exercised on physical hardware as described below. A detected card, a successful runtime smoke test and a validated model workload are separate states.
+
+## Hardware validation
+
+On one host with two Radeon AI PRO R9700 GPUs (`gfx1201`), both workers passed the matrix multiplication, attention and convolution smoke tests. The runtime used ROCm 7.2.1, PyTorch 2.9.1 and ComfyUI 0.39.0.
+
+Successful image generations covered WAI Illustrious through the SDXL recipe, FLUX.2 Klein 4B and Krea 2 Turbo. Klein reference-image generation and WAI image-to-image generation also completed, with the latter exercising the second GPU.
+
+These results cover that installation and those workloads. Other AMD configurations and physical NVIDIA execution remain unverified. They do not establish model quality, maximum resolution, peak memory or performance guarantees; the project remains a development preview.
 
 ## Review and start
 
