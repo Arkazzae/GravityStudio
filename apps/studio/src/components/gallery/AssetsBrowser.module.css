@@ -1,0 +1,19 @@
+.layout { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
+.headerActions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+.upload { display: flex; min-height: 44px; align-items: center; justify-content: center; gap: 7px; border-radius: 11px; background: #252829; padding: 0 12px; color: #f6f6f6; font-size: 13px; }
+.upload:hover { background: #303435; }
+.upload:disabled { opacity: .5; }
+.cardActions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+.card:hover .cardActions, .card:focus-within .cardActions { opacity: 1; }
+.download { display: grid; width: 32px; height: 32px; flex-shrink: 0; place-items: center; border-radius: 50%; background: #000a; color: white; }
+.download:hover { background: #000d; }
+
+@media (max-width: 720px) {
+  .headerActions { grid-column: 2; grid-row: 1; }
+  .layout nav > button { flex-shrink: 0; width: auto; }
+  .upload { width: 44px; padding: 0; }
+  .upload span { display: none; }
+  .cardActions { opacity: 1; }
+}
+@media (hover: none) { .cardActions { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .cardActions { transition: none; } }

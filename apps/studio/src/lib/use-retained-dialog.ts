@@ -42,8 +42,12 @@ export function useRetainedDialog({ dialog, open, onClose, initialFocus, trigger
       if (element.open) element.close();
       const target = previousFocus?.isConnected && previousFocus.getClientRects().length && !previousFocus.matches(':disabled') ? previousFocus : triggerRef?.current;
       // Switching panels must never focus a control behind the new modal.
-      const otherModal = document.querySelector('dialog[open]');
+      const modals = Array.from(document.querySelectorAll<HTMLDialogElement>('dialog[open]'));
+      const otherModal = modals.find(modal => modal.contains(document.activeElement)) || modals.at(-1);
       if (!otherModal || target && otherModal.contains(target)) target?.focus({ preventScroll: true });
+      else if (!otherModal.contains(document.activeElement)) {
+        (otherModal.querySelector<HTMLElement>('[data-dialog-dismiss]:not(:disabled)') || otherModal).focus({ preventScroll: true });
+      }
     };
   }, [dialog, open, initialFocus, triggerRef]);
 

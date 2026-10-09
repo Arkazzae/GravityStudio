@@ -9,6 +9,7 @@ import { AuthPanel } from '@/components/setup/AuthPanel';
 import { SettingsWorkspace, type SettingsSection } from '@/components/setup/SettingsWorkspace';
 import { ModelLibrary } from '@/components/setup/ModelLibrary';
 import { GalleryGrid } from '@/components/gallery/GalleryGrid';
+import { AssetsBrowser } from '@/components/gallery/AssetsBrowser';
 import { PromptDock, initialDraft, modelDraft, type Draft } from '@/components/prompt/PromptDock';
 import { api, errorMessage, type Bootstrap, type Catalog, type Job, type StudioState } from '@/lib/api';
 import { favoriteKey, useFavorites } from '@/lib/use-favorites';
@@ -32,10 +33,10 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [square, setSquare] = useState(false);
   const [filter, setFilter] = useState<'all' | 'queue' | 'favorites'>('all');
   const [onboarding, setOnboarding] = useState(false);
-  const [panel, setPanel] = useState<'settings' | 'models' | 'assets' | null>(settingsPage ? 'settings' : modelsPage ? 'models' : null);
-  const [visitedPanels, setVisitedPanels] = useState({ settings: settingsPage, models: modelsPage });
-  const openPanel = useCallback((next: 'settings' | 'models' | 'assets') => {
-    if (next !== 'assets') setVisitedPanels(current => ({ ...current, [next]: true }));
+  const [panel, setPanel] = useState<'settings' | 'models' | 'assets' | 'references' | null>(settingsPage ? 'settings' : modelsPage ? 'models' : null);
+  const [visitedPanels, setVisitedPanels] = useState({ settings: settingsPage, models: modelsPage, assets: false });
+  const openPanel = useCallback((next: 'settings' | 'models' | 'assets' | 'references') => {
+    if (next !== 'references') setVisitedPanels(current => ({ ...current, [next]: true }));
     setPanel(next);
   }, []);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('gpus');
@@ -49,6 +50,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [signingOut, setSigningOut] = useState(false);
   const [draftOwner, setDraftOwner] = useState<string | null>(null);
   const [dockBusy, setDockBusy] = useState(false);
+  const [assetsBusy, setAssetsBusy] = useState(false);
   const authenticated = !!bootstrap?.authenticated;
   const notifications = useJobNotifications(authenticated ? bootstrap?.user?.id || null : null, state?.jobs);
   const { updateAvailable } = usePwa();
@@ -71,7 +73,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     if (!draftOwner || !bootstrap?.authenticated) return;
     try { localStorage.setItem(`gravity:image-draft:${draftOwner}`, JSON.stringify(draft)); } catch { /* Keep the current in-memory draft. */ }
   }, [draft, draftOwner, bootstrap?.authenticated]);
-  const sessionExpired = useCallback(() => { setPanel(null); setVisitedPanels({ settings: false, models: false }); setSettingsSection('gpus'); setOnboarding(false); stateRevision.current++; setBootstrap(current => current ? { ...current, authenticated: false } : null); setState(null); setConnected(false); }, []);
+  const sessionExpired = useCallback(() => { setPanel(null); setVisitedPanels({ settings: false, models: false, assets: false }); setSettingsSection('gpus'); setOnboarding(false); stateRevision.current++; setBootstrap(current => current ? { ...current, authenticated: false } : null); setState(null); setConnected(false); }, []);
   const favorites = useFavorites(authenticated ? bootstrap?.user?.id || null : null, sessionExpired);
   const checkSession = useCallback(async () => {
     setError('');
@@ -137,7 +139,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
       <nav aria-label="Studio" className="flex min-w-0 flex-1 items-center gap-1"><Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-current="page" className="rounded-lg px-2 py-2 text-[14px] font-medium text-volt max-[380px]:hidden">Image</Link></nav>
       <ServerActivity state={state} connected={connected} onRefresh={refresh} />
       <NotificationsPopover connected={connected} {...notifications} />
-      <IconChip ref={assetsTrigger} onClick={() => openPanel('assets')} active={panel === 'assets'} aria-label="Assets" title="Assets" aria-haspopup="dialog" aria-expanded={panel === 'assets'} aria-controls={panel === 'assets' ? "reference-picker-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Library aria-hidden="true" /></IconChip>
+      <IconChip ref={assetsTrigger} onClick={() => openPanel('assets')} active={panel === 'assets'} aria-label="Assets" title="Assets" aria-haspopup="dialog" aria-expanded={panel === 'assets'} aria-controls={panel === 'assets' ? "assets-browser-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Library aria-hidden="true" /></IconChip>
       <IconChip ref={modelsTrigger} onClick={() => openPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>
       <IconChip ref={settingsTrigger} onClick={() => openPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>
       <Popover label="Account" side="bottom" align="end" width={220} trigger={({ open, triggerProps }) => <IconChip {...triggerProps} active={open} aria-label="Account"><UserRound /></IconChip>}>{() => <button disabled={signingOut} onClick={() => void signOut()} className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm hover:bg-chip disabled:opacity-50">{signingOut ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut size={16} />}{signingOut ? 'Signing out…' : 'Sign out'}</button>}</Popover>
@@ -146,14 +148,15 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     <main className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
         <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => openPanel('models')} onOpenSettings={() => openPanel('settings')} />}</div>
-        <PromptDock browsing={panel === 'assets'} onBrowse={() => openPanel('assets')} onCloseAssets={closePanel} assetsTriggerRef={assetsTrigger} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={() => { setSettingsSection('assistant'); openPanel('settings'); }} favoriteError={favorites.error} onOpenModels={() => openPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
+        <PromptDock browsing={panel === 'references'} onBrowse={() => openPanel('references')} onCloseAssets={closePanel} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={() => { setSettingsSection('assistant'); openPanel('settings'); }} favoriteError={favorites.error} onOpenModels={() => openPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
     {visitedPanels.settings && <StudioDialog panel="settings" open={showSettings} title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
-      <SettingsWorkspace activeWork={pending.length > 0 || dockBusy} active={showSettings} section={settingsSection} onSectionChange={setSettingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
+      <SettingsWorkspace activeWork={pending.length > 0 || dockBusy || assetsBusy} active={showSettings} section={settingsSection} onSectionChange={setSettingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
     {visitedPanels.models && <StudioDialog panel="models" open={showModels} title="Models" description="Manage image and language models." icon={<Boxes size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={modelsTrigger}>
       <ModelLibrary active={showModels} onConfigureText={() => { setSettingsSection('integrations'); openPanel('settings'); }} onChanged={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
+    {visitedPanels.assets && <AssetsBrowser open={panel === 'assets'} triggerRef={assetsTrigger} jobs={assetJobs} models={catalog.models} onClose={closePanel} onReuse={reuse} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} onDeleteOutput={deleteOutput} onInputDeleted={id => setDraft(current => ({ ...current, images: current.images.filter(image => image.id !== id) }))} onSessionExpired={sessionExpired} onBusyChange={setAssetsBusy} />}
     <Toasts items={notifications.notices} onDismiss={notifications.dismissNotice} bottom={dockHeight + 12} />
   </div>;
 }

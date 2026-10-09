@@ -9,6 +9,7 @@ import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { ZoomableImage } from './ZoomableImage';
+import { DeleteImageButton } from './DeleteImageButton';
 
 export interface ViewerEntry {
   id: string;
@@ -21,7 +22,7 @@ const labels: Record<string, string> = {
   scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength',
 };
 
-export function OutputViewer({ items, open, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError }: {
+export function OutputViewer({ items, open, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError, dialogId = 'output-viewer', onDelete }: {
   items: ViewerEntry[];
   open: boolean;
   openId: string;
@@ -32,8 +33,11 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
   onFavorite: (job: Job, output: Job['outputs'][number]) => void;
   favoriteBusy: ReadonlySet<string>;
   favoriteError?: string;
+  dialogId?: string;
+  onDelete?: (job: Job, output: Job['outputs'][number]) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null);
   const reusing = useRef(false);
   const previousIndex = useRef(0);
   const selectedIndex = items.findIndex(entry => entry.id === openId);
@@ -83,7 +87,7 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
     ['Created', Number.isNaN(created.valueOf()) ? 'Saved on your server' : created.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })],
   ];
 
-  return <dialog ref={dialog} id="output-viewer" aria-label={`${name} output`} tabIndex={-1}
+  return <dialog ref={dialog} id={dialogId} aria-label={`${name} output`} tabIndex={-1}
     {...dialogHandlers}
     onKeyDown={event => {
       if ((event.target as HTMLElement).closest('[data-photo-action]')) return;
@@ -120,6 +124,7 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
         </div>
         <footer className="flex flex-col gap-2 border-t border-line p-4">
           {favoriteError && <p role="alert" className="error-notice text-xs">{favoriteError}</p>}
+          {deleteError?.id === item.id && deleteError.message && <p role="alert" className="error-notice text-xs">{deleteError.message}</p>}
           <button type="button" onClick={() => { reusing.current = true; onReuse(item.job); onClose(); }}
             className="flex h-11 items-center justify-center gap-2 rounded-xl bg-volt text-[14px] font-semibold text-on-volt shadow-key transition-[background-color,box-shadow,translate] duration-150 ease-[var(--ease-out-quint)] hover:bg-volt-hi active:translate-y-[2px] active:shadow-key-down focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt motion-reduce:transition-none motion-reduce:active:translate-y-0">
             <Repeat2 className="size-[18px]" strokeWidth={2} />Use these settings
@@ -128,6 +133,7 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
             <a href={item.output.url} download aria-label="Download image" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11]"><Download className="size-[18px]" strokeWidth={1.8} />Download</a>
             <FavoriteButton favorite={!!item.output.favorite} busy={favoriteBusy.has(`${item.job.id}:${item.output.id}`)} onClick={() => onFavorite(item.job, item.output)} variant="viewer" />
             <a href={item.output.url} target="_blank" rel="noopener noreferrer" aria-label="Open the file in a new tab" title="Open the file in a new tab" className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/[0.06] text-ink-2 transition-colors hover:bg-white/[0.11] hover:text-ink"><ExternalLink className="size-[18px]" strokeWidth={1.8} /></a>
+            {onDelete && <DeleteImageButton key={item.id} disabled={favoriteBusy.has(`${item.job.id}:${item.output.id}`) || !['succeeded', 'failed', 'cancelled'].includes(item.job.status)} onDelete={() => onDelete(item.job, item.output)} onError={message => setDeleteError({ id: item.id, message })} className="size-11 shrink-0 rounded-xl bg-white/[0.06] text-ink-2 hover:bg-white/[0.11] hover:text-ink" />}
           </div>
         </footer>
       </aside>

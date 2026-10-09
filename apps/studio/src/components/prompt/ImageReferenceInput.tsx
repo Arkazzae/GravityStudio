@@ -1,10 +1,11 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, type RefObject } from 'react';
 import { Library, LoaderCircle, Plus, X } from '@/components/ui/icons';
 import type { InputImage } from '@/lib/api';
 
-export function ImageReferenceInput({ images, maxImages, uploading, onUpload, onRemove, onClear, onBrowse }: {
+export function ImageReferenceInput({ browseRef, images, maxImages, uploading, onUpload, onRemove, onClear, onBrowse }: {
+  browseRef?: RefObject<HTMLButtonElement | null>;
   images: InputImage[];
   maxImages: number;
   uploading: boolean;
@@ -42,7 +43,7 @@ export function ImageReferenceInput({ images, maxImages, uploading, onUpload, on
         className="flex size-10 shrink-0 items-center justify-center rounded-chip bg-white/[0.03] text-ink-2 ring-1 ring-line-2 transition-colors hover:bg-white/[0.09] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt/40 disabled:opacity-50">
         {uploading ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" strokeWidth={2} aria-hidden="true" /> : <Plus className="size-[19px]" strokeWidth={2} aria-hidden="true" />}
       </button>
-      <button type="button" aria-label="Browse saved images" title={unavailable || 'Choose a saved image as a reference'} disabled={!canAdd || uploading}
+      <button ref={browseRef} type="button" aria-label="Browse saved images" title={unavailable || 'Choose a saved image as a reference'} disabled={!canAdd || uploading}
         onClick={onBrowse}
         className="flex size-10 shrink-0 items-center justify-center rounded-chip bg-white/[0.03] text-ink-2 ring-1 ring-line-2 transition-colors hover:bg-white/[0.09] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt/40 disabled:opacity-50">
         <Library className="size-[18px]" strokeWidth={1.8} aria-hidden="true" />
