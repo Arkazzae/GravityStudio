@@ -8,6 +8,16 @@ import type { HardwareInventory } from "../packages/hardware/src/index.ts";
 import type { ContainerEngine } from "./runtime-plan.ts";
 
 const execute = promisify(execFile);
+const cudaProfileDriverMinimum = [570, 124, 6];
+function meetsCudaProfileDriverMinimum(version: string | null): boolean {
+  if (!version || !/^\d+\.\d+(?:\.\d+)?$/.test(version)) return false;
+  const components = version.split(".").map(Number);
+  for (let index = 0; index < cudaProfileDriverMinimum.length; index++) {
+    const difference = (components[index] ?? 0) - cudaProfileDriverMinimum[index];
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
 export interface PreflightCheck { id: string; status: "passed" | "warning" | "failed"; message: string }
 export interface PreflightProbe {
   command(file: string, args: string[]): Promise<string>;
@@ -49,8 +59,8 @@ export async function inspectRuntimePrerequisites(inventory: HardwareInventory, 
         add("nvidia-cdi", allPresent ? "passed" : "failed", allPresent ? "NVIDIA CDI entries are present for the selected GPUs." : "Refresh NVIDIA Container Toolkit CDI entries for the detected GPU UUIDs.");
       } catch { add("nvidia-cdi", "failed", "NVIDIA Container Toolkit CDI entries are unavailable to Podman."); }
     }
-    const drivers = inventory.gpus.filter((gpu) => gpu.vendor === "nvidia").map((gpu) => Number(gpu.driverVersion?.split(".")[0]));
-    add("nvidia-driver", drivers.every((major) => Number.isFinite(major) && major >= 570) ? "passed" : "warning", "The CUDA 12.8 profile targets driver 570 or newer; the GPU smoke test verifies actual operations.");
+    const driversReady = inventory.gpus.filter((gpu) => gpu.vendor === "nvidia").every((gpu) => meetsCudaProfileDriverMinimum(gpu.driverVersion));
+    add("nvidia-driver", driversReady ? "passed" : "failed", "This managed CUDA 12.8.1 profile requires Linux NVIDIA driver 570.124.06 or newer as a conservative baseline. Older-driver compatibility modes are not qualified; GPU smoke tests still verify actual operations.");
   }
   let supplementalGroupIds: number[] = [];
   if (inventory.gpus.some((gpu) => gpu.vendor === "amd")) {

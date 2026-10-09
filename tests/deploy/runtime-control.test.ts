@@ -81,6 +81,22 @@ test("missing NVIDIA CDI entries block Podman startup and retain actionable diag
   assert.ok(result.checks.some((check) => check.id === "nvidia-cdi" && check.status === "failed"));
 });
 
+test("CUDA preflight compares the complete pinned-profile driver baseline", async () => {
+  for (const [driverVersion, expected] of [
+    ["570.124.06", "passed"], ["570.124.6", "passed"], ["570.125", "passed"], ["580.1", "passed"],
+    ["570.124.05", "failed"], ["570.124", "failed"], ["570.117", "failed"], ["569.999.99", "failed"], [null, "failed"], ["unknown", "failed"],
+  ] as const) {
+    const hardware = triple3090();
+    for (const gpu of hardware.gpus) gpu.driverVersion = "580.126.09";
+    hardware.gpus[0].driverVersion = driverVersion;
+    const result = await inspectRuntimePrerequisites(hardware, "docker", {
+      async command() { return '{"nvidia": {}}'; }, async deviceGroups() { return []; },
+    });
+    assert.equal(result.checks.find((check) => check.id === "nvidia-driver")?.status, expected, `driver ${driverVersion}`);
+    assert.equal(result.ready, expected === "passed", `driver ${driverVersion}`);
+  }
+});
+
 test("a failed smoke test records failure evidence and exposes its bounded diagnostic", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gravity-smoke-failure-"));
   try {

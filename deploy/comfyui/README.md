@@ -41,7 +41,7 @@ node scripts/runtime.ts stop
 
 | Profile | Official base | Candidate devices |
 | --- | --- | --- |
-| CUDA | PyTorch 2.10.0, CUDA 12.8, cuDNN 9 | Includes the detected targets used by RTX 3090 and B100 fixtures |
+| CUDA | PyTorch 2.10.0, CUDA 12.8.1, cuDNN 9 | Includes the detected targets used by RTX 3090 and B100 fixtures |
 | ROCm | AMD PyTorch 2.9.1, ROCm 7.2.1, Ubuntu 24.04 | Radeon targets including the R9700 fixture |
 
 [runtime.lock.json](runtime.lock.json) pins complete registry digests, ComfyUI **0.39.0** at commit `b0b743566f65daafc423b4fea8a2fbda94b3384a`, and the source archive checksum. [requirements.lock](requirements.lock) pins the additional Python 3.12 Linux wheels by version and SHA-256. Framework and accelerator libraries stay in their pinned base images; pip cannot replace ROCm with CUDA dependencies during the build. There are no startup package installs, custom-node downloads or model downloads.
@@ -52,7 +52,9 @@ The source pins and installation choices follow [ComfyUI's release](https://gith
 
 ## Host requirements
 
-- **Docker + NVIDIA:** install the GPU driver and configure NVIDIA Container Toolkit for Docker. Workers use explicit GPU UUID reservations. The CUDA 12.8 profile targets driver 570 or newer; smoke tests still verify execution. See [Docker GPU reservations](https://docs.docker.com/compose/how-tos/gpu-support/) and [NVIDIA Container Toolkit setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+The pinned CUDA image contains CUDA 12.8.1. This installer requires **Linux NVIDIA driver 570.124.06 or newer** as a conservative profile baseline, following the toolkit's [corresponding driver version](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-toolkit-release-notes/index.html#cuda-toolkit-major-component-versions). This is not the general CUDA 12.x compatibility minimum: NVIDIA documents older-driver compatibility modes with feature and PTX restrictions, which this profile has not qualified. The smoke test remains necessary on either engine.
+
+- **Docker + NVIDIA:** install the GPU driver and configure NVIDIA Container Toolkit for Docker. Workers use explicit GPU UUID reservations. See [Docker GPU reservations](https://docs.docker.com/compose/how-tos/gpu-support/) and [NVIDIA Container Toolkit setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 - **Podman + NVIDIA:** NVIDIA CDI entries must exist for the detected GPU UUIDs. The doctor checks `nvidia-ctk cdi list`. See [NVIDIA CDI support](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
 - **AMD:** `/dev/kfd` and `/dev/dri` must be accessible. Docker receives their numeric supplemental group IDs. Rootless Podman uses `crun` and `keep-groups`; the host account must already have device access. `ROCR_VISIBLE_DEVICES` selects the GPU by UUID. The exposed render-device directory provides runtime placement rather than isolation from untrusted code.
 
