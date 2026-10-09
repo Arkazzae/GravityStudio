@@ -36,7 +36,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
   const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
   comfy.state.outputBytes = Uint8Array.from(await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="768" height="1024"><rect width="768" height="1024" fill="#24323b"/><rect x="70" y="80" width="628" height="864" rx="4" fill="#344b4c"/><text x="384" y="488" text-anchor="middle" font-family="sans-serif" font-size="26" fill="#d1fe17">COMFYUI PROTOCOL FIXTURE</text><text x="384" y="535" text-anchor="middle" font-family="sans-serif" font-size="18" fill="#e8edeb">Browser integration test · no model inference</text></svg>')).png().toBuffer());
+  let completeAutomatically = true;
   const completion = setInterval(() => {
+    if (!completeAutomatically) return;
     const pending = comfy.state.pending.splice(0);
     for (const prompt of pending) comfy.state.history[String(prompt[1])] = completed(prompt);
   }, 150);
@@ -86,9 +88,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await comfy.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ } if (child.exitCode !== null) throw new Error(`Next could not start: ${logs}`); if (attempt === 99) throw new Error(`Next startup timed out: ${logs}`); await delay(100); }
   const browser = await openBrowser(t);
-  async function clickDialogText(id: string, label: string) {
-    const element = `Array.from(document.querySelectorAll('#${id} button, #${id} a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`;
-    await browser.until(`!!(${element})`, `${label} in ${id}`);
+  async function clickScopedText(scope: string, label: string) {
+    const element = `Array.from(document.querySelectorAll('${scope} button, ${scope} a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`;
+    await browser.until(`!!(${element})`, `${label} in ${scope}`);
     const point = await browser.evaluate<{ x: number; y: number }>(`(() => { const element = (${element}); element.scrollIntoView({block: 'nearest'}); const rect = element.getBoundingClientRect(); return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}; })()`);
     await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
     await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
@@ -114,6 +116,30 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       await browser.until("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Device reference upload finishes');
     } finally { await browser.send('Page.setInterceptFileChooserDialog', { enabled: false }); }
   }
+  async function checkParameterHelp(label: string, meaning: RegExp, interaction: 'hover' | 'keyboard' | 'tap') {
+    const selector = `button[aria-label="Help: ${label}"]`;
+    const tooltip = `document.getElementById(document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-describedby'))`;
+    await browser.evaluate("Promise.all(document.querySelector('[aria-label=\"Advanced settings\"]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+    const point = await browser.evaluate<{ x: number; y: number }>(`(() => { const button = document.querySelector(${JSON.stringify(selector)}); button.scrollIntoView({block: 'nearest'}); const rect = button.getBoundingClientRect(); return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2}; })()`);
+    const panelHeight = await browser.evaluate<number>("document.querySelector('[aria-label=\"Advanced settings\"]:popover-open').getBoundingClientRect().height");
+    const tap = async () => { await browser.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] }); await browser.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); };
+    if (interaction === 'keyboard') {
+      await browser.evaluate("document.querySelector('input[aria-label=\"Guidance value\"]').focus()");
+      await browser.key('Tab');
+      assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), `Help: ${label}`, 'Help is reachable in the keyboard tab order');
+    } else if (interaction === 'tap') await tap();
+    else await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    await browser.until(`(${tooltip})?.matches('[role=tooltip]:popover-open') && getComputedStyle(${tooltip}).visibility === 'visible'`, `${label} help opens by ${interaction}`);
+    await browser.evaluate(`Promise.all([document.fonts.ready, ...(${tooltip}).getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)`);
+    assert.match(await browser.evaluate<string>(`(${tooltip}).textContent`), meaning, `${label} explains the parameter's effect`);
+    assert.equal(await browser.evaluate(`(() => { const rect = (${tooltip}).getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight; })()`), true, `${label} help remains visible within the viewport`);
+    assert.equal(await browser.evaluate<number>("document.querySelector('[aria-label=\"Advanced settings\"]:popover-open').getBoundingClientRect().height"), panelHeight, 'Help does not resize Advanced');
+    if (label === 'Width') await browser.screenshot(join(output, `parameter-help-${interaction === 'tap' ? 'mobile' : 'desktop'}.png`));
+    if (interaction === 'tap') await tap(); else await browser.key('Escape');
+    await browser.until(`!(${tooltip})?.matches(':popover-open')`, `${label} help closes`);
+    assert.equal(await browser.evaluate("!!document.querySelector('[aria-label=\"Advanced settings\"]:popover-open')"), true, 'Dismissing help keeps Advanced open');
+    await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+  }
   await browser.navigate(`${origin}/image`);
   await browser.until("document.body.innerText.includes('Make this studio yours.')", 'Owner setup');
   await browser.fill('input[autocomplete="off"]', 'browser-integration-setup-key');
@@ -133,7 +159,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.screenshot(join(output, 'setup-mobile.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
-  await clickDialogText('settings-dialog', 'Set up generation');
+  await clickScopedText('#settings-dialog', 'Set up generation');
   await browser.until("document.body.innerText.includes('Setting up…')", 'Automatic generation setup starts');
   await browser.until("document.body.innerText.includes('Generation is ready')", 'Automatic generation setup finishes');
   assert.deepEqual(chosenGpuIds, ['amd:9700b']);
@@ -164,6 +190,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('button[aria-label="Close models"]');
   await browser.until("!document.querySelector('#models-dialog[open]')", 'Model library closes after import');
   await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Ready model');
+  await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Server activity starts idle');
+  assert.equal(await browser.evaluate("document.querySelector('[data-server-activity]').textContent.includes('Activity')"), false, 'The header uses a compact meter without an Activity text label');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
   const advertised = await browser.evaluate<{ defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { multiple: number; min: number; max: number; maxPixels: number }; capabilities: { negativePrompt: boolean } }>(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === ${JSON.stringify(modelId)}))`);
@@ -220,8 +248,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.key('Escape');
   await browser.until("!document.querySelector('[popover]:popover-open')", 'Escape dismisses advanced');
   assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), 'Advanced settings');
+  completeAutomatically = false;
   await browser.clickText('Generate');
+  await browser.until("['queued', 'running'].includes(document.querySelector('[data-server-activity]')?.dataset.state)", 'Server activity reflects the pending generation');
+  completeAutomatically = true;
   await browser.until("!!document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]')", 'Generated output in gallery');
+  await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Server activity returns to idle after generation');
   const first = store.jobs(store.owner()!.id)[0];
   assert.equal(first.status, 'succeeded'); assert.equal(first.parameters.seed, 1234); assert.equal(comfy.state.submissions.length, 1);
   assert.deepEqual({ width: first.parameters.width, height: first.parameters.height, steps: first.parameters.steps, cfg: first.parameters.cfg, negativePrompt: first.parameters.negativePrompt }, { width: generationWidth, height: 768, steps: 24, cfg: 6.5, negativePrompt: 'text, watermark' }, 'Generation uses the edited toolbar parameters');
@@ -234,6 +266,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Upload reference images\"]').disabled && document.querySelector('button[aria-label=\"Add reference image\"]').disabled && document.querySelector('button[aria-label=\"Browse saved images\"]').disabled"), true, 'The single-reference model keeps both reference controls visible and prevents a second upload');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
   await openAdvanced();
+  for (const [label, meaning] of [
+    ['Width', /pixels/i], ['Height', /pixels/i], ['Steps', /more|longer/i],
+    ['Guidance', /prompt/i], ['Seed', /random/i], ['Image strength', /reference|original/i], ['Negative prompt', /avoid/i],
+  ] as const) await checkParameterHelp(label, meaning, label === 'Seed' ? 'keyboard' : 'hover');
   await browser.fill('input[aria-label="Image strength value"]', '.45');
   assert.equal(await browser.evaluate("document.querySelector('input[type=range][aria-label=\"Image strength\"]').value"), '0.45', 'Image strength stays synchronized with its slider');
   await browser.key('Escape');
@@ -341,6 +377,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('[popover]:popover-open [aria-label="Aspect ratio 3:4"]');
   await openAdvanced();
   assert.equal(await browser.evaluate("(() => { const menu = document.querySelector('[aria-label=\"Advanced settings\"]:popover-open'); const rect = menu.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && menu.scrollWidth <= menu.clientWidth; })()"), true, 'Advanced controls fit the mobile viewport');
+  await browser.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  try { await checkParameterHelp('Width', /pixels/i, 'tap'); }
+  finally { await browser.send('Emulation.setTouchEmulationEnabled', { enabled: false }); }
   assert.equal(await browser.evaluate("Number(document.querySelector('input[aria-label=\"Height value\"]').value) > Number(document.querySelector('input[aria-label=\"Width value\"]').value)"), true, 'Mobile portrait choice updates dimensions');
   await screenshotPopover('advanced-mobile.png');
   await browser.key('Escape');
@@ -353,14 +392,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   comfy.state.postBehavior = 'drop-before-accept';
   await browser.clickText('Generate');
   await browser.until("document.body.innerText.includes('Close unknown job')", 'Uncertain generation offers owner resolution');
+  await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'attention'", 'Unknown generation is visible in the server activity meter');
   const unknown = store.jobs(store.owner()!.id)[0];
   assert.equal(unknown.status, 'interrupted');
   const declined = browser.answerNextDialog(false);
-  await browser.clickText('Close unknown job');
+  await clickScopedText('main', 'Close unknown job');
   assert.match(await declined, /recheck.*queue and history/);
   assert.equal(store.job(unknown.id).status, 'interrupted', 'Dismissing confirmation keeps the resource reservation');
   const accepted = browser.answerNextDialog(true);
-  await browser.clickText('Close unknown job');
+  await clickScopedText('main', 'Close unknown job');
   await accepted;
   await browser.until("document.body.innerText.includes('Closed by owner')", 'Owner closes the absent generation');
   assert.equal(store.job(unknown.id).status, 'failed');
@@ -469,7 +509,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         if (dockBaseline) sameGeometry(bounds, dockBaseline, `${viewport.name} ${model.name}`);
         else dockBaseline = bounds;
         assert.ok(Math.abs(bounds.model.width - (viewport.mobile ? 160 : 184)) < .1);
-        assert.ok(Math.abs(bounds.aspect.width - (viewport.mobile ? 80 : 128)) < .1);
+        assert.ok(Math.abs(bounds.aspect.width - 80) < .1);
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
         for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
         assert.equal(await browser.evaluate(`document.querySelector('#image-prompt') === window.__gravityGeometryPrompt && document.querySelector('#image-prompt').value === ${JSON.stringify(geometryPrompt)}`), true, 'Model changes preserve the same prompt element and text');
