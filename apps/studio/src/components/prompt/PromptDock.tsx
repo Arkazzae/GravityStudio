@@ -14,13 +14,15 @@ export interface Draft { aspect?: ImageAspectRatio | 'custom'; modelId: string; 
 export const initialDraft: Draft = { aspect: 'auto', modelId: '', prompt: '', negativePrompt: '', width: 1024, height: 1024, steps: 30, cfg: 7, seed: '', denoise: .75, images: [] };
 export function modelDraft(draft: Draft, model: StudioModel): Draft { return { ...draft, modelId: model.id, aspect: 'auto', ...model.defaults, negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75 }; }
 
-export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError, sessionIdentity = '', onOpenAssistantSettings }: { jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string; sessionIdentity?: string; onOpenAssistantSettings?: () => void }) {
+export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError, sessionIdentity = '', onOpenAssistantSettings, onBusyChange }: { jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string; sessionIdentity?: string; onOpenAssistantSettings?: () => void; onBusyChange?: (busy: boolean) => void }) {
   const dock = useRef<HTMLDivElement>(null);
   const prompt = useRef<HTMLTextAreaElement>(null);
   const lastAttempt = useRef<{ body: string; key: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  useEffect(() => { onBusyChange?.(busy || assistantBusy || uploading); }, [busy, assistantBusy, uploading, onBusyChange]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
   const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState('');
   const model = models.find(model => model.id === draft.modelId);

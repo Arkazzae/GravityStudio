@@ -31,7 +31,7 @@ export interface GenerationParameters { width: number; height: number; steps: nu
 export interface Job {
   id: string; modelId: string; modelName?: string; prompt: string; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
-  stage?: string; progress: number | null; createdAt: string;
+  stage?: string; progress: number | null; createdAt: string; updatedAt?: string;
   outputs: Array<{ id: string; url: string; width?: number; height?: number; mimeType: string; favorite?: boolean }>;
   error: string | null;
 }

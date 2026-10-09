@@ -5,7 +5,7 @@ import {
   Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft, ArrowUp as ArrowUpIcon,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
   ExportSquare, Folder, Gallery, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, MessageQuestion,
-  Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
+  Notification as NotificationIcon, Monitor, Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
   Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
 import { cn } from '@/lib/utils';
@@ -33,6 +33,8 @@ export const Activity = /* @__PURE__ */ icon(ActivityIcon, 'Activity');
 export const ArrowRight = /* @__PURE__ */ icon(ArrowRightIcon, 'ArrowRight');
 export const ArrowUp = /* @__PURE__ */ icon(ArrowUpIcon, 'ArrowUp');
 export const Boxes = /* @__PURE__ */ icon(Box, 'Boxes');
+export const Bell = /* @__PURE__ */ icon(NotificationIcon, 'Bell');
+export const MonitorIcon = /* @__PURE__ */ icon(Monitor, 'MonitorIcon');
 export const Check = /* @__PURE__ */ icon(TickCircle, 'Check');
 export const ChevronDown = /* @__PURE__ */ icon(ArrowDown2, 'ChevronDown');
 export const ChevronLeft = /* @__PURE__ */ icon(ArrowLeft2, 'ChevronLeft');

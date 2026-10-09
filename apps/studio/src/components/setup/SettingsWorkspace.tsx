@@ -1,10 +1,11 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Check, Cpu, ExternalLink, HardDrive, Layers2, LoaderCircle, RefreshCw, SlidersHorizontal, Wand2 } from '@/components/ui/icons';
+import { ArrowRight, Check, Cpu, ExternalLink, HardDrive, Layers2, LoaderCircle, MonitorIcon, RefreshCw, SlidersHorizontal, Wand2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { AdvancedSettings } from './AdvancedSettings';
 import { IntegrationsSettings } from './IntegrationsSettings';
 import { LanguageModels } from './LanguageModels';
+import { AppSettings } from './AppSettings';
 import { TabbedWorkspace } from '@/components/studio/TabbedWorkspace';
 import { api, bytes, errorMessage, type Hardware, type RuntimeSetupStatus, type Settings } from '@/lib/api';
 
@@ -16,10 +17,11 @@ const sections = [
   { id: 'models', label: 'Model files', icon: Layers2 },
   { id: 'integrations', label: 'Integrations', icon: ExternalLink },
   { id: 'api', label: 'API access', icon: ExternalLink },
+  { id: 'app', label: 'App', icon: MonitorIcon },
 ] as const;
 export type SettingsSection = typeof sections[number]['id'];
 
-export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, initialSection = 'gpus' }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; initialSection?: SettingsSection }) {
+export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, initialSection = 'gpus', activeWork = false }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; initialSection?: SettingsSection; activeWork?: boolean }) {
   const [hardware, setHardware] = useState(initialHardware);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSetupStatus | null>(null);
@@ -97,7 +99,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
   }
 
   function selectSection(next: SettingsSection) {
-    if (next !== 'gpus' && next !== 'integrations' && next !== 'assistant') setAdvancedVisited(true);
+    if (next !== 'gpus' && next !== 'integrations' && next !== 'assistant' && next !== 'app') setAdvancedVisited(true);
     if (next === 'integrations') setIntegrationsVisited(true);
     setSection(next);
   }
@@ -128,6 +130,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     </div>
     {integrationsVisited && <div hidden={section !== 'integrations'} role="tabpanel" id="settings-panel-integrations" aria-labelledby="settings-tab-integrations" tabIndex={0}><IntegrationsSettings active={section === 'integrations'} /></div>}
     {section === 'assistant' && <div role="tabpanel" id="settings-panel-assistant" aria-labelledby="settings-tab-assistant" tabIndex={0}><LanguageModels assistant onConfigure={() => selectSection('integrations')} /></div>}
-    {advancedVisited && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant'} className="min-w-0">{busy && section !== 'gpus' && section !== 'integrations' && section !== 'assistant' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
+    {section === 'app' && <div role="tabpanel" id="settings-panel-app" aria-labelledby="settings-tab-app" tabIndex={0}><AppSettings busy={activeWork || busy || advancedDirty} /></div>}
+    {advancedVisited && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && section !== 'gpus' && section !== 'integrations' && section !== 'assistant' && section !== 'app' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
   </TabbedWorkspace>;
 }

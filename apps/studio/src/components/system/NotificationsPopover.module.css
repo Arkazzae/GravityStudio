@@ -1,0 +1,50 @@
+.popover {
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--color-line-2);
+  border-radius: 18px;
+  background: var(--color-raise);
+  color: var(--color-ink);
+  box-shadow: 0 24px 70px -12px #000e;
+  font-size: 12px;
+}
+
+.popover:popover-open { animation: appear .14s ease-out; }
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 16px 10px;
+  background: var(--color-raise);
+}
+
+.header h2 { flex: 1; font-size: 14px; font-weight: 600; letter-spacing: -.2px; }
+.close { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 7px; color: var(--color-ink-2); }
+.close:hover { color: var(--color-ink); background: #ffffff0a; }
+.close svg { width: 14px; height: 14px; }
+.popover button:focus-visible { outline: 2px solid var(--color-volt); outline-offset: 3px; }
+
+.alerts { padding: 0 16px 14px; border-bottom: 1px solid var(--color-line-2); }
+.alerts h3 { color: var(--color-ink-2); font-size: 11.5px; font-weight: 500; }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
+.copy { min-width: 0; }
+.copy > span { display: block; font-size: 13px; }
+.copy > span + span { margin-top: 2px; color: var(--color-ink-2); font-size: 11.5px; line-height: 1.5; }
+.help, .warning { margin-top: 10px; color: var(--color-ink-2); font-size: 11.5px; line-height: 1.5; }
+.warning { color: #ffb6a8; }
+
+.events { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px; }
+.events li { padding: 12px 0; font-size: 13px; line-height: 1.65; color: var(--color-ink-2); }
+.events li + li { border-top: 1px solid var(--color-line-2); }
+.events time { display: block; margin-top: 4px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.empty { padding: 16px; color: var(--color-ink-2); font-size: 13px; line-height: 1.65; }
+
+@keyframes appear { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@media (pointer: coarse) { .close { width: 36px; height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .popover:popover-open { animation: none; } }
