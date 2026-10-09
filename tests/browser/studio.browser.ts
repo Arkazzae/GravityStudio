@@ -182,7 +182,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.body.innerText.includes('Closed by owner')", 'Owner closes the absent generation');
   assert.equal(store.job(unknown.id).status, 'failed');
   assert.equal(comfy.state.submissions.filter(item => item.prompt_id === unknown.id).length, 1, 'Closing does not resubmit');
-  await browser.click('a[href="/settings"]');
+  await browser.click('a[aria-label="Settings"]');
   await browser.until("document.body.innerText.includes('GPUs to use')", 'Mobile settings');
   await browser.screenshot(join(output, 'settings-mobile.png'));
   await browser.click('summary');
