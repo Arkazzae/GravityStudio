@@ -13,6 +13,8 @@ import { mcpResponse } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
 import { ModelLibrary } from "./models.ts";
 import { modelRegistry } from "./registry.ts";
+import { CredentialVault } from "./credentials.ts";
+import { INTEGRATION_PROVIDERS, integrationProvider, testIntegration } from "./integrations.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -55,15 +57,19 @@ export interface ServerOptions {
   setupSecret?: string;
   runtime?: Pick<RuntimeSetup, "status" | "start" | "close" | "managedWorkers">;
   models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
+  integrationFetch?: typeof fetch;
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
   await recoverOutputDeletions(store);
+  const credentials = new CredentialVault(store);
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
   const models = options.models ?? new ModelLibrary(store, engine);
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
   const limiter = new LoginLimiter();
   const origins = new Set(options.allowedOrigins.map(origin => new URL(origin).origin));
+  const integrationChecks = new Map<string, Promise<unknown>>();
+  let stopping = false;
   const server = createServer(async (request, response) => {
     const requestId = randomUUID();
     response.setHeader("X-Request-Id", requestId);
@@ -107,6 +113,38 @@ export async function createStudioServer(options: ServerOptions) {
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
       const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      if (path === "/api/integrations" && method === "GET") {
+        requireSession();
+        return json(response, { providers: INTEGRATION_PROVIDERS.map(provider => ({ ...provider, credential: credentials.status(provider.id) })) });
+      }
+      const integrationRoute = path.match(/^\/api\/integrations\/([^/]+)(\/test)?$/);
+      if (integrationRoute) {
+        requireSession();
+        const provider = integrationProvider(integrationRoute[1]);
+        const view = () => ({ ...INTEGRATION_PROVIDERS.find(item => item.id === provider)!, credential: credentials.status(provider) });
+        if (!integrationRoute[2] && method === "PUT") {
+          const body = await readJson(request, 8192);
+          if (Object.keys(body).length !== 1 || !("apiKey" in body)) throw new ApiError(400, "INVALID_INTEGRATION_KEY", "Supply only the API key with { apiKey: string }.");
+          credentials.set(provider, body.apiKey);
+          return json(response, view());
+        }
+        if (!integrationRoute[2] && method === "DELETE") { credentials.delete(provider); return json(response, view()); }
+        if (integrationRoute[2] && method === "POST") {
+          const body = await readJson(request, 1024);
+          if (Object.keys(body).length) throw new ApiError(400, "INVALID_INTEGRATION_TEST", "Check the saved API key with an empty object.");
+          if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+          if (integrationChecks.has(provider)) throw new ApiError(409, "INTEGRATION_CHECK_BUSY", "This connection is already being checked. Wait for the result.");
+          const key = credentials.get(provider);
+          if (!key) throw new ApiError(409, "INTEGRATION_KEY_REQUIRED", "Save an API key before checking this connection.");
+          const check = testIntegration(provider, key, options.integrationFetch);
+          integrationChecks.set(provider, check);
+          try {
+            const result = await check;
+            if (credentials.get(provider) !== key) throw new ApiError(409, "INTEGRATION_KEY_CHANGED", "The saved key changed during this check. Check the connection again.");
+            return json(response, result);
+          } finally { integrationChecks.delete(provider); }
+        }
+      }
       if (path === "/api/runtime") {
         requireSession();
         if (method === "GET") return json(response, runtime.status());
@@ -233,5 +271,5 @@ export async function createStudioServer(options: ServerOptions) {
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
-  return Object.assign(server, { closeOperations: async () => { await Promise.all([runtime.close(), models.close()]); } });
+  return Object.assign(server, { closeOperations: async () => { stopping = true; await Promise.all([runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
 }
