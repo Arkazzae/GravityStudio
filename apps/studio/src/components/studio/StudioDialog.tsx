@@ -45,7 +45,7 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
   }
 
   return <dialog ref={dialog} id={`${panel}-dialog`} aria-labelledby={`${panel}-title`} aria-describedby={`${panel}-description`}
-    className={`${styles.dialog} ${panel === 'settings' ? styles.settings : styles.models}`}
+    className={`${styles.dialog} ${panel === 'settings' ? styles.settings : styles.centered}`}
     onKeyDown={keepFocus}
     onClose={event => { if (!event.currentTarget.open) onClose(); }}
     onPointerDown={event => { pressedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}

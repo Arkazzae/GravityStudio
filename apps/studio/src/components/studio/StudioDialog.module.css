@@ -12,7 +12,7 @@
 
 .dialog:not([open]) { display: none; }
 
-.models {
+.centered {
   inset: 0;
   width: min(1040px, calc(100vw - 32px));
   height: min(820px, calc(100dvh - 48px));
@@ -22,7 +22,7 @@
   background: var(--color-panel);
 }
 
-.models::backdrop { background: #000a; }
+.centered::backdrop { background: #000a; }
 
 .settings {
   inset: 12px 12px 12px auto;
@@ -83,10 +83,10 @@
 }
 
 @media (max-width: 680px) {
-  .models { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 12px; }
-  .models .header { padding: 18px 16px; }
-  .models .header h1 { font-size: 19px; }
-  .models .body { padding: 20px 16px; }
+  .centered { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 12px; }
+  .centered .header { padding: 18px 16px; }
+  .centered .header h1 { font-size: 19px; }
+  .centered .body { padding: 20px 16px; }
 }
 
 @media (max-width: 520px) {
