@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -72,6 +72,10 @@ export class Engine {
   private workerRefresh?: Promise<void>;
   private workerRevision = 0;
   private workerRefreshRevision = 0;
+  private textLeases = new Map<string, ResourceLease>();
+  private textLeaseRevision = 0;
+  private evictText?: () => Promise<boolean>;
+  setTextEviction(evict: () => Promise<boolean>) { this.evictText = evict; }
   constructor(store: Store, options: { detect?: () => Promise<HardwareInventory>; pollMs?: number; reconcileMs?: number } = {}) {
     this.store = store; this.detect = options.detect ?? detectHardware; this.pollMs = options.pollMs ?? 1500;
     this.reconcileMs = options.reconcileMs ?? Math.max(this.pollMs, 1000);
@@ -136,6 +140,7 @@ export class Engine {
   beginRuntimeSetup() {
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation setup is already running.");
     if (this.store.activeJobs().length || this.flights.size) throw new ApiError(409, "JOBS_ACTIVE", "Finish or cancel queued generations before changing the GPUs in use.");
+    if (this.textLeases.size) throw new ApiError(409, "TEXT_GPU_BUSY", "Wait for the local prompt assistant to release its GPU before changing GPU setup.");
     this.runtimeSetupActive = true;
   }
   endRuntimeSetup() { this.runtimeSetupActive = false; }
@@ -250,11 +255,67 @@ export class Engine {
     }) };
   }
   private leases(worker: WorkerSettings): ResourceLease[] {
-    return this.store.activeJobs().filter(job => job.status !== "queued" && job.workerId).flatMap(job => {
+    const images = this.store.activeJobs().filter(job => job.status !== "queued" && job.workerId).flatMap(job => {
       const placement = job.placements.find(item => item.worker.id === job.workerId);
       if (!placement || hostKey(placement.worker) !== hostKey(worker)) return [];
       return [{ id: job.id, budget: { ramBytes: placement.memory.ramBytes, gpus: { [deviceKey(placement.worker)]: placement.memory.vramBytes } } }];
     });
+    return worker.location === "local" ? [...images, ...this.textLeases.values()] : images;
+  }
+  /** Reserve before awaiting cache release, and retain the lease until the container is confirmed stopped. */
+  async reserveTextGpu(gpuIds: string[], memory: { ramBytes: number; vramBytes: number }, signal: AbortSignal): Promise<{ gpuId: string; release: () => void; resident: (identity: string, vramBytes: number) => void; admit: () => Promise<void> }> {
+    signal.throwIfAborted();
+    if (this.stopping || this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Wait for GPU setup to finish before using the local assistant.");
+    const inventory = await this.hardwareReport(true);
+    signal.throwIfAborted();
+    if (this.stopping || this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "GPU setup changed while checking the local assistant.");
+    const settings = this.store.settings();
+    const candidates = inventory.gpus.filter(gpu => gpuIds.includes(gpu.id)).sort((a, b) => (b.memory.totalBytes - (b.memory.usedBytes ?? b.memory.totalBytes)) - (a.memory.totalBytes - (a.memory.usedBytes ?? a.memory.totalBytes)));
+    const busy = () => this.store.activeJobs().filter(job => job.status !== "queued").flatMap(job => job.placements.filter(placement => placement.worker.id === job.workerId)).filter(placement => placement.worker.location === "local");
+    let reason = "No selected GPU is available. Finish an image generation or choose another GPU for the local assistant.";
+    for (const gpu of candidates) {
+      signal.throwIfAborted();
+      if (busy().some(placement => !placement.worker.deviceIds.length) || [...this.textLeases.values()].some(lease => Object.hasOwn(lease.budget.gpus, gpu.id))) continue;
+      if (gpu.memory.totalBytes < memory.vramBytes + settings.policy.vramReserveBytes) { reason = "The local model's VRAM budget and reserve do not fit on the selected GPUs."; continue; }
+      const id = `text:${randomUUID()}`;
+      const lease: ResourceLease = { id, budget: { ramBytes: memory.ramBytes, gpus: { [gpu.id]: memory.vramBytes } } };
+      this.textLeases.set(id, lease); this.textLeaseRevision++;
+      const release = () => { if (this.textLeases.delete(id)) { this.textLeaseRevision++; void this.tick(); } };
+      const resident = (identity: string, vramBytes: number) => {
+        if (!this.textLeases.has(id) || !identity || !Number.isSafeInteger(vramBytes) || vramBytes < 0) return;
+        lease.allocated = { identity, sampledAt: new Date().toISOString(), ramBytes: 0, gpus: { [gpu.id]: Math.max(1, Math.min(vramBytes, memory.vramBytes)) } };
+        if (!vramBytes) delete lease.allocated;
+      };
+      const admit = async () => {
+        const fresh = await this.hardwareReport(true), policy = this.store.settings().policy;
+        if (!this.textLeases.has(id) || this.runtimeSetupActive || this.stopping) throw new ApiError(409, 'TEXT_GPU_BUSY', 'The local model GPU reservation changed. Try again shortly.');
+        const images = busy().map(placement => ({ id: placement.worker.id, budget: { ramBytes: placement.memory.ramBytes, gpus: { [deviceKey(placement.worker)]: placement.memory.vramBytes } } }));
+        // A one-byte incremental request checks the GPU and every retained peak,
+        // crediting only allocations reported by their owning runtime.
+        const result = checkAdmission({ ramBytes: 0, gpus: { [gpu.id]: 1 } }, inventoryTelemetry(fresh), [...images, ...this.textLeases.values()], { reserveRamBytes: policy.ramReserveBytes, reserveVramBytes: policy.vramReserveBytes, allowGpuSharing: true });
+        if (!result.admitted) throw new ApiError(409, 'TEXT_GPU_BUSY', result.reason);
+      };
+      let retained = false;
+      try {
+        const workers = settings.workers.filter(worker => worker.enabled && worker.location === "local" && (!worker.deviceIds.length || worker.deviceIds.includes(gpu.id)));
+        for (let attempt = 0; attempt < 20; attempt++) {
+          signal.throwIfAborted();
+          const fresh = await this.hardwareReport(true);
+          const other = [...busy().map(placement => ({ id: placement.worker.id, budget: { ramBytes: placement.memory.ramBytes, gpus: { [deviceKey(placement.worker)]: placement.memory.vramBytes } } })), ...[...this.textLeases.values()].filter(item => item.id !== id)];
+          const decision = checkAdmission(lease.budget, inventoryTelemetry(fresh), other, { reserveRamBytes: settings.policy.ramReserveBytes, reserveVramBytes: settings.policy.vramReserveBytes, allowGpuSharing: true });
+          if (decision.admitted && !this.stopping && !this.runtimeSetupActive) { signal.throwIfAborted(); retained = true; return { gpuId: gpu.id, release, resident, admit }; }
+          reason = decision.reason;
+          if (!workers.length || !["insufficient-ram", "insufficient-vram"].includes(decision.code)) break;
+          if (attempt === 0) for (const worker of workers) {
+            // Active image jobs keep their models. Only idle caches can be reclaimed.
+            if (busy().some(placement => workersOverlap(placement.worker, worker))) continue;
+            await this.releaseWorker(worker);
+          }
+          await delay(250, undefined, { signal });
+        }
+      } finally { if (!retained) release(); }
+    }
+    throw new ApiError(409, "TEXT_GPU_BUSY", reason);
   }
   private remoteTelemetry(worker: WorkerSettings, stats: ComfySystemStats): ResourceTelemetry | null {
     const { ram_total: totalBytes, ram_free: availableBytes } = stats.system;
@@ -316,14 +377,19 @@ export class Engine {
       if (Number.isFinite(telemetry.ram.totalBytes) && placement.memory.ramBytes + settings.policy.ramReserveBytes > telemetry.ram.totalBytes) return { kind: "reject", reason: "This job's RAM budget and reserve exceed the worker host's total RAM. Reduce the resolution or change the model budget." };
       if (device && Number.isFinite(device.totalBytes) && placement.memory.vramBytes + settings.policy.vramReserveBytes > device.totalBytes) return { kind: "reject", reason: "This job's VRAM budget and reserve exceed the assigned GPU's capacity. Other GPUs cannot contribute memory to this recipe." };
       const budget = { ramBytes: placement.memory.ramBytes, gpus: { [deviceKey(worker)]: placement.memory.vramBytes } };
-      const policy = { reserveRamBytes: settings.policy.ramReserveBytes, reserveVramBytes: settings.policy.vramReserveBytes };
+      const policy = { reserveRamBytes: settings.policy.ramReserveBytes, reserveVramBytes: settings.policy.vramReserveBytes, allowGpuSharing: worker.location === "local" };
       let result = checkAdmission(budget, telemetry, this.leases(worker), policy);
-      const reclaimable = !result.admitted && ["insufficient-ram", "insufficient-vram"].includes(result.code) && Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) >= 30_000;
+      const reclaimable = !result.admitted && ["insufficient-ram", "insufficient-vram"].includes(result.code) && (worker.location === "local" && this.textLeases.size > 0 || Date.now() - (this.releaseAt.get(worker.baseUrl) ?? 0) >= 30_000);
       if (reclaim && reclaimable) {
+        if (worker.location === "local" && this.textLeases.size && await this.evictText?.()) {
+          telemetry = await this.telemetry(worker);
+          if (!telemetry) return { kind: "wait", reason: "Waiting for memory measurements after unloading the local assistant" };
+          result = checkAdmission(budget, telemetry, this.leases(worker), policy);
+        }
         // A previous checkpoint can occupy memory on an otherwise idle worker.
         // Ask that worker to release caches, then measure again. Torch's global
         // free-memory counters are not proof that the studio owns an allocation.
-        if (await this.releaseWorker(worker, true)) {
+        if (!result.admitted && await this.releaseWorker(worker, true)) {
           telemetry = await this.telemetry(worker);
           if (!telemetry) return { kind: "wait", reason: "Waiting for memory measurements after unloading idle models" };
           result = checkAdmission(budget, telemetry, this.leases(worker), policy);
@@ -385,10 +451,12 @@ export class Engine {
               return matches;
             };
             if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
+            const textRevision = this.textLeaseRevision;
             const decision = phase === "host" ? await this.reclaimHostRam(job, placement) : await this.admission(placement, phase === "candidate");
             // Cancellation may arrive while telemetry or cache release is in flight.
             if (this.stopping || this.store.job(job.id).status !== "queued") { reason = ""; break; }
             if (!unchanged()) { reason = "The configured worker changed. Restore it or cancel this queued job."; continue; }
+            if (placement.worker.location === "local" && textRevision !== this.textLeaseRevision) { reason = "Checking memory after the local assistant changed its GPU reservation"; continue; }
             if (decision.kind !== "ready") {
               reason = decision.reason;
               if (decision.kind === "reject") rejected.add(placement.worker.id);
