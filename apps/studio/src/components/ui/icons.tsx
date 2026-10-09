@@ -4,7 +4,7 @@ import { forwardRef, type CSSProperties, type SVGProps } from 'react';
 import {
   Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft, ArrowUp as ArrowUpIcon,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
-  ExportSquare, Folder, Gallery, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, MessageQuestion,
+  ExportSquare, Folder, Gallery, GalleryAdd, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, MessageQuestion,
   Notification as NotificationIcon, Monitor, Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
   Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
@@ -51,6 +51,7 @@ export const FolderClosed = /* @__PURE__ */ icon(Folder, 'FolderClosed');
 export const HardDrive = /* @__PURE__ */ icon(Driver2, 'HardDrive');
 export const Heart = /* @__PURE__ */ icon(HeartIcon, 'Heart');
 export const ImageIcon = /* @__PURE__ */ icon(Gallery, 'ImageIcon');
+export const ImagePlus = /* @__PURE__ */ icon(GalleryAdd, 'ImagePlus');
 export const InfoCircle = /* @__PURE__ */ icon(InfoCircleIcon, 'InfoCircle');
 export const Layers2 = /* @__PURE__ */ icon(Layer, 'Layers2');
 export const LayoutGrid = /* @__PURE__ */ icon(Category, 'LayoutGrid');

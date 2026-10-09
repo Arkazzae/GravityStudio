@@ -122,7 +122,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
-    {dragging && <FileDropOverlay target="references" className="fixed inset-4 top-[60px]" title={maxImages ? 'Drop images to add references' : 'This model does not support reference images'} detail={uploading ? 'Wait for the current upload to finish.' : maxImages ? `PNG, JPEG or WebP · 20 MiB per image · ${Math.max(0, maxImages - draft.images.length)} of ${maxImages} slots available` : 'Choose a model that accepts reference images.'} />}
+    {dragging && <FileDropOverlay target="references" fullscreen available={maxImages > 0} title={maxImages ? 'Drop images to add references' : 'This model does not support reference images'} detail={uploading ? 'Wait for the current upload to finish.' : maxImages ? 'PNG, JPEG or WebP, up to 20 MiB each.' : 'Choose a model that accepts reference images.'} />}
     {(browsing || assetsVisited) && <ReferencePicker open={browsing} triggerRef={referenceTrigger} jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={onCloseAssets} unavailableReason={maxImages < 1 ? 'Choose a model that supports reference images to use these assets.' : undefined} />}
   </div>;
 }

@@ -193,7 +193,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
           {busy && <LoaderCircle className="animate-spin motion-reduce:animate-none" />}{busy ? 'Adding…' : 'Use selected'}
         </button></div>
       </footer>
-      {dragging && <FileDropOverlay target="references" title="Add reference images" detail={busy ? 'Wait for the current upload to finish.' : unavailableReason || (!limit ? 'Reference limit reached. Remove an image to add another.' : `Drop PNG, JPEG or WebP images up to 20 MiB each. Choose up to ${limit}.`)} />}
+      {dragging && <FileDropOverlay target="references" available={!unavailableReason && limit > 0} title="Add reference images" detail={busy ? 'Wait for the current upload to finish.' : unavailableReason || (!limit ? 'Reference limit reached. Remove an image to add another.' : 'PNG, JPEG or WebP, up to 20 MiB each.')} />}
     </div>
   </dialog>;
 }
