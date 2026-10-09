@@ -14,6 +14,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
+- Recent activity, optional completion sounds and desktop notifications, and an installable PWA with manual updates.
 
 This first version focuses on image generation and prompt assistance. A standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
 
@@ -31,6 +32,14 @@ pnpm start
 Open **http://127.0.0.1:4321**. Create the owner account using the key in `storage/setup.key`. The key is generated on first startup and is never sent to the browser automatically.
 
 For development, use `pnpm dev` instead of the build/start commands. The web application and API run as two processes; neither needs its own container. Stop both with Ctrl+C.
+
+### Install the app and enable notifications
+
+Open **Settings → App** to install Studio when your browser supports installation, or use the browser's install/share menu. PWA installation and desktop notifications require HTTPS or localhost; a plain HTTP address on your LAN does not qualify. The service worker runs in production builds only.
+
+The top-bar bell shows recent job activity and controls completion sounds and desktop notifications. Both are off by default and saved per browser. Desktop permission is requested only when you enable it. Keep Studio open in a background tab or app window to receive completion alerts; there is no push delivery after closing it. System notifications contain model names, never prompts or generated images.
+
+Updates appear under **Settings → App** and reload only when you choose **Reload app**. Finish active work and save settings first. The offline screen explains how to reconnect: generating and browsing your gallery still require the server. Only public app assets and this fallback screen are cached, not authenticated pages, API responses or private images.
 
 ### Set up generation
 

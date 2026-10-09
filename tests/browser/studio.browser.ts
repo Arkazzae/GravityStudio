@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -174,10 +174,27 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   await engine.start();
-  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let logs = ''; child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); }); child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); });
+  let logs = '';
+  function startFrontend() {
+    const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); }); child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); });
+    return child;
+  }
+  let child = startFrontend();
   t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await Promise.all([comfy.close(), otherComfy.close()]); store.close(); await rm(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ } if (child.exitCode !== null) throw new Error(`Next could not start: ${logs}`); if (attempt === 99) throw new Error(`Next startup timed out: ${logs}`); await delay(100); }
+  for (const path of ['/manifest.webmanifest', '/sw.js', '/offline.html', '/pwa/icon-192.png', '/pwa/icon-512.png', '/pwa/icon-maskable-512.png', '/pwa/apple-touch-icon.png']) {
+    assert.equal((await fetch(origin + path, { redirect: 'manual' })).status, 200, `${path} is available before signing in`);
+  }
+  const manifest = await (await fetch(`${origin}/manifest.webmanifest`)).json() as { name: string; display: string; start_url: string; scope: string; icons: Array<{ src: string; purpose: string; sizes: string }> };
+  assert.equal(manifest.name, 'Gravity Studio');
+  assert.equal(manifest.display, 'standalone');
+  assert.equal(manifest.start_url, '/image');
+  assert.equal(manifest.scope, '/');
+  assert.ok(manifest.icons.some(icon => icon.purpose === 'maskable' && icon.sizes === '512x512'), 'Installed applications have a maskable icon');
+  const workerScript = await fetch(`${origin}/sw.js`);
+  assert.match(workerScript.headers.get('cache-control') || '', /no-store/, 'A service-worker update is not hidden by the HTTP cache');
+  assert.ok((await workerScript.text()).includes((await readFile(join(studio, '.next/BUILD_ID'), 'utf8')).trim()), 'The worker revision changes with the production build');
   const browser = await openBrowser(t);
   async function clickScopedText(scope: string, label: string) {
     const element = `Array.from(document.querySelectorAll('${scope} button, ${scope} a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`;
@@ -730,7 +747,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'API access']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'API access', 'App']);
   assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-integrations')"), false, 'Integration settings load only after selecting their tab');
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
@@ -800,7 +817,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation select[name=idleUnloadSeconds]').value"), '300', 'Changing tabs preserves the model retention draft');
   await settingsKey('Home', 'gpus');
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').hidden && document.querySelector('#settings-panel-connections').hidden && document.querySelector('#settings-panel-models').hidden"), true, 'Inactive sections remain mounted and hidden');
-  await settingsKey('End', 'api');
+  await settingsKey('End', 'app');
+  await settingsKey('ArrowUp', 'api');
   await browser.until("document.body.innerText.includes('API & MCP access')", 'API access settings');
   await browser.fill('input[placeholder="My MCP client"]', 'Browser test MCP');
   await browser.clickText('Create token');
@@ -1373,6 +1391,168 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.querySelectorAll('main figure').length === 1 && !!document.querySelector('#image-prompt')", 'Output deletion persists after reload');
   assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('main figure > img')).map(image => image.getAttribute('src'))"), preservedImages);
   assert.equal(await browser.evaluate(`Array.from(document.querySelectorAll('main p')).some(element => element.textContent.trim() === ${JSON.stringify(prompt)})`), false, 'Reload does not recreate a succeeded placeholder for the deleted image');
+
+  // Browser permission, sound and OS delivery are deterministic fixtures; the
+  // production worker, notification controls and real job transitions are not.
+  const alertMocks = await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__gravityAlertStats = JSON.parse(sessionStorage.getItem('browser-alert-stats') || '{"permissions":0,"gestures":[],"notifications":[],"sounds":0}');
+    const save = () => sessionStorage.setItem('browser-alert-stats', JSON.stringify(window.__gravityAlertStats));
+    const record = (title, options) => { window.__gravityAlertStats.notifications.push({title, options}); save(); };
+    class TestNotification {
+      static get permission() { return sessionStorage.getItem('browser-notification-permission') || 'default'; }
+      static async requestPermission() { window.__gravityAlertStats.permissions++; window.__gravityAlertStats.gestures.push(navigator.userActivation.isActive); sessionStorage.setItem('browser-notification-permission', 'granted'); save(); return 'granted'; }
+      constructor(title, options) { record(title, options); }
+      close() {}
+    }
+    Object.defineProperty(window, 'Notification', {configurable:true, value:TestNotification});
+    if ('ServiceWorkerRegistration' in window) ServiceWorkerRegistration.prototype.showNotification = async (title, options) => record(title, options);
+    const parameter = () => ({value:0, setValueAtTime() {}, exponentialRampToValueAtTime() {}, linearRampToValueAtTime() {}});
+    class TestAudioContext {
+      currentTime = 0; state = 'running'; destination = {};
+      async resume() {} async close() {}
+      createGain() { return {gain:parameter(), connect(target) {return target;}, disconnect() {}}; }
+      createOscillator() { return {frequency:parameter(), connect(target) {return target;}, disconnect() {}, start() {window.__gravityAlertStats.sounds++; save();}, stop() {}}; }
+    }
+    Object.defineProperty(window, 'AudioContext', {configurable:true, value:TestAudioContext});
+    window.__gravityBackground = true;
+    Object.defineProperty(document, 'visibilityState', {configurable:true, get:() => window.__gravityBackground ? 'hidden' : 'visible'});
+    Object.defineProperty(document, 'hidden', {configurable:true, get:() => window.__gravityBackground});
+  ` }) as unknown as { identifier: string };
+  try {
+    await browser.send('Page.reload');
+    await browser.until("!!document.querySelector('header button[aria-label=\"Notifications\"]') && document.querySelectorAll('main figure').length === 1", 'Notification controls mount around restored job history');
+    await browser.until('!!navigator.serviceWorker.controller', 'The production service worker controls Studio');
+    assert.deepEqual(await browser.evaluate('window.__gravityAlertStats'), { permissions: 0, gestures: [], notifications: [], sounds: 0 }, 'Opening Studio does not ask for permission or replay old completions');
+    assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('link[rel=manifest]'), link => ({path:new URL(link.href).pathname, credentials:link.crossOrigin}))"), [{ path: '/manifest.webmanifest', credentials: 'use-credentials' }], 'The install manifest includes authentication cookies for an HTTPS access proxy');
+    const browserManifest = await browser.send('Page.getAppManifest') as unknown as { data: string; errors: unknown[] };
+    assert.deepEqual(browserManifest.errors, [], 'Chromium accepts the served application manifest');
+    assert.equal(JSON.parse(browserManifest.data).name, 'Gravity Studio');
+    await browser.evaluate("window.__gravityBackground = false; document.dispatchEvent(new Event('visibilitychange'))");
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+    await browser.click('header button[aria-label="Notifications"]');
+    const notifications = '[role="dialog"][aria-label="Notifications"]:popover-open';
+    const soundSwitch = `${notifications} [role="switch"][aria-label="Play a sound when a generation is ready"]`;
+    const desktopSwitch = `${notifications} [role="switch"][aria-label="Show a desktop notification when a generation is ready"]`;
+    await browser.until(`!!document.querySelector(${JSON.stringify(notifications)})`, 'Notification popover opens');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(soundSwitch)}).getAttribute('aria-checked')`), 'false');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(desktopSwitch)}).getAttribute('aria-checked')`), 'false');
+    await browser.click(soundSwitch);
+    await browser.until('window.__gravityAlertStats.sounds > 0', 'Enabling sound previews a chime after a user gesture');
+    await browser.evaluate("window.__gravitySetStorage = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) {if (key === 'gravity:completion-alerts') throw new DOMException('Storage is full', 'QuotaExceededError'); return window.__gravitySetStorage.call(this, key, value);}");
+    try {
+      await browser.click(soundSwitch);
+      await browser.until(`document.querySelector(${JSON.stringify(soundSwitch)}).getAttribute('aria-checked') === 'false'`, 'A full browser store still permits an in-memory preference change');
+    } finally {
+      await browser.evaluate('Storage.prototype.setItem = window.__gravitySetStorage; delete window.__gravitySetStorage');
+    }
+    await browser.click(soundSwitch);
+    await browser.until(`document.querySelector(${JSON.stringify(soundSwitch)}).getAttribute('aria-checked') === 'true'`, 'A subsequent preference edit persists when browser storage recovers');
+    await browser.click(desktopSwitch);
+    await browser.until(`document.querySelector(${JSON.stringify(desktopSwitch)}).getAttribute('aria-checked') === 'true'`, 'Desktop notifications enable after permission is granted');
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.permissions'), 1, 'Permission is requested once from the desktop switch');
+    assert.deepEqual(await browser.evaluate('window.__gravityAlertStats.gestures'), [true], 'The permission request retains the trusted user activation');
+    assert.deepEqual(await browser.evaluate('window.__gravityAlertStats.notifications'), [], 'Granting permission does not notify about old history');
+    await delay(450);
+    await screenshotPopover('notifications-desktop.png');
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await browser.until(`(() => { const panel = document.querySelector(${JSON.stringify(notifications)}), rect = panel.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && panel.scrollWidth <= panel.clientWidth; })()`, 'Notification popover fits a phone viewport');
+    await screenshotPopover('notifications-mobile.png');
+    await browser.click('button[aria-label="Close notifications"]');
+    await browser.click('header button[aria-label="Settings"]');
+    await browser.click('#settings-tab-app');
+    await browser.until("document.querySelector('#settings-panel-app')?.innerText.includes('App on this device')", 'App settings opens inside the existing settings modal');
+    assert.equal(await browser.evaluate(`(() => {
+      window.__gravityInstallStats = {prompts:0, gestures:[]};
+      const event = new Event('beforeinstallprompt', {cancelable:true});
+      event.prompt = async () => {window.__gravityInstallStats.prompts++; window.__gravityInstallStats.gestures.push(navigator.userActivation.isActive);};
+      event.userChoice = Promise.resolve({outcome:'accepted'});
+      window.dispatchEvent(event); return event.defaultPrevented;
+    })()`), true, 'Studio retains the browser install invitation without opening it automatically');
+    await browser.until("Array.from(document.querySelectorAll('#settings-panel-app button')).some(button => button.textContent === 'Install Gravity Studio')", 'An install-capable browser exposes its explicit install action');
+    assert.equal(await browser.evaluate('window.__gravityInstallStats.prompts'), 0, 'An install invitation needs an explicit user choice');
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#settings-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+    assert.equal(await browser.evaluate("document.querySelector('#settings-panel-app').scrollWidth <= document.querySelector('#settings-panel-app').clientWidth && document.documentElement.scrollWidth <= innerWidth"), true, 'App settings fits its mobile panel');
+    await browser.screenshot(join(output, 'settings-app-mobile.png'));
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+    await browser.screenshot(join(output, 'settings-app-desktop.png'));
+    await clickScopedText('#settings-panel-app', 'Install Gravity Studio');
+    await browser.until('window.__gravityInstallStats.prompts === 1', 'Clicking Install opens the browser-owned installation prompt once');
+    assert.deepEqual(await browser.evaluate('window.__gravityInstallStats.gestures'), [true], 'The install action runs within its user gesture');
+    assert.equal(await browser.evaluate("document.querySelector('#settings-panel-app').innerText.includes('Gravity Studio is installed on this device.')"), false, 'Accepting a prompt alone is not reported as a completed installation');
+    await browser.evaluate("window.dispatchEvent(new Event('appinstalled'))");
+    await browser.until("document.querySelector('#settings-panel-app').innerText.includes('Gravity Studio is installed on this device.')", 'Only the installation event confirms the app was installed');
+    const updateDraft = await browser.evaluate<string>("document.querySelector('#image-prompt').value");
+    await browser.evaluate("window.__gravityUpdatePrompt = document.querySelector('#image-prompt'); navigator.serviceWorker.dispatchEvent(new Event('controllerchange'))");
+    await browser.until("Array.from(document.querySelectorAll('#settings-panel-app button')).some(button => button.textContent === 'Reload app')", 'A service-worker change offers an explicit reload');
+    assert.equal(await browser.evaluate("document.querySelector('#image-prompt') === window.__gravityUpdatePrompt"), true, 'An update does not reload or remount the unfinished composer');
+    await clickScopedText('#settings-panel-app', 'Reload app');
+    await browser.until(`document.querySelector('#image-prompt')?.value === ${JSON.stringify(updateDraft)} && !window.__gravityUpdatePrompt`, 'An explicit app reload restores the saved prompt');
+    await browser.evaluate("window.__gravityBackground = false; document.dispatchEvent(new Event('visibilitychange'))");
+    const previewSounds = await browser.evaluate<number>('window.__gravityAlertStats.sounds');
+    completeAutomatically = false;
+    comfy.state.postBehavior = 'normal';
+    otherComfy.state.postBehavior = 'normal';
+    const notifiedJob = await browser.evaluate<{ id: string }>(`fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json','Idempotency-Key':'browser-notification-completion'}, body:JSON.stringify({modelId:${JSON.stringify(modelId)},prompt:'A small green ceramic bowl for the completion notification test'})}).then(async response => { const body = await response.json(); if (!response.ok) throw new Error(JSON.stringify(body)); return body.job; })`);
+    await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'running'", 'The browser observes the pending generation before completion');
+    await browser.evaluate("window.__gravityBackground = true; document.dispatchEvent(new Event('visibilitychange'))");
+    completeAutomatically = true;
+    await browser.until('window.__gravityAlertStats.notifications.length === 1', 'Completing a known job sends one notification while Studio is in the background');
+    assert.equal(store.job(notifiedJob.id).status, 'succeeded');
+    assert.ok(await browser.evaluate<number>('window.__gravityAlertStats.sounds') > previewSounds, 'Completion also plays the enabled sound');
+    assert.match(JSON.stringify(await browser.evaluate('window.__gravityAlertStats.notifications[0]')), new RegExp(notifiedJob.id), 'The alert identifies the completed job');
+    await browser.until("!!document.querySelector('button[aria-label^=\"Dismiss \"]')", 'A completion also produces a dismissible in-app toast');
+    await delay(450);
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      assert.equal(await browser.evaluate("(() => { const toast = document.querySelector('button[aria-label^=\"Dismiss \"]').closest('[role=status]'), rect = toast.getBoundingClientRect(); return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight; })()"), true, 'The completion toast stays within the viewport');
+      await browser.screenshot(join(output, `notification-toast-${mobile ? 'mobile' : 'desktop'}.png`));
+    }
+    await browser.click('button[aria-label^="Dismiss "]');
+    await browser.until("!document.querySelector('button[aria-label^=\"Dismiss \"]')", 'A toast can be dismissed without affecting the generated image');
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+    await browser.evaluate("window.__gravityBackground = false; document.dispatchEvent(new Event('visibilitychange'))");
+    const completionSounds = await browser.evaluate<number>('window.__gravityAlertStats.sounds');
+    await delay(6500);
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.notifications.length'), 1, 'Repeated state polls do not repeat an OS alert');
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.sounds'), completionSounds, 'Repeated state polls do not repeat the chime');
+    await browser.send('Page.reload');
+    await browser.until("document.querySelectorAll('main figure').length === 2 && !!navigator.serviceWorker.controller", 'Studio restores the completed job with the installed worker');
+    await delay(3500);
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.notifications.length'), 1, 'Reloading in the background never replays completed jobs');
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.sounds'), completionSounds, 'Reloading does not replay sounds');
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.permissions'), 1, 'Saved preferences do not ask for permission again');
+    await browser.click('header button[aria-label="Notifications"]');
+    await browser.until(`document.querySelector(${JSON.stringify(soundSwitch)})?.getAttribute('aria-checked') === 'true' && document.querySelector(${JSON.stringify(desktopSwitch)})?.getAttribute('aria-checked') === 'true'`, 'Both notification preferences survive a page reload');
+    await browser.evaluate("sessionStorage.setItem('browser-notification-permission', 'denied'); window.dispatchEvent(new Event('focus'))");
+    await browser.until(`document.querySelector(${JSON.stringify(desktopSwitch)})?.disabled && document.querySelector(${JSON.stringify(notifications)})?.textContent.includes('Notifications are blocked for this site')`, 'Revoking browser permission gives an actionable explanation and disables its switch');
+    assert.equal(await browser.evaluate('window.__gravityAlertStats.permissions'), 1, 'A blocked permission is never repeatedly requested');
+    await browser.evaluate("sessionStorage.setItem('browser-notification-permission', 'granted'); window.dispatchEvent(new Event('focus'))");
+    await browser.click('button[aria-label="Close notifications"]');
+
+    await browser.evaluate("Promise.all([fetch('/api/state').then(response => response.json()), fetch('/api/bootstrap').then(response => response.json()), ...Array.from(document.querySelectorAll('main figure > img'), image => fetch(image.src).then(response => response.arrayBuffer()))]).then(() => true)");
+    const cachedPaths = await browser.evaluate<string[]>("caches.keys().then(async names => (await Promise.all(names.map(async name => (await (await caches.open(name)).keys()).map(request => new URL(request.url).pathname)))).flat())");
+    assert.ok(cachedPaths.includes('/offline.html'), 'The installed worker stores a public offline page');
+    assert.ok(cachedPaths.every(path => path === '/offline.html' || path.startsWith('/pwa/') || path.startsWith('/_next/static/')), 'No prompts, authenticated pages, API responses or generated images enter the service-worker cache');
+    await browser.send('Network.enable');
+    await browser.send('Network.setCacheDisabled', { cacheDisabled: true });
+    // CDP's page-only offline emulation leaves the service-worker network alive.
+    // Stop the controlled frontend to make both targets experience a real outage.
+    const frontendStopped = once(child, 'exit'); child.kill('SIGTERM'); await frontendStopped;
+    try {
+      await browser.navigate(`${origin}/image?offline-check=browser`);
+      await browser.until("document.body.innerText.includes('Reconnect to your studio')", 'An offline navigation shows the generic recovery page');
+      assert.equal(await browser.evaluate("document.body.innerText.includes('ceramic bowl') || !!document.querySelector('main figure')"), false, 'The offline page reveals no previous prompt or image');
+      assert.equal(await browser.evaluate("fetch('/api/state').then(() => false, () => true)"), true, 'Authenticated API data is unavailable offline');
+    } finally {
+      child = startFrontend();
+      for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Restarting. */ } if (child.exitCode !== null || attempt === 99) throw new Error(`Next could not restart: ${logs}`); await delay(100); }
+    }
+    await browser.send('Page.reload');
+    await browser.until("!!document.querySelector('#image-prompt') && document.querySelectorAll('main figure').length === 2", 'Reconnecting restores the authenticated workspace');
+  } finally {
+    completeAutomatically = true;
+    await browser.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: alertMocks.identifier });
+  }
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });
