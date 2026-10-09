@@ -62,6 +62,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS outputs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS outputs_job ON outputs(job_id);
       CREATE TABLE IF NOT EXISTS output_favorites (user_id TEXT NOT NULL REFERENCES users(id), output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY(user_id,output_id));
+      CREATE TABLE IF NOT EXISTS output_deletions (output_id TEXT PRIMARY KEY REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);
     `);
   }
   close() { this.db.close(); }
@@ -186,9 +187,33 @@ export class Store {
   }
   setOutputFavorite(jobId: string, id: string, userId: string, favorite: boolean): StoredJob {
     this.output(jobId, id, userId);
+    if (this.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(id)) throw new ApiError(409, "OUTPUT_DELETION_PENDING", "This image is being deleted. Retry deleting it if an earlier attempt failed.");
     if (favorite) this.db.prepare("INSERT INTO output_favorites(user_id,output_id,created_at) VALUES(?,?,?) ON CONFLICT(user_id,output_id) DO NOTHING").run(userId, id, now());
     else this.db.prepare("DELETE FROM output_favorites WHERE user_id=? AND output_id=?").run(userId, id);
     return this.job(jobId, userId);
+  }
+  beginOutputDeletion(jobId: string, id: string, userId: string): StoredOutput {
+    const output = this.output(jobId, id, userId);
+    if (!["succeeded", "failed", "cancelled"].includes(this.job(jobId, userId).status)) throw new ApiError(409, "JOB_ACTIVE", "Wait for this generation to finish before deleting its images.");
+    this.db.prepare("INSERT INTO output_deletions(output_id,created_at) VALUES(?,?) ON CONFLICT(output_id) DO NOTHING").run(id, now());
+    return output;
+  }
+  pendingOutputDeletions(): Array<{ jobId: string; outputId: string; userId: string }> {
+    return this.db.prepare("SELECT outputs.job_id AS jobId, outputs.id AS outputId, jobs.user_id AS userId FROM output_deletions JOIN outputs ON outputs.id=output_deletions.output_id JOIN jobs ON jobs.id=outputs.job_id ORDER BY output_deletions.created_at").all() as Array<{ jobId: string; outputId: string; userId: string }>;
+  }
+  finishOutputDeletion(jobId: string, id: string, userId: string): StoredJob {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const job = this.job(jobId, userId);
+      if (!["succeeded", "failed", "cancelled"].includes(job.status)) throw new ApiError(409, "JOB_ACTIVE", "Wait for this generation to finish before deleting its images.");
+      const pending = this.db.prepare("SELECT 1 FROM output_deletions JOIN outputs ON outputs.id=output_deletions.output_id WHERE outputs.id=? AND outputs.job_id=?").get(id, jobId);
+      if (pending) {
+        this.db.prepare("UPDATE jobs SET body=? WHERE id=?").run(jobBody({ ...job, outputs: job.outputs.filter(output => output.id !== id) }), jobId);
+        this.db.prepare("DELETE FROM outputs WHERE id=? AND job_id=?").run(id, jobId);
+      }
+      this.db.exec("COMMIT");
+      return this.job(jobId, userId);
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 }
 export function publicJob(job: StoredJob): PublicJob {

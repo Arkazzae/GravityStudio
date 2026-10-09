@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -245,6 +245,85 @@ test("favorite routes validate mutations and expose only the owner's selected ge
   assert.equal((await api.request(path, "PUT", { favorite: false })).status, 200);
   assert.deepEqual(await (await api.request("/favorites")).json(), { jobs: [] });
   assert.equal(api.store.favorites("foreign-owner").length, 1);
+});
+
+test("output deletion is owner scoped, protects active jobs and removes one image from every projection", async t => {
+  const api = await fixture(t);
+  await api.setup();
+  const owner = api.store.owner()!;
+  const job = api.store.createJob(owner.id, { modelId: "sdxl-base", prompt: "Two images" }, { immutable: true }, [], "SDXL", { seed: 31 }, "delete-output", "delete-output");
+  const outputs = [await saveOutput(api.store, job.id, 0, PNG), await saveOutput(api.store, job.id, 1, PNG)];
+  api.store.patchJob(job.id, { outputs });
+  const paths = outputs.map(output => `/jobs/${job.id}/outputs/${output.id}`);
+  const files = outputs.map(output => api.store.output(job.id, output.id, owner.id).path);
+  assert.equal((await fetch(`${api.url}/api${paths[0]}`, { method: "DELETE", headers: { Origin: origin } })).status, 401);
+  assert.equal((await fetch(`${api.url}/api${paths[0]}`, { method: "DELETE", headers: { Cookie: api.cookie() } })).status, 403);
+  assert.equal((await api.request(paths[0], "DELETE", undefined, { Origin: "https://attacker.example" })).status, 403);
+  assert.equal((await api.request(`/jobs/${job.id}/outputs/${"0".repeat(32)}`, "DELETE")).status, 404);
+  for (const status of ["queued", "preparing", "running", "interrupted"] as const) {
+    api.store.patchJob(job.id, { status });
+    const response = await api.request(paths[0], "DELETE");
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, "JOB_ACTIVE");
+    assert.equal(api.store.job(job.id).outputs.length, 2);
+    assert.deepEqual(await readFile(files[0]), Buffer.from(PNG));
+  }
+  assert.deepEqual(api.store.pendingOutputDeletions(), []);
+  api.store.patchJob(job.id, { status: "failed" });
+  outputs.forEach(output => api.store.setOutputFavorite(job.id, output.id, owner.id, true));
+  const original = api.store.job(job.id);
+
+  api.store.db.prepare("INSERT INTO users VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  const foreign = api.store.createJob("foreign-owner", { modelId: "sdxl-base", prompt: "Private image" }, {}, [], "SDXL", {}, "foreign-delete", "foreign-delete");
+  const privateOutput = await saveOutput(api.store, foreign.id, 0, PNG);
+  api.store.patchJob(foreign.id, { status: "cancelled", outputs: [privateOutput] });
+  api.store.setOutputFavorite(foreign.id, privateOutput.id, "foreign-owner", true);
+  assert.equal((await api.request(`/jobs/${foreign.id}/outputs/${privateOutput.id}`, "DELETE")).status, 404);
+  assert.equal((await api.request(`/jobs/${job.id}/outputs/${privateOutput.id}`, "DELETE")).status, 404);
+  assert.deepEqual(await readFile(api.store.output(foreign.id, privateOutput.id, "foreign-owner").path), Buffer.from(PNG));
+
+  const response = await api.request(paths[0], "DELETE");
+  assert.equal(response.status, 200);
+  const deleted = (await response.json()).job;
+  assert.deepEqual(deleted.outputs.map((output: { id: string }) => output.id), [outputs[1].id]);
+  assert.equal("snapshot" in deleted, false);
+  assert.equal("path" in deleted.outputs[0], false);
+  assert.deepEqual(api.store.job(job.id), { ...original, outputs: [original.outputs[1]] });
+  await assert.rejects(readFile(files[0]), { code: "ENOENT" });
+  assert.deepEqual(await readFile(files[1]), Buffer.from(PNG));
+  for (const endpoint of ["/state", "/jobs", "/favorites"]) {
+    const view = await (await api.request(endpoint)).json();
+    assert.deepEqual(view.jobs.flatMap((item: { outputs: Array<{ id: string }> }) => item.outputs.map(output => output.id)), [outputs[1].id]);
+  }
+  assert.equal((await api.request(paths[0])).status, 404);
+  assert.equal((await api.request(`${paths[0]}/favorite`, "PUT", { favorite: true })).status, 404);
+  assert.equal((await api.request(paths[0], "DELETE")).status, 404);
+  assert.equal((await api.request(paths[1], "DELETE")).status, 200);
+  assert.deepEqual((await (await api.request(`/jobs/${job.id}`)).json()).job.outputs, []);
+  assert.deepEqual(await (await api.request("/favorites")).json(), { jobs: [] });
+  assert.equal(api.store.favorites("foreign-owner").length, 1);
+});
+
+test("concurrent output deletions preserve siblings and a pending deletion cannot be favorited", async t => {
+  const api = await fixture(t); await api.setup();
+  const owner = api.store.owner()!;
+  const job = api.store.createJob(owner.id, { modelId: "sdxl-base", prompt: "Three images" }, { immutable: true }, [], "SDXL", {}, "concurrent-delete", "concurrent-delete");
+  const outputs = await Promise.all([0, 1, 2].map(index => saveOutput(api.store, job.id, index, PNG)));
+  api.store.patchJob(job.id, { status: "preparing" });
+  api.store.patchJob(job.id, { status: "succeeded", outputs });
+  outputs.forEach(output => api.store.setOutputFavorite(job.id, output.id, owner.id, true));
+  const original = api.store.job(job.id);
+  api.store.beginOutputDeletion(job.id, outputs[0].id, owner.id);
+  const favorite = await api.request(`/jobs/${job.id}/outputs/${outputs[0].id}/favorite`, "PUT", { favorite: false });
+  assert.equal(favorite.status, 409);
+  assert.equal((await favorite.json()).error.code, "OUTPUT_DELETION_PENDING");
+  const results = await Promise.all([0, 0, 1].map(index => api.request(`/jobs/${job.id}/outputs/${outputs[index].id}`, "DELETE")));
+  assert.equal(results[0].status, 200);
+  assert.ok([200, 404].includes(results[1].status));
+  assert.equal(results[2].status, 200);
+  assert.deepEqual(api.store.job(job.id), { ...original, outputs: [original.outputs[2]] });
+  assert.deepEqual(api.store.favorites(owner.id)[0].outputs.map(output => output.id), [outputs[2].id]);
+  assert.deepEqual(api.store.pendingOutputDeletions(), []);
 });
 
 test("generation requires an idempotency key and logout invalidates the session", async t => {

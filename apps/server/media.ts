@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { ApiError, type PublicInput, type SavedOutput } from "../../packages/contracts/index.ts";
@@ -55,4 +55,32 @@ export async function saveOutput(store: Store, jobId: string, ordinal: number, b
   const output: SavedOutput = { id, url: `/api/jobs/${jobId}/outputs/${id}`, mimeType, width, height, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
   store.saveOutput(jobId, { ...output, path });
   return output;
+}
+
+export async function deleteOutput(store: Store, jobId: string, id: string, userId: string) {
+  // Keep the intent until both the file and database records are gone. A restart
+  // can finish a deletion interrupted after unlink but before the transaction.
+  const output = store.beginOutputDeletion(jobId, id, userId);
+  const extension = ({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" } as Record<string, string>)[output.mimeType];
+  const root = resolve(store.directory, "outputs");
+  const directory = join(root, jobId);
+  const expectedPath = join(directory, `${id}.${extension}`);
+  try {
+    if (!extension || !/^[a-f0-9-]{36}$/.test(jobId) || !/^[a-f0-9]{32}$/.test(id) || resolve(output.path) !== expectedPath) throw new Error("Invalid output path");
+    for (const parent of [root, directory]) {
+      if (!(await lstat(parent)).isDirectory()) throw new Error("Invalid output directory");
+    }
+    if (!(await lstat(expectedPath)).isFile()) throw new Error("Invalid output file");
+    await unlink(expectedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new ApiError(503, "OUTPUT_DELETE_FAILED", "Could not delete this image from storage. Try again.");
+  }
+  return store.finishOutputDeletion(jobId, id, userId);
+}
+
+export async function recoverOutputDeletions(store: Store): Promise<void> {
+  for (const pending of store.pendingOutputDeletions()) {
+    try { await deleteOutput(store, pending.jobId, pending.outputId, pending.userId); }
+    catch (error) { console.error("Pending image deletion could not finish:", pending.outputId, error instanceof Error ? error.message : error); }
+  }
 }

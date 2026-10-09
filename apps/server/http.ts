@@ -7,7 +7,7 @@ import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
 import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
-import { MAX_INPUT_BYTES, saveInput } from "./media.ts";
+import { deleteOutput, MAX_INPUT_BYTES, recoverOutputDeletions, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
@@ -58,6 +58,7 @@ export interface ServerOptions {
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
+  await recoverOutputDeletions(store);
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
   const models = options.models ?? new ModelLibrary(store, engine);
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
@@ -203,6 +204,7 @@ export async function createStudioServer(options: ServerOptions) {
         return json(response, { job: publicJob(store.setOutputFavorite(favoriteRoute[1], favoriteRoute[2], user.id, body.favorite)) });
       }
       const outputRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})$/);
+      if (outputRoute && method === "DELETE") return json(response, { job: publicJob(await deleteOutput(store, outputRoute[1], outputRoute[2], user.id)) });
       if (outputRoute && method === "GET") {
         const output = store.output(outputRoute[1], outputRoute[2], user.id);
         response.writeHead(200, { ...safeHeaders, "Content-Type": output.mimeType, "Content-Length": output.bytes, "Content-Disposition": `inline; filename="${output.id}.${output.mimeType.split("/")[1]}"` });
