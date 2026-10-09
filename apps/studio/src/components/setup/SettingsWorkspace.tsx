@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, Cpu, ExternalLink, HardDrive, Layers2, LoaderCircle, RefreshCw, SlidersHorizontal } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { AdvancedSettings } from './AdvancedSettings';
+import { IntegrationsSettings } from './IntegrationsSettings';
 import { TabbedWorkspace } from '@/components/studio/TabbedWorkspace';
 import { api, bytes, errorMessage, type Hardware, type RuntimeSetupStatus, type Settings } from '@/lib/api';
 
@@ -11,6 +12,7 @@ const sections = [
   { id: 'generation', label: 'Generation', icon: SlidersHorizontal },
   { id: 'connections', label: 'Connections', icon: HardDrive },
   { id: 'models', label: 'Model files', icon: Layers2 },
+  { id: 'integrations', label: 'Integrations', icon: ExternalLink },
   { id: 'api', label: 'API access', icon: ExternalLink },
 ] as const;
 type SettingsSection = typeof sections[number]['id'];
@@ -26,6 +28,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
   const [error, setError] = useState('');
   const [section, setSection] = useState<SettingsSection>('gpus');
   const [advancedVisited, setAdvancedVisited] = useState(false);
+  const [integrationsVisited, setIntegrationsVisited] = useState(false);
   const [advancedRevision, setAdvancedRevision] = useState(0);
   const [advancedDirty, setAdvancedDirty] = useState(false);
   const onSavedRef = useRef(onSaved);
@@ -92,7 +95,8 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
   }
 
   function selectSection(next: SettingsSection) {
-    if (next !== 'gpus') setAdvancedVisited(true);
+    if (next !== 'gpus' && next !== 'integrations') setAdvancedVisited(true);
+    if (next === 'integrations') setIntegrationsVisited(true);
     setSection(next);
   }
   return <TabbedWorkspace id="settings" label="Settings sections" sections={sections} selected={section} onSelect={selectSection}>
@@ -120,6 +124,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     </section>
     {onboarding && <div className="mt-9 flex flex-wrap items-center gap-4 border-t border-line pt-6"><button type="button" onClick={onFinished} className={`inline-flex min-h-11 items-center gap-2 rounded-chip px-5 text-sm font-medium ${connected ? 'bg-chip hover:bg-chip-hi' : 'text-ink-2 hover:text-ink'}`}>{connected ? 'Start creating' : 'I’ll set this up later'}<ArrowRight size={16} /></button></div>}
     </div>
-    {advancedVisited && <fieldset disabled={busy} className="min-w-0">{busy && section !== 'gpus' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
+    {integrationsVisited && <div hidden={section !== 'integrations'} role="tabpanel" id="settings-panel-integrations" aria-labelledby="settings-tab-integrations" tabIndex={0}><IntegrationsSettings /></div>}
+    {advancedVisited && <fieldset disabled={busy} hidden={section === 'integrations'} className="min-w-0">{busy && section !== 'gpus' && section !== 'integrations' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
   </TabbedWorkspace>;
 }
