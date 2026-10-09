@@ -59,6 +59,11 @@ test("browser mutations validate origins and API tokens cannot administer worker
   const bearer = { Authorization: `Bearer ${created.token}` };
   assert.equal((await fetch(`${api.url}/api/jobs`, { headers: bearer })).status, 200);
   assert.equal((await fetch(`${api.url}/api/settings`, { headers: bearer })).status, 403);
+  for (const path of ["/runtime", "/models/library"]) assert.equal((await fetch(`${api.url}/api${path}`, { headers: bearer })).status, 403);
+  for (const path of ["/runtime", "/models/download", "/models/activate"]) {
+    assert.equal((await fetch(`${api.url}/api${path}`, { method: "POST", headers: { ...bearer, "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await fetch(`${api.url}/api${path}`, { method: "POST", headers: { Cookie: api.cookie(), "Content-Type": "application/json" }, body: "{}" })).status, 403);
+  }
   const list = await (await api.request("/tokens")).json();
   assert.equal(list.tokens.length, 1);
   assert.equal("hash" in list.tokens[0], false);

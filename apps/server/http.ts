@@ -10,6 +10,9 @@ import { cookieToken, createSession, clearSession, digest, hashPassword, identif
 import { MAX_INPUT_BYTES, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
+import { RuntimeSetup } from "./runtime.ts";
+import { ModelLibrary } from "./models.ts";
+import { modelRegistry } from "./registry.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -39,9 +42,13 @@ export interface ServerOptions {
   engine: Engine;
   allowedOrigins: string[];
   setupSecret?: string;
+  runtime?: Pick<RuntimeSetup, "status" | "start" | "close">;
+  models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
+  const runtime = options.runtime ?? new RuntimeSetup(store, engine);
+  const models = options.models ?? new ModelLibrary(store, engine);
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
   const limiter = new LoginLimiter();
   const origins = new Set(options.allowedOrigins.map(origin => new URL(origin).origin));
@@ -87,6 +94,19 @@ export async function createStudioServer(options: ServerOptions) {
       const { user } = identity;
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
+      const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      if (path === "/api/runtime") {
+        requireSession();
+        if (method === "GET") return json(response, runtime.status());
+        if (method === "POST") {
+          const body = await readJson(request, 16384);
+          if (models.busy()) throw new ApiError(409, "MODEL_DOWNLOAD_BUSY", "Wait for the model download to finish before changing GPUs.");
+          return json(response, runtime.start(body), 202);
+        }
+      }
+      if (path === "/api/models/library" && method === "GET") { requireSession(); return json(response, await models.view()); }
+      if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readJson(request, 8192); requireRuntimeIdle(); return json(response, models.start(body), 202); }
+      if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readJson(request, 1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
       if (path === "/api/mcp") {
         if (method !== "POST") { response.setHeader("Allow", "POST"); throw new ApiError(405, "METHOD_NOT_ALLOWED", "This stateless MCP endpoint accepts POST requests."); }
         const body = await readJson(request);
@@ -107,8 +127,12 @@ export async function createStudioServer(options: ServerOptions) {
         requireSession();
         if (method === "GET") return json(response, settingsView(store));
         if (method === "PUT") {
-          const settings = validateSettings(await readJson(request), await engine.hardwareReport(true));
+          requireRuntimeIdle();
+          const settings = validateSettings(await readJson(request), await engine.hardwareReport(true), modelRegistry(store));
+          requireRuntimeIdle();
+          const changedConcurrency = settings.policy.maxConcurrentJobs !== store.settings().policy.maxConcurrentJobs;
           const saved = store.saveSettings(settings);
+          if (changedConcurrency) store.setMetadata("runtime-auto-concurrency", false);
           engine.invalidateWorkers();
           void engine.refreshWorkers(true);
           return json(response, saved);
@@ -185,5 +209,5 @@ export async function createStudioServer(options: ServerOptions) {
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
-  return server;
+  return Object.assign(server, { closeOperations: async () => { await Promise.all([runtime.close(), models.close()]); } });
 }

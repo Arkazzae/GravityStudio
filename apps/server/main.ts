@@ -16,6 +16,7 @@ let closing = false;
 async function close() {
   if (closing) return; closing = true;
   server.close();
+  await server.closeOperations();
   await engine.stop();
   server.closeAllConnections();
   store.close();

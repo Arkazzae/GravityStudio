@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -103,13 +103,16 @@ test("a failed smoke test records failure evidence and exposes its bounded diagn
     const hardware = triple3090(), gpu = hardware.gpus[0];
     const plan = createRuntimeDeployment(hardware, { dataDirectory: directory, gpuIds: [gpu.id] }), worker = plan.workers[0];
     await writeRuntimeDeployment(plan);
+    const other = { receipt: { gpuId: hardware.gpus[1].id, passed: true }, verification: { gpuId: hardware.gpus[1].id, passed: true } };
+    await writeFile(join(directory, "runtime/verification.json"), JSON.stringify({ version: 1, results: [other] }));
     const run: RuntimeRunner = async ({ args }) => {
       if (args[0] === "exec") throw Object.assign(new Error("exit 1"), { stdout: JSON.stringify({ passed: false, error: "GPU kernel is unavailable for this architecture" }) });
       return { stdout: JSON.stringify({ Image: `sha256:${"1".repeat(64)}`, State: { Running: true }, Config: { Labels: { "io.gravity.owner": "gravity-studio", "io.gravity.deployment": worker.deploymentHash, "io.gravity.runtime.revision": worker.runtimeRevision } } }), stderr: "" };
     };
     await assert.rejects(smokeRuntimeDeployment(plan, hardware, { run, async idle() {} }), /GPU kernel is unavailable/);
     const saved = JSON.parse(await readFile(join(directory, "runtime/verification.json"), "utf8"));
-    assert.equal(saved.results[0].verification.passed, false);
-    assert.equal(saved.results[0].verification.gpuId, gpu.id);
+    assert.deepEqual(saved.results[0], other);
+    assert.equal(saved.results[1].verification.passed, false);
+    assert.equal(saved.results[1].verification.gpuId, gpu.id);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -3,10 +3,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ApiError, type GenerationInput, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
-import { ComfyClient, compileGeneration, checkCapabilities, FAMILY_RECIPES, DEFAULT_MODELS, InferenceError, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats } from "../../packages/inference/index.ts";
+import { ComfyClient, compileGeneration, checkCapabilities, FAMILY_RECIPES, InferenceError, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
 import { inputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
+import { modelRegistry } from "./registry.ts";
 
 interface WorkerState {
   connected: boolean;
@@ -34,6 +35,7 @@ export class Engine {
   clients = new Map<string, ComfyClient>();
   flights = new Map<string, Promise<void>>();
   stopping = false;
+  runtimeSetupActive = false;
   ticking = false;
   timer?: ReturnType<typeof setTimeout>;
   private detect: () => Promise<HardwareInventory>;
@@ -45,6 +47,8 @@ export class Engine {
   private idleReleasedFor = new Map<string, string>();
   private loopFlight?: Promise<void>;
   private workerRefresh?: Promise<void>;
+  private workerRevision = 0;
+  private workerRefreshRevision = 0;
   constructor(store: Store, options: { detect?: () => Promise<HardwareInventory>; pollMs?: number; reconcileMs?: number } = {}) {
     this.store = store; this.detect = options.detect ?? detectHardware; this.pollMs = options.pollMs ?? 1500;
     this.reconcileMs = options.reconcileMs ?? Math.max(this.pollMs, 1000);
@@ -70,8 +74,15 @@ export class Engine {
       } };
     } catch (error) { return { connected: false, error: message(error), artifacts: {} }; }
   }
-  async refreshWorkers(force = false) {
-    if (this.workerRefresh) return this.workerRefresh;
+  async refreshWorkers(force = false): Promise<void> {
+    if (this.workerRefresh) {
+      const revision = this.workerRefreshRevision;
+      await this.workerRefresh;
+      if (revision !== this.workerRevision) return this.refreshWorkers(force);
+      return;
+    }
+    const revision = this.workerRevision;
+    this.workerRefreshRevision = revision;
     this.workerRefresh = (async () => {
       await Promise.all(this.store.settings().workers.filter(worker => worker.enabled).map(async worker => {
         const state = this.workers.get(worker.id);
@@ -81,13 +92,19 @@ export class Engine {
           const health = await client.health();
           if (!health.healthy) throw new Error(health.error);
           const discovery = await client.discover();
-          this.workers.set(worker.id, { connected: true, checkedAt: Date.now(), discovery, version: health.version });
-        } catch (error) { this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error) }); }
+          if (revision === this.workerRevision) this.workers.set(worker.id, { connected: true, checkedAt: Date.now(), discovery, version: health.version });
+        } catch (error) { if (revision === this.workerRevision) this.workers.set(worker.id, { connected: false, checkedAt: Date.now(), error: message(error) }); }
       }));
     })().finally(() => { this.workerRefresh = undefined; });
     return this.workerRefresh;
   }
-  invalidateWorkers() { this.workers.clear(); }
+  invalidateWorkers() { this.workerRevision++; this.workers.clear(); }
+  beginRuntimeSetup() {
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation setup is already running.");
+    if (this.store.activeJobs().length || this.flights.size) throw new ApiError(409, "JOBS_ACTIVE", "Finish or cancel queued generations before changing the GPUs in use.");
+    this.runtimeSetupActive = true;
+  }
+  endRuntimeSetup() { this.runtimeSetupActive = false; }
   availableWorkers(configuration: ModelConfiguration, snapshot: ExecutionSnapshot): WorkerSettings[] {
     return this.store.settings().workers.filter(worker => {
       const state = this.workers.get(worker.id);
@@ -97,9 +114,9 @@ export class Engine {
   async catalog() {
     await this.refreshWorkers();
     const settings = settingsView(this.store);
-    const models = DEFAULT_MODELS.map(model => {
+    const models = modelRegistry(this.store).map(model => {
       const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
-      const resolved = configuredModel(configuration);
+      const resolved = configuredModel(configuration, this.store);
       const snapshot = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0 }, resolved);
       const available = this.availableWorkers(configuration, snapshot);
       const card = modelCard(resolved, configuration, available.map(worker => worker.id));
@@ -119,12 +136,13 @@ export class Engine {
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
     if (old) return publicJob(old);
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const input = structuredClone(value) as GenerationInput;
     if (input.images !== undefined && (!Array.isArray(input.images) || input.images.some(id => typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)))) throw new ApiError(400, "INVALID_INPUTS", "Choose reference images uploaded to this studio.");
     for (const id of input.images ?? []) this.store.input(id, userId);
     const configuration = settingsView(this.store).modelConfigurations.find(item => item.modelId === input.modelId);
     if (!configuration?.enabled) throw new ApiError(400, "MODEL_DISABLED", "Enable this model in Hardware settings before generating.");
-    const model = configuredModel(configuration);
+    const model = configuredModel(configuration, this.store);
     const operation = input.operation ?? ((input.images?.length ?? 0) ? FAMILY_RECIPES[model.familyId].operations.includes("image-to-image") ? "image-to-image" : "reference" : "text-to-image");
     const snapshot = compileGeneration({ ...input, operation, images: (input.images ?? []).map(id => ({ filename: `${id}.png`, subfolder: "", type: "input" as const })) }, model);
     input.seed = snapshot.parameters.seed; input.operation = operation;
@@ -144,6 +162,7 @@ export class Engine {
     const scale = Math.max(1, pixels / defaultPixels);
     const memory = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale), vramBytes: Math.ceil(configuration.memory.vramBytes * scale) };
     const placements: PlacementSnapshot[] = workers.map(worker => ({ worker: structuredClone(worker), memory }));
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const job = this.store.createJob(userId, input, snapshot, placements, model.name, { ...snapshot.parameters }, key, requestHash);
     void this.tick();
     return publicJob(job);
@@ -246,7 +265,7 @@ export class Engine {
     } catch (error) { return { kind: "wait", reason: `Waiting for worker memory telemetry: ${message(error)}` }; }
   }
   async tick() {
-    if (this.ticking || this.stopping) return;
+    if (this.ticking || this.stopping || this.runtimeSetupActive) return;
     this.ticking = true;
     try {
       for (const job of this.store.activeJobs()) {

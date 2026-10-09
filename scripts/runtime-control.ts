@@ -7,10 +7,11 @@ import type { ManagedWorker, RuntimeCommand, RuntimeDeployment } from "./runtime
 import { runtimeWorkerSettings } from "./runtime-plan.ts";
 import lock from "../deploy/comfyui/runtime.lock.json" with { type: "json" };
 
-export type RuntimeRunner = (command: RuntimeCommand, options?: { timeoutMs?: number; stream?: boolean }) => Promise<{ stdout: string; stderr: string }>;
+export type RuntimeRunner = (command: RuntimeCommand, options?: { timeoutMs?: number; stream?: boolean; signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>;
 export const executeRuntimeCommand: RuntimeRunner = (command, options = {}) => new Promise((resolve, reject) => {
   if (!["docker", "podman"].includes(command.program)) { reject(new Error("Unsupported container engine")); return; }
-  const child = spawn(command.program, command.args, { stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
+  if (options.signal?.aborted) { reject(new Error("Runtime setup was interrupted.")); return; }
+  const child = spawn(command.program, command.args, { stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, signal: options.signal });
   let stdout = "", stderr = "", settled = false;
   const fail = (error: Error) => { if (settled) return; settled = true; clearTimeout(timer); child.kill("SIGKILL"); reject(error); };
   const timer = setTimeout(() => fail(new Error("Container command exceeded its time limit.")), options.timeoutMs ?? 30_000);
@@ -63,10 +64,10 @@ async function inspectWorker(plan: RuntimeDeployment, worker: ManagedWorker, run
   return container;
 }
 
-export async function startRuntimeDeployment(plan: RuntimeDeployment, run: RuntimeRunner = executeRuntimeCommand) {
+export async function startRuntimeDeployment(plan: RuntimeDeployment, run: RuntimeRunner = executeRuntimeCommand, options: { writePlan?: boolean } = {}) {
   validateStoredPlan(plan);
   if (plan.diagnostics.some((item) => item.severity === "error")) throw new Error("Resolve the deployment plan's errors before starting workers.");
-  await writeRuntimeDeployment(plan);
+  if (options.writePlan !== false) await writeRuntimeDeployment(plan);
   for (const command of plan.build) {
     const image = command.args[command.args.indexOf("--tag") + 1];
     const worker = plan.workers.find((item) => item.image === image);
@@ -105,11 +106,18 @@ export function verifySmokeResult(raw: unknown, worker: ManagedWorker, gpu: GpuD
   return { receipt: { ...result, imageId, gpuId: gpu.id }, verification };
 }
 
-export async function smokeRuntimeDeployment(plan: RuntimeDeployment, inventory: HardwareInventory, options: { run?: RuntimeRunner; idle?: (worker: ManagedWorker) => Promise<void> } = {}) {
+export async function smokeRuntimeDeployment(plan: RuntimeDeployment, inventory: HardwareInventory, options: { run?: RuntimeRunner; idle?: (worker: ManagedWorker) => Promise<void>; signal?: AbortSignal } = {}) {
   const run = options.run ?? executeRuntimeCommand;
+  const selectedIds = new Set(plan.workers.map(worker => worker.gpuId));
+  let retained: unknown[] = [];
+  try {
+    const saved = JSON.parse(await readFile(join(plan.dataDirectory, "runtime", "verification.json"), "utf8"));
+    if (saved.version === 1 && Array.isArray(saved.results)) retained = saved.results.filter((item: { receipt?: { gpuId?: string } }) => typeof item?.receipt?.gpuId === "string" && !selectedIds.has(item.receipt.gpuId));
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const idle = options.idle ?? (async (worker: ManagedWorker) => {
     const end = Date.now() + 120_000;
     while (true) {
+      options.signal?.throwIfAborted();
       try {
         const response = await fetch(`${worker.baseUrl}/queue`, { signal: AbortSignal.timeout(3000), redirect: "error" });
         if (!response.ok) throw new Error("Worker is not ready");
@@ -120,7 +128,7 @@ export async function smokeRuntimeDeployment(plan: RuntimeDeployment, inventory:
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("Worker has")) throw error;
         if (Date.now() >= end) throw new Error("Worker did not become ready for its smoke test within two minutes.");
-        await delay(1000);
+        await delay(1000, undefined, { signal: options.signal });
       }
     }
   });
@@ -145,11 +153,11 @@ export async function smokeRuntimeDeployment(plan: RuntimeDeployment, inventory:
       const verification: RuntimeVerification | null = gpu.architecture && gpu.driverVersion ? { gpuId: gpu.id, architecture: gpu.architecture, driverVersion: gpu.driverVersion,
         runtimeProfileId: worker.runtimeProfileId, runtimeRevision: worker.runtimeRevision, verifiedAt: new Date().toISOString(), source: "smoke-test", passed: false } : null;
       results.push({ receipt: { passed: false, gpuId: gpu.id, error: message }, verification });
-      await atomicJson(join(plan.dataDirectory, "runtime", "verification.json"), { version: 1, results });
+      await atomicJson(join(plan.dataDirectory, "runtime", "verification.json"), { version: 1, results: [...retained, ...results] });
       throw new Error(message);
     }
   }
-  await atomicJson(join(plan.dataDirectory, "runtime", "verification.json"), { version: 1, results });
+  await atomicJson(join(plan.dataDirectory, "runtime", "verification.json"), { version: 1, results: [...retained, ...results] });
   return results;
 }
 

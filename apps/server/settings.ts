@@ -4,6 +4,7 @@ import { DEFAULT_MODELS, FAMILY_RECIPES, getModel, isRelativeFile } from "../../
 import type { ModelManifest } from "../../packages/inference/types.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
 import { DEFAULT_SETTINGS, type Store } from "./store.ts";
+import { modelRegistry } from "./registry.ts";
 
 const GiB = 1024 ** 3;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -29,10 +30,10 @@ export function defaultModelConfiguration(model: ModelManifest): ModelConfigurat
 }
 export function settingsView(store: Store): StudioSettings {
   const current = store.settings();
-  return { ...current, modelConfigurations: DEFAULT_MODELS.map(model => current.modelConfigurations.find(entry => entry.modelId === model.id) ?? defaultModelConfiguration(model)) };
+  return { ...current, modelConfigurations: modelRegistry(store).map(model => current.modelConfigurations.find(entry => entry.modelId === model.id) ?? defaultModelConfiguration(model)) };
 }
-export function configuredModel(configuration: ModelConfiguration): ModelManifest {
-  const model = getModel(configuration.modelId);
+export function configuredModel(configuration: ModelConfiguration, store?: Store): ModelManifest {
+  const model = getModel(configuration.modelId, store ? modelRegistry(store) : DEFAULT_MODELS);
   model.artifacts = model.artifacts.map(artifact => {
     const filename = configuration.artifacts[artifact.role] || artifact.filename;
     // A user-selected checkpoint is not verified against the catalog file hash.
@@ -41,7 +42,7 @@ export function configuredModel(configuration: ModelConfiguration): ModelManifes
   });
   return model;
 }
-export function validateSettings(value: unknown, hardware: HardwareInventory): StudioSettings {
+export function validateSettings(value: unknown, hardware: HardwareInventory, models: readonly ModelManifest[] = DEFAULT_MODELS): StudioSettings {
   requireCondition(object(value), "Settings must be an object.");
   requireCondition(integer(value.revision, 0, Number.MAX_SAFE_INTEGER), "Reload the current settings before saving.");
   requireCondition(Array.isArray(value.workers) && value.workers.length <= 64, "Configure at most 64 workers.");
@@ -68,7 +69,7 @@ export function validateSettings(value: unknown, hardware: HardwareInventory): S
   const modelIds = new Set<string>();
   const modelConfigurations: ModelConfiguration[] = value.modelConfigurations.map(raw => {
     requireCondition(object(raw) && typeof raw.modelId === "string" && !modelIds.has(raw.modelId), "Each model configuration must be unique.");
-    const model = DEFAULT_MODELS.find(item => item.id === raw.modelId);
+    const model = models.find(item => item.id === raw.modelId);
     requireCondition(model, "The model is not in this studio's catalog.");
     requireCondition(typeof raw.enabled === "boolean" && object(raw.artifacts), "Set model availability and model files.");
     const artifacts: Record<string, string> = {};
@@ -101,6 +102,6 @@ export function modelCard(model: ModelManifest, configuration: ModelConfiguratio
     defaults: { ...family.defaults, ...model.defaults }, operations: model.operations ?? family.operations,
     dimensions: family.dimensions, requiredArtifactRoles: family.artifacts,
     ready, capabilities: { ready, maxImages: family.maxReferences, reference: family.maxReferences > 0 },
-    missingReasons: configuration.enabled ? ready ? [] : ["Connect and verify a worker with the required model files."] : ["Enable this model in Hardware settings."],
+    missingReasons: configuration.enabled ? ready ? [] : ["Start the image engine with the required model files."] : ["Add this model from the model library."],
   };
 }
