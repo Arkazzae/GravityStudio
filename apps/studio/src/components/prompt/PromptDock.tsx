@@ -13,7 +13,7 @@ export interface Draft { aspect?: ImageAspectRatio | 'custom'; modelId: string; 
 export const initialDraft: Draft = { aspect: 'auto', modelId: '', prompt: '', negativePrompt: '', width: 1024, height: 1024, steps: 30, cfg: 7, seed: '', denoise: .75, images: [] };
 export function modelDraft(draft: Draft, model: StudioModel): Draft { return { ...draft, modelId: model.id, aspect: 'auto', ...model.defaults, negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75 }; }
 
-export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, onFavorite, favoriteBusy, favoriteError }: { jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; onFavorite: (job: Job, output: Job['outputs'][number]) => void; favoriteBusy: ReadonlySet<string>; favoriteError?: string }) {
+export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError }: { jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string }) {
   const dock = useRef<HTMLDivElement>(null);
   const prompt = useRef<HTMLTextAreaElement>(null);
   const lastAttempt = useRef<{ body: string; key: string } | null>(null);
@@ -89,6 +89,6 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
-    {browsing && <ReferencePicker jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} onFavorite={onFavorite} favoriteBusy={favoriteBusy} favoriteError={favoriteError} onClose={() => setBrowsing(false)} />}
+    {browsing && <ReferencePicker jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={() => setBrowsing(false)} />}
   </div>;
 }
