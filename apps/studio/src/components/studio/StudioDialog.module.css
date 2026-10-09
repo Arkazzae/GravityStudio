@@ -1,0 +1,96 @@
+.dialog {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.dialog:not([open]) { display: none; }
+
+.models {
+  inset: 0;
+  width: min(1040px, calc(100vw - 32px));
+  height: min(820px, calc(100dvh - 48px));
+  margin: auto;
+  border: 1px solid var(--color-line-2);
+  border-radius: 16px;
+  background: var(--color-panel);
+}
+
+.models::backdrop { background: #000a; }
+
+.settings {
+  inset: 12px 12px 12px auto;
+  width: min(480px, calc(100vw - 24px));
+  height: calc(100dvh - 24px);
+  margin: 0;
+  border: 1px solid #ffffff12;
+  border-radius: 26px;
+  background: #151819;
+  box-shadow: -16px 0 80px #0006;
+  animation: settings-in .22s ease-out both;
+}
+
+.settings::backdrop { background: #0008; }
+
+.header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.header h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+
+.header h1 svg { flex-shrink: 0; }
+.header p { margin-top: 6px; color: var(--color-ink-2); line-height: 1.5; }
+
+.close {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--color-ink-2);
+  transition: background .15s, color .15s;
+}
+
+.close:hover { background: #ffffff0d; color: var(--color-ink); }
+.body { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 24px; }
+.settings .header { padding: 22px 26px; border-color: #ffffff0a; }
+.settings .body { padding: 24px 26px 28px; }
+.settings .close { width: 32px; height: 32px; }
+
+@keyframes settings-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (max-width: 680px) {
+  .models { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 12px; }
+  .models .header { padding: 18px 16px; }
+  .models .header h1 { font-size: 19px; }
+  .models .body { padding: 20px 16px; }
+}
+
+@media (max-width: 520px) {
+  .settings { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; }
+  .settings .header { padding-inline: 20px; }
+  .settings .body { padding-inline: 20px; }
+}

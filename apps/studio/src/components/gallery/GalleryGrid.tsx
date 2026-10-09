@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clock3, Download, ImageIcon, LoaderCircle, Repeat2, TriangleAlert, X } from 'lucide-react';
-import Link from 'next/link';
 import { api, errorMessage, type Job, type StudioModel } from '@/lib/api';
 import { ResolveJobButton } from '@/components/studio/ResolveJobButton';
 
@@ -20,7 +19,7 @@ function layout(items: Entry[], width: number, target: number, gap: number): Row
 }
 const labels: Record<Job['status'], string> = { queued: 'Waiting in queue', preparing: 'Loading model', running: 'Generating', succeeded: 'Complete', failed: 'Generation failed', cancelled: 'Cancelled', interrupted: 'Interrupted' };
 
-export function GalleryGrid({ jobs, models, zoom, square, onReuse, onChange, configured, hasWorkers }: { jobs: Job[]; models: StudioModel[]; zoom: number; square: boolean; onReuse: (job: Job) => void; onChange: () => void; configured: boolean; hasWorkers: boolean }) {
+export function GalleryGrid({ jobs, models, zoom, square, onReuse, onChange, configured, hasWorkers, onOpenModels, onOpenSettings }: { jobs: Job[]; models: StudioModel[]; zoom: number; square: boolean; onReuse: (job: Job) => void; onChange: () => void; configured: boolean; hasWorkers: boolean; onOpenModels: () => void; onOpenSettings: () => void }) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [viewing, setViewing] = useState<Entry | null>(null);
@@ -38,7 +37,7 @@ export function GalleryGrid({ jobs, models, zoom, square, onReuse, onChange, con
   }
   return <div ref={container} className="flex min-h-full flex-col gap-1">
     {error && <p role="alert" className="error-notice mx-4 my-3">{error}</p>}
-    {!entries.length && <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center px-6 py-12 text-center"><ImageIcon className="mb-5 size-8 text-ink-2" strokeWidth={1.3} /><h1 className="text-lg font-medium">{configured ? 'Your next image starts here.' : hasWorkers ? 'Choose your first model.' : 'Set up your studio.'}</h1><p className="mt-2 max-w-[380px] text-sm leading-relaxed text-ink-2">{configured ? 'Describe the shot below. Your generated images and their settings will appear here.' : hasWorkers ? 'Download a checkpoint from Models to create your first image.' : 'Choose the GPUs to use. Your studio will handle the rest.'}</p>{!configured && <Link href={hasWorkers ? "/models" : "/settings"} className="mt-6 rounded-chip bg-chip px-4 py-3 text-sm font-medium transition-colors hover:bg-chip-hi">{hasWorkers ? 'Browse models' : 'Set up generation'}</Link>}</div>}
+    {!entries.length && <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center px-6 py-12 text-center"><ImageIcon className="mb-5 size-8 text-ink-2" strokeWidth={1.3} /><h1 className="text-lg font-medium">{configured ? 'Your next image starts here.' : hasWorkers ? 'Choose your first model.' : 'Set up your studio.'}</h1><p className="mt-2 max-w-[380px] text-sm leading-relaxed text-ink-2">{configured ? 'Describe the shot below. Your generated images and their settings will appear here.' : hasWorkers ? 'Download a checkpoint from Models to create your first image.' : 'Choose the GPUs to use. Your studio will handle the rest.'}</p>{!configured && <button type="button" onClick={hasWorkers ? onOpenModels : onOpenSettings} className="mt-6 rounded-chip bg-chip px-4 py-3 text-sm font-medium transition-colors hover:bg-chip-hi">{hasWorkers ? 'Browse models' : 'Set up generation'}</button>}</div>}
     {rows.map((row, index) => <div key={index} className="flex gap-1" style={{ height: row.height }}>{row.cells.map(({ entry, width }) => entry.output ? <figure key={entry.id} className="group relative shrink-0 overflow-hidden bg-panel" style={{ width }}>
       <img src={entry.output.url} alt={entry.job.prompt} loading="lazy" decoding="async" className="size-full object-cover" />
       <button aria-label={`Open ${modelName(entry.job)} output`} onClick={() => setViewing(entry)} className="absolute inset-0 cursor-zoom-in focus-visible:-outline-offset-2" />

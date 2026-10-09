@@ -1,7 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Check, LoaderCircle, RefreshCw } from 'lucide-react';
+import { ArrowRight, Check, LoaderCircle, RefreshCw } from 'lucide-react';
 import { Chip } from '@/components/ui/Chip';
 import { AdvancedSettings } from './AdvancedSettings';
 import { api, bytes, errorMessage, type Hardware, type RuntimeSetupStatus, type Settings } from '@/lib/api';
@@ -79,13 +78,10 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     finally { setStarting(false); }
   }
 
-  return <div className="min-h-0 flex-1 overflow-auto"><div className="mx-auto w-full max-w-[900px] px-5 py-8 sm:px-10 sm:py-12">
-    {!onboarding && <Link href="/image" className="mb-7 inline-flex items-center gap-2 text-sm text-ink-2 hover:text-ink"><ArrowLeft size={15} />Back to images</Link>}
-    <h1 className="text-[28px] font-medium tracking-[-.025em]">{onboarding ? 'Set up your studio.' : 'Settings'}</h1>
-    <p className="mt-3 max-w-[65ch] text-sm leading-relaxed text-ink-2">Choose the GPUs your studio can use. We’ll set up generation and handle the configuration.</p>
-    {error && <div className="error-notice mt-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
-    <section className="mt-9" aria-labelledby="gpu-selection-title">
-      <div className="mb-5 flex items-center justify-between gap-4"><h2 id="gpu-selection-title" className="text-lg font-medium">GPUs to use</h2><Chip disabled={checking || busy} icon={<RefreshCw className={checking ? 'animate-spin' : ''} />} onClick={() => void refreshHardware()}>{checking ? 'Checking…' : 'Refresh'}</Chip></div>
+  return <div className="min-w-0 w-full">
+    {error && <div className="error-notice mb-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
+    <section aria-labelledby="gpu-selection-title">
+      <div className="mb-5 flex items-center justify-between gap-4"><h2 id="gpu-selection-title" className="text-[15px] font-medium">GPUs to use</h2><Chip disabled={checking || busy} icon={<RefreshCw className={checking ? 'animate-spin' : ''} />} onClick={() => void refreshHardware()}>{checking ? 'Checking…' : 'Refresh'}</Chip></div>
       {loading ? <p role="status" className="py-5 text-sm text-ink-2">Detecting your hardware…</p> : hardware?.gpus.length ? <fieldset disabled={busy} className="divide-y divide-line border-y border-line"><legend className="sr-only">GPUs available for generation</legend>{hardware.gpus.map((gpu, index) => {
         const supported = gpu.vendor === 'amd' || gpu.vendor === 'nvidia';
         return <label key={gpu.id} className={`flex cursor-pointer items-start gap-4 py-5 ${!supported ? 'opacity-55' : ''}`}>
@@ -98,11 +94,11 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
         <button disabled={loading || busy || !selected.length || ready} onClick={() => void start()} className="flex min-h-11 items-center justify-center gap-2 rounded-chip bg-volt px-5 py-3 text-sm font-semibold text-on-volt disabled:cursor-default disabled:opacity-55">{busy ? <LoaderCircle size={16} className="animate-spin" /> : ready ? <Check size={16} /> : null}{busy ? 'Setting up…' : ready ? 'Generation is ready' : runtime?.phase === 'failed' ? 'Try setup again' : assigned.length ? 'Apply GPU selection' : 'Set up generation'}</button>
         {!busy && !ready && <p className="max-w-[48ch] text-xs leading-relaxed text-ink-2">First setup downloads the runtime and can take several minutes.</p>}
       </div>
-      {runtime?.busy && <p role="status" className="mt-4 text-sm leading-relaxed text-ink-2">{runtime.message || 'Preparing generation…'} You can leave this page; setup will continue.</p>}
+      {runtime?.busy && <p role="status" className="mt-4 text-sm leading-relaxed text-ink-2">{runtime.message || 'Preparing generation…'} You can close this panel; setup will continue.</p>}
       {runtime?.phase === 'failed' && <p role="alert" className="error-notice mt-4">{runtime.error || runtime.message || 'Setup did not finish. Try again.'}</p>}
       {ready && <p role="status" className="mt-4 text-sm text-ink-2">{runtime.workerCount} GPU{runtime.workerCount === 1 ? '' : 's'} ready for generation. Download checkpoints from Models whenever you need them.</p>}
     </section>
-    {onboarding && <div className="mt-9 flex flex-wrap items-center gap-4 border-t border-line pt-6"><Link href="/image" onClick={onFinished} className={`inline-flex min-h-11 items-center gap-2 rounded-chip px-5 text-sm font-medium ${connected ? 'bg-chip hover:bg-chip-hi' : 'text-ink-2 hover:text-ink'}`}>{connected ? 'Start creating' : 'I’ll set this up later'}<ArrowRight size={16} /></Link></div>}
-    <details className="mt-10 border-t border-line pt-6" onToggle={event => setAdvancedOpen(event.currentTarget.open)}><summary className="text-sm text-ink-2">Advanced settings</summary>{advancedOpen && <AdvancedSettings key={advancedRevision} initialHardware={hardware} onSaved={() => { void load(); onSavedRef.current(); }} />}</details>
-  </div></div>;
+    {onboarding && <div className="mt-9 flex flex-wrap items-center gap-4 border-t border-line pt-6"><button type="button" onClick={onFinished} className={`inline-flex min-h-11 items-center gap-2 rounded-chip px-5 text-sm font-medium ${connected ? 'bg-chip hover:bg-chip-hi' : 'text-ink-2 hover:text-ink'}`}>{connected ? 'Start creating' : 'I’ll set this up later'}<ArrowRight size={16} /></button></div>}
+    <details className="mt-8 border-t border-line pt-6" onToggle={event => setAdvancedOpen(event.currentTarget.open)}><summary className="text-sm text-ink-2">Advanced settings</summary>{advancedOpen && <AdvancedSettings key={advancedRevision} initialHardware={hardware} onSaved={() => { void load(); onSavedRef.current(); }} />}</details>
+  </div>;
 }
