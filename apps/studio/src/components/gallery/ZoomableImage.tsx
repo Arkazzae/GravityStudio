@@ -30,7 +30,9 @@ function ImageViewport({ src, alt, className, onError, referrerPolicy }: ImagePr
 
   useLayoutEffect(() => {
     const element = viewport.current!;
-    const observer = new ResizeObserver(() => setSize({ width: element.clientWidth, height: element.clientHeight }));
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth && element.clientHeight) setSize({ width: element.clientWidth, height: element.clientHeight });
+    });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
@@ -68,7 +70,7 @@ function ImageViewport({ src, alt, className, onError, referrerPolicy }: ImagePr
       viewport.current?.scrollBy({ left: event.key === "ArrowLeft" ? -80 : event.key === "ArrowRight" ? 80 : 0, top: event.key === "ArrowUp" ? -80 : event.key === "ArrowDown" ? 80 : 0 });
     }
   }}>
-    <div ref={viewport} className={styles.viewport} data-zoomed={zoom > 1} data-dragging={dragging} tabIndex={0} role="region" aria-label="Image zoom and pan" aria-busy={loading}
+    <div ref={viewport} className={styles.viewport} data-dialog-scroll data-zoomed={zoom > 1} data-dragging={dragging} tabIndex={0} role="region" aria-label="Image zoom and pan" aria-busy={loading}
       onDoubleClick={event => {
         const rect = event.currentTarget.getBoundingClientRect();
         changeZoom(zoom === 1 ? 2 : 1, { x: event.clientX - rect.left, y: event.clientY - rect.top });

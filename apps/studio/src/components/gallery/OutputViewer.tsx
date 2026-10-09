@@ -7,6 +7,7 @@ import { BrandMark } from '@/components/ui/BrandMark';
 import { modelBrand } from '@/lib/model-brand';
 import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { ZoomableImage } from './ZoomableImage';
 
 export interface ViewerEntry {
@@ -20,8 +21,9 @@ const labels: Record<string, string> = {
   scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength',
 };
 
-export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError }: {
+export function OutputViewer({ items, open, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError }: {
   items: ViewerEntry[];
+  open: boolean;
   openId: string;
   models: StudioModel[];
   onClose: () => void;
@@ -34,36 +36,35 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
   const dialog = useRef<HTMLDialogElement>(null);
   const reusing = useRef(false);
   const previousIndex = useRef(0);
-  const [id, setId] = useState(openId);
-  const selectedIndex = items.findIndex(entry => entry.id === id);
-  const index = selectedIndex === -1 && items.length ? Math.min(previousIndex.current, items.length - 1) : selectedIndex;
+  const selectedIndex = items.findIndex(entry => entry.id === openId);
+  const index = selectedIndex === -1 && open && items.length ? Math.min(previousIndex.current, items.length - 1) : selectedIndex;
   const item = items[index];
+  const hasItem = !!item;
+  const dialogHandlers = useRetainedDialog({ dialog, open: open && hasItem, onClose, initialFocus: dialog });
 
   useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (!element.open) element.showModal();
-    element.focus({ preventScroll: true });
-    return () => {
-      if (element.open) element.close();
+    if ((!open || !hasItem) && !document.querySelector('dialog[open]')) {
+      const focused = document.activeElement;
       if (reusing.current) document.getElementById('image-prompt')?.focus({ preventScroll: true });
-      else if (trigger?.isConnected) trigger.focus({ preventScroll: true });
-      else (document.querySelector<HTMLElement>('[aria-label="Image filter"] button[aria-pressed="true"]') || document.getElementById('image-prompt'))?.focus({ preventScroll: true });
-    };
-  }, []);
+      else if (!(focused instanceof HTMLElement) || focused === document.body || !focused.getClientRects().length) {
+        (document.querySelector<HTMLElement>('[aria-label="Image filter"] button[aria-pressed="true"]') || document.getElementById('image-prompt'))?.focus({ preventScroll: true });
+      }
+    }
+    reusing.current = false;
+  }, [open, hasItem]);
 
   useEffect(() => {
+    if (!open) return;
     if (!item) { onClose(); return; }
     previousIndex.current = index;
-    if (item.id !== id) { setId(item.id); onSelect(item.id); }
-  }, [id, index, item, onClose, onSelect]);
+    if (item.id !== openId) onSelect(item.id);
+  }, [open, openId, index, item, onClose, onSelect]);
 
   const step = useCallback((offset: number) => {
-    if (items.length < 2 || index === -1) return;
+    if (!open || items.length < 2 || index === -1) return;
     const nextId = items[(index + offset + items.length) % items.length].id;
-    setId(nextId); onSelect(nextId);
-  }, [index, items, onSelect]);
+    onSelect(nextId);
+  }, [open, index, items, onSelect]);
 
   if (!item) return null;
   const model = models.find(model => model.id === item.job.modelId);
@@ -83,7 +84,7 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
   ];
 
   return <dialog ref={dialog} id="output-viewer" aria-label={`${name} output`} tabIndex={-1}
-    onCancel={event => { event.preventDefault(); onClose(); }}
+    {...dialogHandlers}
     onKeyDown={event => {
       if ((event.target as HTMLElement).closest('[data-photo-action]')) return;
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -104,7 +105,7 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
           <span className="min-w-0 flex-1"><span className="block truncate text-[14px] font-medium">{name}</span><span className="block truncate text-[12px] text-ink-3">{items.length > 1 ? `${index + 1} of ${items.length} in this view` : 'Saved on your server'}</span></span>
           <PanelAction label="Close preview" onClick={onClose}><X className="size-[18px]" strokeWidth={2} /></PanelAction>
         </header>
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+        <div data-dialog-scroll className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <section className="flex flex-col gap-2">
             <div className="flex items-center gap-2"><SectionLabel>Prompt</SectionLabel><CopyPrompt key={item.id} prompt={item.job.prompt} /></div>
             <div className="rounded-xl bg-panel-2 p-3">
@@ -194,5 +195,5 @@ function Step({ side, onClick }: { side: 'left' | 'right'; onClick: () => void }
 }
 
 function PanelAction({ children, label, onClick }: { children: ReactNode; label: string; onClick: () => void }) {
-  return <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-2 transition-colors hover:bg-white/[0.08] hover:text-ink">{children}</button>;
+  return <button type="button" data-dialog-dismiss aria-label={label} title={label} onClick={onClick} className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-2 transition-colors hover:bg-white/[0.08] hover:text-ink">{children}</button>;
 }
