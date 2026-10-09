@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, ImageIcon, Repeat2, X } from '@/components/ui/icons';
 import { FavoriteButton } from '@/components/ui/FavoriteButton';
+import { BrandMark } from '@/components/ui/BrandMark';
+import { modelBrand } from '@/lib/model-brand';
 import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { ZoomableImage } from './ZoomableImage';
@@ -64,7 +66,9 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
   }, [index, items, onSelect]);
 
   if (!item) return null;
-  const name = item.job.modelName || models.find(model => model.id === item.job.modelId)?.name || item.job.modelId;
+  const model = models.find(model => model.id === item.job.modelId);
+  const name = item.job.modelName || model?.name || item.job.modelId;
+  const brand = modelBrand(model || { id: item.job.modelId, name, family: '' });
   const created = new Date(item.job.createdAt);
   const width = item.output.width || item.job.parameters.width;
   const height = item.output.height || item.job.parameters.height;
@@ -96,7 +100,7 @@ export function OutputViewer({ items, openId, models, onClose, onSelect, onReuse
       </div>
       <aside className="flex max-h-[52dvh] w-full shrink-0 flex-col overflow-hidden rounded-panel bg-panel lg:max-h-none lg:w-[380px]">
         <header className="flex items-center gap-2.5 px-4 pt-4">
-          <span aria-hidden="true" className="size-8 shrink-0 rounded-full bg-[conic-gradient(from_120deg,#d3f94c,#3ad6a0,#7a5cff,#d3f94c)]" />
+          <BrandMark brand={brand} className="size-8 shrink-0 text-ink" />
           <span className="min-w-0 flex-1"><span className="block truncate text-[14px] font-medium">{name}</span><span className="block truncate text-[12px] text-ink-3">{items.length > 1 ? `${index + 1} of ${items.length} in this view` : 'Saved on your server'}</span></span>
           <PanelAction label="Close preview" onClick={onClose}><X className="size-[18px]" strokeWidth={2} /></PanelAction>
         </header>
