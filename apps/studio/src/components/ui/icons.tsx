@@ -2,9 +2,9 @@
 
 import { forwardRef, type CSSProperties, type SVGProps } from 'react';
 import {
-  Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft,
+  Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft, ArrowUp as ArrowUpIcon,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
-  ExportSquare, Folder, Gallery, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, MessageQuestion,
+  ExportSquare, Folder, Gallery, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, MessageQuestion,
   Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
   Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
@@ -31,6 +31,7 @@ function icon(Component: Icon, name: string, rotation?: number) {
 
 export const Activity = /* @__PURE__ */ icon(ActivityIcon, 'Activity');
 export const ArrowRight = /* @__PURE__ */ icon(ArrowRightIcon, 'ArrowRight');
+export const ArrowUp = /* @__PURE__ */ icon(ArrowUpIcon, 'ArrowUp');
 export const Boxes = /* @__PURE__ */ icon(Box, 'Boxes');
 export const Check = /* @__PURE__ */ icon(TickCircle, 'Check');
 export const ChevronDown = /* @__PURE__ */ icon(ArrowDown2, 'ChevronDown');
@@ -67,6 +68,7 @@ export const SlidersHorizontal = /* @__PURE__ */ icon(Setting4, 'SlidersHorizont
 export const Trash2 = /* @__PURE__ */ icon(Trash, 'Trash2');
 export const TriangleAlert = /* @__PURE__ */ icon(Warning2, 'TriangleAlert');
 export const UserRound = /* @__PURE__ */ icon(User, 'UserRound');
+export const Wand2 = /* @__PURE__ */ icon(Magicpen, 'Wand2');
 export const X = /* @__PURE__ */ icon(Add, 'X', 45);
 export const ZoomIn = /* @__PURE__ */ icon(SearchZoomIn1, 'ZoomIn');
 export const ZoomOut = /* @__PURE__ */ icon(SearchZoomOut1, 'ZoomOut');

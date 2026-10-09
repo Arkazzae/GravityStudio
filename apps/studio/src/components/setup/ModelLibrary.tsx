@@ -1,14 +1,15 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Boxes, Check, Download, ExternalLink, HardDrive, LoaderCircle } from '@/components/ui/icons';
+import { Boxes, Check, Download, ExternalLink, HardDrive, LoaderCircle, Wand2 } from '@/components/ui/icons';
+import { LanguageModels } from './LanguageModels';
 import { TabbedWorkspace, type WorkspaceSection } from '@/components/studio/TabbedWorkspace';
 import { api, errorMessage, type LibraryModel, type ModelDownload, type ModelLibraryState } from '@/lib/api';
 
 const downloadBusy = (download?: ModelDownload | null) => !!download && !['succeeded', 'failed'].includes(download.status);
 const size = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
-type ModelsSection = 'library' | 'installed' | 'huggingface' | 'downloads';
+type ModelsSection = 'library' | 'installed' | 'huggingface' | 'downloads' | 'language';
 
-export function ModelLibrary({ onChanged }: { onChanged: () => void }) {
+export function ModelLibrary({ onChanged, onConfigureText }: { onChanged: () => void; onConfigureText: () => void }) {
   const [section, setSection] = useState<ModelsSection>('library');
   const [library, setLibrary] = useState<ModelLibraryState | null>(null);
   const [error, setError] = useState('');
@@ -76,6 +77,7 @@ export function ModelLibrary({ onChanged }: { onChanged: () => void }) {
     { id: 'installed', label: 'Installed', icon: HardDrive },
     { id: 'huggingface', label: 'Hugging Face', icon: ExternalLink },
     { id: 'downloads', label: 'Downloads', icon: downloading ? LoaderCircle : Download, busy: downloading },
+    { id: 'language', label: 'Language', icon: Wand2 },
   ];
   const installed = library?.models.filter(model => model.installed) || [];
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi disabled:cursor-default disabled:opacity-50';
@@ -96,6 +98,7 @@ export function ModelLibrary({ onChanged }: { onChanged: () => void }) {
   }
 
   return <TabbedWorkspace id="models" label="Model sections" sections={sections} selected={section} onSelect={setSection}>
+    {section === 'language' && <div id="models-panel-language" role="tabpanel" aria-labelledby="models-tab-language" tabIndex={0}><LanguageModels onConfigure={onConfigureText} /></div>}
     {error && <p className="error-notice mb-6 break-words" role="alert">{error}{!library && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</p>}
     {downloading && section !== 'downloads' && <div className="mb-6 flex items-center gap-3 border-b border-line pb-5">
       <LoaderCircle size={16} className="shrink-0 animate-spin text-ink-2" /><p title={`Downloading ${downloadState?.modelName}`} className="min-w-0 flex-1 line-clamp-2 break-words text-xs leading-relaxed text-ink-2">Downloading {downloadState?.modelName}</p>

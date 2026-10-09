@@ -3,8 +3,9 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Check, LoaderCircle, Trash2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { api, errorMessage, type IntegrationStatus, type IntegrationTestResult } from '@/lib/api';
+import { TextConnectionSettings } from './TextConnectionSettings';
 
-export function IntegrationsSettings() {
+export function IntegrationsSettings({ active = true }: { active?: boolean }) {
   const [providers, setProviders] = useState<IntegrationStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -32,7 +33,7 @@ export function IntegrationsSettings() {
     <p className="mb-6 mt-3 text-xs leading-relaxed text-ink-2">Access checks use the saved key and do not generate content. Provider keys are separate from the Studio tokens in API access.</p>
     {loading && <p role="status" className="py-5 text-sm text-ink-2">Loading integrations…</p>}
     {error && <div role="alert" className="error-notice">{error}<button type="button" onClick={() => void load()} className="ml-3 underline">Try again</button></div>}
-    {!loading && !error && <div className="divide-y divide-line border-y border-line">{providers.map(provider => <ProviderSettings key={provider.id} initialStatus={provider} />)}</div>}
+    {!loading && !error && <><TextConnectionSettings active={active} /><div className="divide-y divide-line">{providers.map(provider => <ProviderSettings key={provider.id} initialStatus={provider} />)}</div></>}
   </section>;
 }
 

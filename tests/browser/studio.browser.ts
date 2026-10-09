@@ -101,9 +101,26 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   } });
   let integrationResponseStatus = 200;
   const integrationRequests: Array<{ url: string; authorization: string | null }> = [];
+  let assistantPrompt = 'A ceramic teapot on an oak table, lit by warm evening light.';
+  let holdTextResponse = false;
+  let textRequests = 0;
+  let textAborts = 0;
+  let finishTextResponse: (() => void) | undefined;
   const server = await createStudioServer({ store, engine, runtime, models, integrationFetch: async (input, init) => {
     integrationRequests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
     return Response.json({ data: [] }, { status: integrationResponseStatus });
+  }, textFetch: async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/models')) return Response.json({ data: [{ id: 'fixture-text' }] });
+    assert.equal(url, 'http://127.0.0.1:18081/v1/chat/completions');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer browser-text-key-ef56');
+    textRequests++;
+    if (holdTextResponse) await new Promise<void>((resolve, reject) => {
+      const aborted = () => { textAborts++; reject(new DOMException('Aborted', 'AbortError')); };
+      finishTextResponse = () => { init?.signal?.removeEventListener('abort', aborted); resolve(); };
+      if (init?.signal?.aborted) aborted(); else init?.signal?.addEventListener('abort', aborted, { once: true });
+    });
+    return Response.json({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ prompt: assistantPrompt }) }, finish_reason: 'stop' }], usage: { prompt_tokens: 12, completion_tokens: 16 } });
   }, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -115,7 +132,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const browser = await openBrowser(t);
   async function clickScopedText(scope: string, label: string) {
     const element = `Array.from(document.querySelectorAll('${scope} button, ${scope} a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`;
-    await browser.until(`!!(${element})`, `${label} in ${scope}`);
+    await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    await browser.until(`(() => { const element = (${element}); return element && !element.matches(':disabled') && element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible'; })()`, `${label} in ${scope}`);
     const point = await browser.evaluate<{ x: number; y: number }>(`(() => { const element = (${element}); element.scrollIntoView({block: 'nearest'}); const rect = element.getBoundingClientRect(); return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}; })()`);
     await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
     await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
@@ -213,9 +231,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.clickText('Browse models');
   await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-library article h3')", 'Models opens its Library section');
   assert.equal(await browser.evaluate("document.querySelector('#models-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
-  const modelSections = ['library', 'installed', 'huggingface', 'downloads'];
+  const modelSections = ['library', 'installed', 'huggingface', 'downloads', 'language'];
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'vertical');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Hugging Face', 'Downloads']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Hugging Face', 'Downloads', 'Language']);
   async function modelSectionKey(key: string, section: string) {
     await browser.key(key);
     await browser.until(`document.querySelector('#models-tab-${section}')?.getAttribute('aria-selected') === 'true' && document.querySelector('#models-panel-${section}')?.getClientRects().length > 0`, `${key} opens Models ${section}`);
@@ -246,7 +264,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await modelSectionKey('ArrowDown', 'downloads');
   await modelFrame(false);
   await modelSectionKey('Home', 'library');
-  await modelSectionKey('End', 'downloads');
+  await modelSectionKey('End', 'language');
+  await modelSectionKey('ArrowUp', 'downloads');
   await modelSectionKey('ArrowUp', 'huggingface');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-url]').value"), checkpointUrl, 'Switching sections preserves the Hugging Face URL draft');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), 'Browser checkpoint', 'Switching sections preserves the checkpoint name draft');
@@ -662,7 +681,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Connections', 'Model files', 'Integrations', 'API access']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'API access']);
   assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-integrations')"), false, 'Integration settings load only after selecting their tab');
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
@@ -677,6 +696,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.fill('#settings-panel-generation input[name="maxConcurrentJobs"]', '1');
   await browser.fill('#settings-panel-generation select[name="idleUnloadSeconds"]', '300');
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').textContent.includes('Keep models ready')"), true, 'Retention is controlled in Generation');
+  await settingsKey('ArrowDown', 'assistant');
   await settingsKey('ArrowDown', 'connections');
   const workerNameInput = '#settings-panel-connections input[maxlength="80"]';
   await browser.until("document.querySelector('#settings-panel-connections')?.innerText.includes('Assigned GPU')", 'Managed worker shows its assigned GPU');
@@ -767,7 +787,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await settingsKey('ArrowUp', 'integrations');
   await browser.until("document.querySelector('#settings-panel-integrations [role=alert]')?.textContent.includes('Integration list unavailable.')", 'Integration list failure is actionable');
   await clickScopedText('#settings-panel-integrations', 'Try again');
-  await browser.until("document.querySelectorAll('#settings-panel-integrations input[type=password]').length === 6", 'All six providers load after retry');
+  await browser.until("document.querySelectorAll('#settings-panel-integrations form[aria-labelledby^=integration-] input[type=password]').length === 6", 'All six providers load after retry');
   const providerScope = 'form[aria-labelledby="integration-openai-title"]';
   const providerInput = `${providerScope} input[type=password]`;
   const originalProviderKey = 'browser-provider-key-ab12';
@@ -824,6 +844,123 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('No key saved')`, 'Removing a provider key clears its saved status');
   await browser.click('button[aria-label="Close settings"]');
   await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes after removing the key');
+
+  const assistantScope = '[role="dialog"][aria-label="AI prompt assistant"]:popover-open';
+  const textConnectionScope = 'form[aria-labelledby="text-connection-title"]';
+  const assistantDraft = await browser.evaluate<string>("document.querySelector('#image-prompt').value");
+  const originalAssistantPrompt = 'A ceramic teapot on an oak table.';
+  const assistantJobs = store.jobs(store.owner()!.id).length;
+  async function openAssistant() {
+    await browser.click('button[aria-label="Open AI prompt assistant"]');
+    await browser.until(`(() => { const panel = document.querySelector(${JSON.stringify(assistantScope)}); return panel && getComputedStyle(panel).visibility === 'visible' && !panel.textContent.includes('Loading assistant settings'); })()`, 'Prompt assistant opens with current settings');
+    await browser.evaluate(`Promise.all([document.fonts.ready, ...document.querySelector(${JSON.stringify(assistantScope)}).getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))`);
+  }
+  async function waitForTextRequest(previous: number) {
+    for (let attempt = 0; attempt < 100 && textRequests === previous; attempt++) await delay(25);
+    assert.equal(textRequests, previous + 1, 'The assistant dispatches exactly one provider request');
+  }
+  async function waitForTextAbort(expected: number) {
+    for (let attempt = 0; attempt < 100 && textAborts < expected; attempt++) await delay(25);
+    assert.equal(textAborts, expected, 'The browser cancellation reaches the provider request');
+  }
+  await browser.fill('#image-prompt', originalAssistantPrompt);
+  await openAssistant();
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(assistantScope)}).textContent`), /Choose a language model/, 'An unconfigured assistant gives a direct setup action');
+  await clickScopedText(assistantScope, 'Choose assistant model');
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#settings-tab-assistant')?.getAttribute('aria-selected') === 'true'", 'The dock opens the Assistant settings section');
+  await browser.click('#settings-tab-integrations');
+  await browser.until("document.querySelector('input[aria-label=\"Text API base URL\"]')?.matches(':disabled') === false", 'The text connection form is ready');
+  await browser.fill('input[aria-label="Text API base URL"]', 'http://127.0.0.1:18081/v1');
+  await browser.fill('input[aria-label="Text endpoint API key"]', 'browser-text-key-ef56');
+  await clickScopedText(textConnectionScope, 'Save connection');
+  await browser.until(`document.querySelector(${JSON.stringify(textConnectionScope)}).textContent.includes('•••• ef56') && document.querySelector('input[aria-label="Text endpoint API key"]').value === ''`, 'Saving a text connection clears the raw key');
+  assert.equal(await browser.evaluate("JSON.stringify({...localStorage, ...sessionStorage}).includes('browser-text-key-ef56')"), false, 'The compatible endpoint key never enters browser storage');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.click('header button[aria-label="Models"]');
+  await browser.click('#models-tab-language');
+  await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language model selection loads');
+  await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'openai-compatible');
+  await clickScopedText('#models-panel-language', 'Load models');
+  await browser.until("!!document.querySelector('#models-panel-language select[aria-label=\"Assistant model\"] option[value=fixture-text]')", 'The compatible endpoint supplies discoverable models');
+  await browser.fill('#models-panel-language select[aria-label="Assistant model"]', 'fixture-text');
+  await clickScopedText('#models-panel-language', 'Use for assistant');
+  await browser.until("document.querySelector('#models-panel-language [role=status]')?.textContent.includes('Assistant model saved')", 'Language model becomes the configured assistant');
+  await browser.screenshot(join(output, 'language-models-mobile.png'));
+  await browser.click('button[aria-label="Close models"]');
+  await browser.click('header button[aria-label="Settings"]');
+  await browser.click('#settings-tab-integrations');
+  await browser.until("document.querySelector('input[aria-label=\"Text endpoint API key\"]')?.matches(':disabled') === false", 'Saved text connection is editable');
+  await browser.fill('input[aria-label="Text endpoint API key"]', 'browser-text-key-ef56');
+  await browser.click('#settings-tab-assistant');
+  await browser.until("Array.from(document.querySelectorAll('#settings-panel-assistant button')).some(button => button.textContent.trim() === 'Disable assistant' && !button.matches(':disabled'))", 'The Assistant section reads the current language model');
+  await clickScopedText('#settings-panel-assistant', 'Disable assistant');
+  await browser.until("document.querySelector('#settings-panel-assistant [role=status]')?.textContent.includes('Prompt assistant disabled')", 'Changing the assistant increments the shared text revision');
+  await browser.click('#settings-tab-integrations');
+  await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+  await browser.until("document.querySelector('input[aria-label=\"Text endpoint API key\"]')?.matches(':disabled') === false", 'Returning to Integrations refreshes the current revision');
+  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Text endpoint API key\"]').value"), 'browser-text-key-ef56', 'Changing the assistant preserves an unsaved connection key');
+  await clickScopedText(textConnectionScope, 'Save connection');
+  await browser.until(`document.querySelector(${JSON.stringify(`${textConnectionScope} [role=status]`)})?.textContent.includes('Connection saved') && document.querySelector('input[aria-label="Text endpoint API key"]').value === ''`, 'The preserved connection edit saves without a stale revision error');
+  assert.equal(await browser.evaluate(`!!document.querySelector(${JSON.stringify(`${textConnectionScope} [role=alert]`)})`), false, 'Switching sections does not leave a revision conflict');
+  await browser.click('#settings-tab-assistant');
+  await browser.until("document.querySelector('#settings-panel-assistant select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Assistant settings refresh after the connection save');
+  await browser.fill('#settings-panel-assistant select[aria-label="Language model provider"]', 'openai-compatible');
+  await clickScopedText('#settings-panel-assistant', 'Load models');
+  await browser.until("!!document.querySelector('#settings-panel-assistant select[aria-label=\"Assistant model\"] option[value=fixture-text]')", 'Assistant settings discovers the saved endpoint models');
+  await browser.fill('#settings-panel-assistant select[aria-label="Assistant model"]', 'fixture-text');
+  await clickScopedText('#settings-panel-assistant', 'Use for assistant');
+  await browser.until("document.querySelector('#settings-panel-assistant [role=status]')?.textContent.includes('Assistant model saved')", 'The assistant is restored from Settings');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await openAssistant();
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(assistantScope)}).textContent`), /Custom endpoint · fixture-text/, 'The dock identifies the inference source');
+  await clickScopedText(assistantScope, 'Refine prompt');
+  await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(assistantPrompt)}`, 'Refine replaces the draft with the provider result');
+  await browser.until(`Array.from(document.querySelectorAll(${JSON.stringify(`${assistantScope} button`)})).some(button => button.textContent.trim() === 'Undo')`, 'An applied refinement exposes Undo');
+  await browser.screenshot(join(output, 'prompt-assistant-desktop.png'));
+  await clickScopedText(assistantScope, 'Undo');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), originalAssistantPrompt, 'Undo restores the exact original prompt');
+  await clickScopedText(assistantScope, 'Rewrite');
+  await browser.fill('textarea[aria-label="Rewrite instruction"]', 'Make it an evening scene.');
+  assistantPrompt = 'A ceramic teapot on an oak table in the evening.';
+  await browser.click('button[aria-label="Rewrite prompt"]');
+  await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(assistantPrompt)}`, 'An instruction rewrites the current prompt');
+  assert.match(await browser.evaluate<string>("document.querySelector('ol[aria-label=\"Prompt changes\"]').textContent"), /Make it an evening scene/, 'The assistant keeps the local instruction history');
+  await browser.fill('#image-prompt', '');
+  await browser.fill('textarea[aria-label="Rewrite instruction"]', 'A blue teapot in a sunlit kitchen.');
+  assistantPrompt = 'A blue ceramic teapot in a sunlit kitchen.';
+  await browser.click('button[aria-label="Rewrite prompt"]');
+  await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(assistantPrompt)}`, 'An instruction can create the first draft from an empty prompt');
+  await browser.fill('#image-prompt', 'My manual change after the assistant.');
+  await browser.until(`!Array.from(document.querySelectorAll(${JSON.stringify(`${assistantScope} button`)})).some(button => button.textContent.trim() === 'Undo')`, 'Manual edits invalidate Undo so it cannot overwrite them');
+  await clickScopedText(assistantScope, 'Refine');
+  holdTextResponse = true;
+  let previousTextRequests = textRequests;
+  await clickScopedText(assistantScope, 'Refine prompt');
+  await waitForTextRequest(previousTextRequests);
+  assert.equal(await browser.evaluate("document.querySelector('button[title^=\"Submit to your generation queue\"]').disabled"), true, 'Generate is disabled while prompt refinement is in flight');
+  await clickScopedText(assistantScope, 'Cancel');
+  await browser.until("document.querySelector('button[title^=\"Submit to your generation queue\"]').disabled === false", 'Cancel releases the image composer');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'My manual change after the assistant.', 'Cancel preserves the original draft');
+  await waitForTextAbort(1);
+  finishTextResponse?.();
+  previousTextRequests = textRequests;
+  await clickScopedText(assistantScope, 'Refine prompt');
+  await waitForTextRequest(previousTextRequests);
+  await browser.fill('#image-prompt', 'Keep this edit made while the assistant was writing.');
+  await browser.until(`document.querySelector(${JSON.stringify(`${assistantScope} [role=alert]`)})?.textContent.includes('Your prompt or image settings changed')`, 'Editing the draft cancels its pending refinement');
+  await waitForTextAbort(2);
+  finishTextResponse?.(); holdTextResponse = false;
+  assert.equal(textAborts, 2, 'Both Cancel and changing the draft abort upstream work');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this edit made while the assistant was writing.', 'A late provider response cannot replace the edited draft');
+  assert.equal(store.jobs(store.owner()!.id).length, assistantJobs, 'Refining does not submit an image generation job');
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await browser.until('document.documentElement.clientWidth === 390', 'Assistant mobile viewport');
+  await browser.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`);
+  assert.equal(await browser.evaluate(`(() => { const panel = document.querySelector(${JSON.stringify(assistantScope)}), rect = panel.getBoundingClientRect(); return rect.width <= 366 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && panel.scrollWidth <= panel.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth; })()`), true, 'The prompt assistant fits a narrow viewport');
+  await browser.screenshot(join(output, 'prompt-assistant-mobile.png'));
+  await browser.key('Escape');
+  await browser.fill('#image-prompt', assistantDraft);
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');
   await browser.until("document.body.innerText.includes('Welcome back.')", 'Signed out');
@@ -934,6 +1071,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
           intrinsicWidths.push({ width: bounds.model.width, textWidth: label.textWidth });
         }
         assert.ok(bounds.aspect.width > 44 && bounds.aspect.width < 80, 'The aspect chip fits its icon and label without a fixed width');
+        if (viewport.mobile) {
+          assert.equal(await browser.evaluate(`(() => {
+            const model = document.querySelector('button[aria-label^="Model:"]'), aspect = document.querySelector('button[aria-label^="Aspect ratio:"]');
+            const row = model.parentElement.parentElement, visible = row.getBoundingClientRect();
+            return row.scrollLeft === 0 && [model, aspect].every(button => { const rect = button.getBoundingClientRect(); return rect.left >= visible.left - 1 && rect.right <= visible.right + 1 && rect.left >= 0 && rect.right <= innerWidth; });
+          })()`), true, `${model.name}: the model and Auto controls are fully visible without scrolling on mobile`);
+          assert.ok(bounds.advanced.y >= bounds.model.y + bounds.model.height, 'Mobile assistant and advanced actions use their own row');
+          assert.ok(Math.abs(bounds.generate.height - 64) < .1, 'Wrapping mobile actions preserves the fixed Generate height');
+        }
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
         for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
         assert.equal(await browser.evaluate(`document.querySelector('#image-prompt') === window.__gravityGeometryPrompt && document.querySelector('#image-prompt').value === ${JSON.stringify(geometryPrompt)}`), true, 'Model changes preserve the same prompt element and text');

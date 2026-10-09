@@ -6,7 +6,7 @@ import { Logo } from '@/components/layout/Logo';
 import { Popover } from '@/components/ui/Popover';
 import { IconChip } from '@/components/ui/Chip';
 import { AuthPanel } from '@/components/setup/AuthPanel';
-import { SettingsWorkspace } from '@/components/setup/SettingsWorkspace';
+import { SettingsWorkspace, type SettingsSection } from '@/components/setup/SettingsWorkspace';
 import { ModelLibrary } from '@/components/setup/ModelLibrary';
 import { GalleryGrid } from '@/components/gallery/GalleryGrid';
 import { PromptDock, initialDraft, modelDraft, type Draft } from '@/components/prompt/PromptDock';
@@ -29,10 +29,11 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [filter, setFilter] = useState<'all' | 'queue' | 'favorites'>('all');
   const [onboarding, setOnboarding] = useState(false);
   const [panel, setPanel] = useState<'settings' | 'models' | null>(settingsPage ? 'settings' : modelsPage ? 'models' : null);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('gpus');
   const modelsTrigger = useRef<HTMLButtonElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const closePanel = useCallback(() => {
-    setPanel(null); setOnboarding(false);
+    setPanel(null); setOnboarding(false); setSettingsSection('gpus');
     if (window.location.pathname === '/settings' || window.location.pathname === '/models') window.history.replaceState(window.history.state, '', '/image');
   }, []);
   const [signingOut, setSigningOut] = useState(false);
@@ -124,13 +125,13 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     <main className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
         <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => setPanel('models')} onOpenSettings={() => setPanel('settings')} />}</div>
-        <PromptDock favoriteError={favorites.error} onOpenModels={() => setPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
+        <PromptDock sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={() => { setSettingsSection('assistant'); setPanel('settings'); }} favoriteError={favorites.error} onOpenModels={() => setPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
     {showSettings && <StudioDialog panel="settings" title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
-      <SettingsWorkspace initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
+      <SettingsWorkspace initialSection={settingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
-    {showModels && <StudioDialog panel="models" title="Models" description="Download checkpoints and manage your image models." icon={<Boxes size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={modelsTrigger}>
-      <ModelLibrary onChanged={() => { void refreshCatalog(); void refresh(); }} />
+    {showModels && <StudioDialog panel="models" title="Models" description="Manage image and language models." icon={<Boxes size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={modelsTrigger}>
+      <ModelLibrary onConfigureText={() => { setSettingsSection('integrations'); setPanel('settings'); }} onChanged={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
   </div>;
 }
