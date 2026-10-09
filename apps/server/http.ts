@@ -17,6 +17,7 @@ import { CredentialVault } from "./credentials.ts";
 import { INTEGRATION_PROVIDERS, integrationProvider, testIntegration } from "./integrations.ts";
 import { TextService } from "./text.ts";
 import { LocalTextRuntime } from "./local-text.ts";
+import { accountView, saveAccount } from "./account.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -135,6 +136,11 @@ export async function createStudioServer(options: ServerOptions) {
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
       const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      if (path === "/api/account") {
+        requireSession();
+        if (method === "GET") return json(response, accountView(store, user));
+        if (method === "PUT") return json(response, saveAccount(store, user, await readJson(request, 4096)));
+      }
       if (path.startsWith("/api/text/") || path === "/api/prompts/refine") {
         requireSession();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");

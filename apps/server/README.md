@@ -44,6 +44,12 @@ This administrative action is `POST /api/jobs/:id/resolve` with `{ "acknowledge"
 
 Progress messages can describe a single sampler node. They are not an overall completion percentage.
 
+## Account profile
+
+`GET /api/account` returns `{ revision, displayName, workspaceName, avatarTheme }`. `PUT /api/account` accepts exactly those four fields and returns the saved profile with an incremented revision. Both require the owner's browser session; writes also require an allowed `Origin`. Bearer tokens and MCP clients cannot access the profile.
+
+Names are trimmed and must contain 1–64 characters without control characters. Avatar themes are `studio`, `lime`, `mint`, `blue`, `violet` and `rose`. A stale revision returns `409 ACCOUNT_CHANGED`; reload the current profile before saving again. The profile is stored per owner in SQLite. It changes presentation only: the login username and media ownership stay the same, and a workspace name does not create a separate workspace.
+
 ## Runtime setup and model library
 
 The studio interface uses these administrative endpoints. All require the owner's browser session; mutations also require an allowed `Origin`. Bearer tokens and MCP clients cannot install runtimes or download models.
