@@ -54,6 +54,6 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
       <div className="min-w-0"><h1 id={`${panel}-title`}>{icon}{title}</h1><p id={`${panel}-description`}>{description}</p></div>
       <button ref={closeButton} type="button" className={styles.close} aria-label={`Close ${panel}`} title={`Close ${panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
     </header>
-    <div className={panel === 'settings' ? styles.settingsBody : styles.body}>{children}</div>
+    <div className={styles.body}>{children}</div>
   </dialog>;
 }

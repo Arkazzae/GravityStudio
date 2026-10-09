@@ -1,9 +1,9 @@
 'use client';
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, Cpu, ExternalLink, HardDrive, Layers2, LoaderCircle, RefreshCw, SlidersHorizontal } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { AdvancedSettings } from './AdvancedSettings';
-import styles from './SettingsWorkspace.module.css';
+import { TabbedWorkspace } from '@/components/studio/TabbedWorkspace';
 import { api, bytes, errorMessage, type Hardware, type RuntimeSetupStatus, type Settings } from '@/lib/api';
 
 const sections = [
@@ -95,25 +95,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     if (next !== 'gpus') setAdvancedVisited(true);
     setSection(next);
   }
-  function navigateSections(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    let next: number;
-    if (event.key === 'ArrowDown') next = (index + 1) % sections.length;
-    else if (event.key === 'ArrowUp') next = (index + sections.length - 1) % sections.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = sections.length - 1;
-    else return;
-    event.preventDefault();
-    selectSection(sections[next].id);
-    document.getElementById(`settings-tab-${sections[next].id}`)?.focus();
-  }
-
-  return <div className={styles.workspace}>
-    <nav className={styles.sidebar} role="tablist" aria-label="Settings sections" aria-orientation="vertical">
-      {sections.map(({ id, label, icon: Icon }, index) => <button key={id} type="button" role="tab" id={`settings-tab-${id}`} aria-controls={`settings-panel-${id}`} aria-selected={section === id} aria-label={label} title={label} tabIndex={section === id ? 0 : -1} className={styles.tab} onClick={() => selectSection(id)} onKeyDown={event => navigateSections(event, index)}>
-        <Icon size={18} /><span className={styles.tabLabel}>{label}</span>
-      </button>)}
-    </nav>
-    <div className={styles.content}>
+  return <TabbedWorkspace id="settings" label="Settings sections" sections={sections} selected={section} onSelect={selectSection}>
     <div hidden={section !== 'gpus'} role="tabpanel" id="settings-panel-gpus" aria-labelledby="settings-tab-gpus">
     {error && <div className="error-notice mb-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
     <section aria-labelledby="gpu-selection-title">
@@ -139,6 +121,5 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     {onboarding && <div className="mt-9 flex flex-wrap items-center gap-4 border-t border-line pt-6"><button type="button" onClick={onFinished} className={`inline-flex min-h-11 items-center gap-2 rounded-chip px-5 text-sm font-medium ${connected ? 'bg-chip hover:bg-chip-hi' : 'text-ink-2 hover:text-ink'}`}>{connected ? 'Start creating' : 'I’ll set this up later'}<ArrowRight size={16} /></button></div>}
     </div>
     {advancedVisited && <fieldset disabled={busy} className="min-w-0">{busy && section !== 'gpus' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
-    </div>
-  </div>;
+  </TabbedWorkspace>;
 }

@@ -58,12 +58,10 @@
 }
 
 .close:hover { background: #ffffff0d; color: var(--color-ink); }
-.body { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 24px; }
-.settingsBody { display: flex; min-height: 0; flex: 1; overflow: hidden; }
+.body { display: flex; min-height: 0; flex: 1; overflow: hidden; }
 
 @media (max-width: 680px) {
   .centered { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 12px; }
   .centered .header { padding: 18px 16px; }
   .centered .header h1 { font-size: 19px; }
-  .centered .body { padding: 20px 16px; }
 }
