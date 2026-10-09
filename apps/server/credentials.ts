@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { ApiError, type IntegrationCredential, type IntegrationProviderId } from "../../packages/contracts/index.ts";
 import type { Store } from "./store.ts";
 
+export type CredentialProviderId = IntegrationProviderId | "text-openai-compatible";
 interface CredentialRow {
-  provider: IntegrationProviderId;
+  provider: CredentialProviderId;
   version: number;
   ciphertext: Uint8Array;
   iv: Uint8Array;
@@ -13,11 +14,11 @@ interface CredentialRow {
   suffix: string;
   updated_at: string;
 }
-const providers = new Set<IntegrationProviderId>(["huggingface", "civitai", "gemini", "openai", "anthropic", "nanogpt"]);
+const providers = new Set<CredentialProviderId>(["huggingface", "civitai", "gemini", "openai", "anthropic", "nanogpt", "text-openai-compatible"]);
 const unreadable = () => new ApiError(503, "CREDENTIALS_UNREADABLE", "Saved integration credentials could not be unlocked. Check the original credentials key and storage.");
 const unavailable = () => new ApiError(503, "CREDENTIALS_KEY_UNAVAILABLE", "Integration credentials key is unavailable or invalid. Use a base64-encoded 32-byte key or restore the private credentials.key file.");
 
-function providerId(provider: IntegrationProviderId) {
+function providerId(provider: CredentialProviderId) {
   if (!providers.has(provider)) throw new ApiError(400, "INVALID_INTEGRATION", "Choose a supported integration.");
 }
 function apiKeyValue(value: unknown): string {
@@ -62,13 +63,13 @@ export class CredentialVault {
     } catch { throw unreadable(); }
   }
 
-  set(provider: IntegrationProviderId, apiKey: unknown): IntegrationCredential {
+  set(provider: CredentialProviderId, apiKey: unknown): IntegrationCredential {
     providerId(provider);
     const value = apiKeyValue(apiKey);
     let transaction = false;
     try {
-      this.store.db.exec("BEGIN IMMEDIATE");
-      transaction = true;
+      // The text connection saves its URL and credential in one outer transaction.
+      if (!this.store.db.isTransaction) { this.store.db.exec("BEGIN IMMEDIATE"); transaction = true; }
       // This lock also serializes first-run key creation between server processes.
       const key = this.masterKey();
       for (const row of this.store.db.prepare("SELECT * FROM integration_credentials").all() as unknown as CredentialRow[]) this.decrypt(row, key);
@@ -80,7 +81,7 @@ export class CredentialVault {
       this.store.db.prepare(`INSERT INTO integration_credentials(provider,version,ciphertext,iv,tag,suffix,updated_at) VALUES(?,1,?,?,?,?,?)
         ON CONFLICT(provider) DO UPDATE SET version=excluded.version,ciphertext=excluded.ciphertext,iv=excluded.iv,tag=excluded.tag,suffix=excluded.suffix,updated_at=excluded.updated_at`)
         .run(provider, ciphertext, iv, cipher.getAuthTag(), record.suffix, record.updated_at);
-      this.store.db.exec("COMMIT");
+      if (transaction) this.store.db.exec("COMMIT");
       transaction = false;
       return { suffix: record.suffix, updatedAt: record.updated_at };
     } catch (error) {
@@ -92,25 +93,25 @@ export class CredentialVault {
     }
   }
 
-  get(provider: IntegrationProviderId): string | undefined {
+  get(provider: CredentialProviderId): string | undefined {
     providerId(provider);
     const row = this.row(provider);
     return row ? this.decrypt(row, this.masterKey()) : undefined;
   }
 
-  status(provider: IntegrationProviderId): IntegrationCredential | null {
+  status(provider: CredentialProviderId): IntegrationCredential | null {
     providerId(provider);
     const row = this.row(provider);
     return row ? publicCredential(row) : null;
   }
 
-  delete(provider: IntegrationProviderId): void {
+  delete(provider: CredentialProviderId): void {
     providerId(provider);
     try { this.store.db.prepare("DELETE FROM integration_credentials WHERE provider=?").run(provider); }
     catch { throw unreadable(); }
   }
 
-  private row(provider: IntegrationProviderId): CredentialRow | undefined {
+  private row(provider: CredentialProviderId): CredentialRow | undefined {
     try { return this.store.db.prepare("SELECT * FROM integration_credentials WHERE provider=?").get(provider) as unknown as CredentialRow | undefined; }
     catch { throw unreadable(); }
   }
