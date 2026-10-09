@@ -92,8 +92,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const header = Buffer.from(JSON.stringify({ fixture: { dtype: 'F32', shape: [1], data_offsets: [0, 4] } }));
   const prefix = Buffer.alloc(8); prefix.writeBigUInt64LE(BigInt(header.length));
   const fixtureCheckpoint = Buffer.concat([prefix, header, Buffer.alloc(4)]);
+  let finishCheckpointDownload!: () => void;
+  const checkpointResponseReady = new Promise<void>(resolve => { finishCheckpointDownload = resolve; });
+  t.after(() => finishCheckpointDownload());
   const models = new ModelLibrary(store, engine, { fetch: async input => {
-    assert.equal(String(input), source); await delay(900);
+    assert.equal(String(input), source); await checkpointResponseReady;
     return new Response(fixtureCheckpoint, { headers: { 'Content-Length': String(fixtureCheckpoint.length) } });
   } });
   const server = await createStudioServer({ store, engine, runtime, models, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
@@ -185,23 +188,78 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.clickText('Start creating');
   await browser.until("!document.querySelector('#settings-dialog[open]') && !!document.querySelector('#image-prompt')", 'Image composer after onboarding closes');
   await browser.clickText('Browse models');
-  await browser.until("document.querySelector('#models-dialog[open]')?.innerText.includes('Add from Hugging Face')", 'Model library dialog');
+  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-library article h3')", 'Models opens its Library section');
   assert.equal(await browser.evaluate("document.querySelector('#models-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
+  const modelSections = ['library', 'installed', 'huggingface', 'downloads'];
+  assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'vertical');
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Hugging Face', 'Downloads']);
+  async function modelSectionKey(key: string, section: string) {
+    await browser.key(key);
+    await browser.until(`document.querySelector('#models-tab-${section}')?.getAttribute('aria-selected') === 'true' && document.querySelector('#models-panel-${section}')?.getClientRects().length > 0`, `${key} opens Models ${section}`);
+    assert.equal(await browser.evaluate('document.activeElement?.id'), `models-tab-${section}`, 'Models keyboard navigation focuses its selected tab');
+    assert.equal(await browser.evaluate(`document.querySelector('#models-panel-${section}').getAttribute('aria-labelledby')`), `models-tab-${section}`);
+  }
+  async function modelFrame(mobile: boolean) {
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#models-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+    const frame = await browser.evaluate<{ width: number; height: number; sidebar: number; fits: boolean }>(`(() => {
+      const dialog = document.querySelector('#models-dialog'), rect = dialog.getBoundingClientRect(), sidebar = dialog.querySelector('[role=tablist][aria-label="Model sections"]').getBoundingClientRect();
+      const selected = dialog.querySelector('[role=tab][aria-selected=true]'), panel = document.getElementById(selected.getAttribute('aria-controls'));
+      return { width: rect.width, height: rect.height, sidebar: sidebar.width, fits: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && panel.scrollWidth <= panel.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth && sidebar.right <= panel.getBoundingClientRect().left };
+    })()`);
+    assert.ok(Math.abs(frame.width - (mobile ? 374 : 1040)) <= 1, 'Models retains the shared modal width');
+    assert.ok(Math.abs(frame.height - 820) <= 1, 'Models retains the shared modal height across sections');
+    assert.ok(Math.abs(frame.sidebar - (mobile ? 56 : 200)) <= 1, 'Models keeps its left navigation beside the content');
+    assert.equal(frame.fits, true, 'The selected Models section fits the viewport without horizontal overflow');
+  }
+  await browser.click('#models-tab-library');
+  await modelFrame(false);
+  await modelSectionKey('ArrowDown', 'installed');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#models-panel-installed article').length"), 0, 'Installed excludes every checkpoint before the first download');
+  await modelFrame(false);
+  await modelSectionKey('ArrowDown', 'huggingface');
   await browser.fill('input[name="checkpoint-url"]', checkpointUrl);
   await browser.fill('input[name="checkpoint-name"]', 'Browser checkpoint');
+  await modelFrame(false);
+  await modelSectionKey('ArrowDown', 'downloads');
+  await modelFrame(false);
+  await modelSectionKey('Home', 'library');
+  await modelSectionKey('End', 'downloads');
+  await modelSectionKey('ArrowUp', 'huggingface');
+  assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-url]').value"), checkpointUrl, 'Switching sections preserves the Hugging Face URL draft');
+  assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), 'Browser checkpoint', 'Switching sections preserves the checkpoint name draft');
   await browser.clickText('Download checkpoint');
-  await browser.until("document.body.innerText.includes('Browser checkpoint') && !!document.querySelector('progress')", 'Download progress');
+  await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true' && document.activeElement?.id === 'models-tab-downloads' && !!document.querySelector('#models-panel-downloads progress')", 'Starting a download opens and focuses Downloads');
+  await browser.click('#models-tab-library');
+  await clickScopedText('#models-dialog', 'View download');
+  await browser.until("!!document.querySelector('#models-panel-downloads progress')", 'Download progress survives switching sections');
+  await browser.click('button[aria-label="Close models"]');
+  await browser.until("!document.querySelector('#models-dialog[open]')", 'Close Models while its download is pending');
+  await browser.click('header button[aria-label="Models"]');
+  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true'", 'Reopening Models starts in Library');
+  await clickScopedText('#models-dialog', 'View download');
+  await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-downloads progress')", 'Reopened Models links to its ongoing download');
+  await browser.click('#models-tab-library');
   await browser.click('button[aria-label="Close models"]');
   await browser.until("!document.querySelector('#models-dialog[open]')", 'Download continues after closing Models');
+  finishCheckpointDownload();
   await browser.until("!!document.querySelector('main button[aria-label=\"Model: Browser checkpoint\"]')", 'Background download refreshes the Image model selection');
   assert.equal(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.enabled, true);
   assert.deepEqual(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.workerIds, ['browser-comfy']);
   await browser.click('header button[aria-label="Models"]');
-  await browser.until("document.querySelector('#models-dialog[open]')?.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated when Models reopens');
+  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-panel-library')?.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated when Models reopens');
+  await browser.click('#models-tab-downloads');
+  await browser.until("document.querySelector('#models-panel-downloads')?.innerText.includes('Ready to generate') && !document.querySelector('#models-panel-downloads progress')", 'Downloads records completion while another section was selected');
+  await browser.click('#models-tab-installed');
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('#models-panel-installed article h3')).map(heading => heading.textContent.trim())"), ['Browser checkpoint'], 'Installed contains only the downloaded model');
   await browser.evaluate("document.querySelectorAll('#models-dialog, #models-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
   await browser.screenshot(join(output, 'models-desktop.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true);
+  for (const section of modelSections) {
+    await browser.click(`#models-tab-${section}`);
+    await modelFrame(true);
+    await browser.screenshot(join(output, `models-${section}-mobile.png`));
+  }
+  await browser.click('#models-tab-installed');
   await browser.screenshot(join(output, 'models-mobile.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await browser.click('button[aria-label="Close models"]');
@@ -595,6 +653,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     { id: 'flux-2-klein-4b', name: 'FLUX.2 Klein 4B', short: 'klein' },
     { id: 'krea-2-turbo', name: 'Krea 2 Turbo', short: 'krea' },
     { id: 'qwen-image-2.1', name: 'Qwen Image 2.1', short: 'qwen' },
+    { id: 'sdxl-base', name: 'SDXL Base 1.0 with an unusually long checkpoint name that must remain readable in the model menu', short: 'long' },
   ];
   const draftKey = `gravity:image-draft:${store.owner()!.id}`;
   const savedDraft = await browser.evaluate<string | null>(`localStorage.getItem(${JSON.stringify(draftKey)})`);
@@ -631,14 +690,14 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     if (await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')")) await browser.clickText('Remove all');
     await browser.fill('#image-prompt', geometryPrompt);
     await browser.evaluate(`(() => {
-      const ids = new Set(${JSON.stringify(geometryModels.map(model => model.id))});
+      const fixtures = new Map(${JSON.stringify(geometryModels.map(model => [model.id, model.name]))});
       window.__gravityOriginalFetch = window.fetch;
       window.fetch = async (input, options) => {
         const response = await window.__gravityOriginalFetch.call(window, input, options);
         const url = new URL(input instanceof Request ? input.url : String(input), location.href);
         if (url.origin !== location.origin || url.pathname !== '/api/catalog' || (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET' || !response.ok) return response;
         const catalog = await response.json();
-        catalog.models = catalog.models.map(model => ids.has(model.id) ? { ...model, ready: true, capabilities: { ...model.capabilities, ready: true }, missingReasons: [], unavailableReason: '' } : model);
+        catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), ready: true, capabilities: { ...model.capabilities, ready: true }, missingReasons: [], unavailableReason: '' } : model);
         return new Response(JSON.stringify(catalog), { status: response.status, headers: { 'Content-Type': 'application/json' } });
       };
       document.dispatchEvent(new Event('visibilitychange'));
@@ -647,13 +706,26 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       await browser.send('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile });
       let dockBaseline: Geometry | undefined;
       let advancedBaseline: Geometry | undefined;
+      const intrinsicWidths: Array<{ width: number; textWidth: number }> = [];
       await browser.evaluate("void (window.__gravityGeometryPrompt = document.querySelector('#image-prompt'))");
       for (const model of geometryModels) {
         await selectGeometryModel(model.name);
         const bounds = await geometry(dockSelectors);
-        if (dockBaseline) sameGeometry(bounds, dockBaseline, `${viewport.name} ${model.name}`);
-        else dockBaseline = bounds;
-        assert.ok(Math.abs(bounds.model.width - (viewport.mobile ? 160 : 184)) < .1);
+        const stable = Object.fromEntries(Object.entries(bounds).filter(([name]) => !['model', 'aspect'].includes(name)));
+        if (dockBaseline) sameGeometry(stable, dockBaseline, `${viewport.name} ${model.name}`);
+        else dockBaseline = stable;
+        const label = await browser.evaluate<{ name: string; title: string; clientWidth: number; scrollWidth: number; textWidth: number }>(`(() => {
+          const button = document.querySelector('button[aria-label^="Model:"]'), label = button.querySelector(':scope > span:nth-of-type(2)'), range = document.createRange(); range.selectNodeContents(label);
+          return { name: label.textContent, title: button.title, clientWidth: label.clientWidth, scrollWidth: label.scrollWidth, textWidth: range.getBoundingClientRect().width };
+        })()`);
+        assert.equal(label.name, model.name); assert.equal(label.title, model.name, 'The full model name remains available when the chip is truncated');
+        if (model.short === 'long') {
+          assert.ok(bounds.model.width <= 320.5 && bounds.model.width <= viewport.width, 'A long model name is capped at the available toolbar width');
+          assert.ok(label.scrollWidth > label.clientWidth, 'A long name truncates inside its chip');
+        } else {
+          assert.ok(label.scrollWidth <= label.clientWidth + 1, 'Ordinary model names fit their natural chip width');
+          intrinsicWidths.push({ width: bounds.model.width, textWidth: label.textWidth });
+        }
         assert.ok(bounds.aspect.width > 44 && bounds.aspect.width < 80, 'The aspect chip fits its icon and label without a fixed width');
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
         for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
@@ -675,10 +747,13 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         const advanced = await geometry({ panel: '[aria-label="Advanced settings"]:popover-open', seed: '[popover]:popover-open input[aria-label="Seed"]', width: '[popover]:popover-open input[aria-label="Width value"]', guidance: '[popover]:popover-open input[aria-label="Guidance value"]' });
         if (advancedBaseline) sameGeometry(advanced, advancedBaseline, `${viewport.name} ${model.name} Advanced`);
         else advancedBaseline = advanced;
-        assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open textarea[aria-label=\"Negative prompt\"]')"), ['wai', 'qwen'].includes(model.short), 'Only models advertising negative prompts expose the field');
+        assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open textarea[aria-label=\"Negative prompt\"]')"), ['wai', 'qwen', 'long'].includes(model.short), 'Only models advertising negative prompts expose the field');
         await screenshotPopover(`advanced-${model.short}-${viewport.name}.png`);
         await browser.key('Escape');
       }
+      assert.ok(Math.max(...intrinsicWidths.map(item => item.width)) - Math.min(...intrinsicWidths.map(item => item.width)) > 8, 'Shorter and longer model names have different chip widths');
+      const chromeWidth = intrinsicWidths[0].width - intrinsicWidths[0].textWidth;
+      for (const measured of intrinsicWidths) assert.ok(Math.abs(measured.width - measured.textWidth - chromeWidth) <= 2, 'Chip width follows its model label while retaining consistent icon spacing');
     }
     assert.equal(store.jobs(store.owner()!.id).length, jobCount, 'The geometry fixture creates no generation jobs');
     assert.equal(comfy.state.submissions.length, submissionCount, 'The geometry fixture submits no ComfyUI prompts');
