@@ -10,7 +10,7 @@ const roleLabel = (role: string) => role.replace(/[_-]/g, ' ').replace(/\b\w/g, 
 
 export type AdvancedSettingsSection = 'generation' | 'connections' | 'models' | 'api';
 
-export function AdvancedSettings({ initialHardware, onSaved, onChooseGpus, onDirtyChange, section, revision = 0 }: { initialHardware: Hardware | null; onSaved: () => void; onChooseGpus: () => void; onDirtyChange: (dirty: boolean) => void; section?: AdvancedSettingsSection | 'gpus'; revision?: number }) {
+export function AdvancedSettings({ initialHardware, onSaved, onChooseGpus, onDirtyChange, section, revision = 0 }: { initialHardware: Hardware | null; onSaved: (settings: Settings) => void; onChooseGpus: () => void; onDirtyChange: (dirty: boolean) => void; section?: AdvancedSettingsSection | 'gpus'; revision?: number }) {
   const [hardware, setHardware] = useState(initialHardware);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [managedWorkerIds, setManagedWorkerIds] = useState<string[]>([]);
@@ -83,7 +83,7 @@ export function AdvancedSettings({ initialHardware, onSaved, onChooseGpus, onDir
   async function save() {
     if (!settings) return;
     setSaving(true); setError(''); setSaved(false);
-    try { const stored = await api<Settings>('/settings', { method: 'PUT', body: JSON.stringify(settings) }); acceptSettings(stored); setSaved(true); onSaved(); setCatalog(await api<Catalog>('/catalog')); }
+    try { const stored = await api<Settings>('/settings', { method: 'PUT', body: JSON.stringify(settings) }); acceptSettings(stored); setSaved(true); onSaved(stored); setCatalog(await api<Catalog>('/catalog')); }
     catch (error) { setError(errorMessage(error)); }
     finally { setSaving(false); }
   }

@@ -140,6 +140,21 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     finally { if (write.current === controller) write.current = null; if (!controller.signal.aborted && mounted.current) setStarting(false); }
   }
 
+  function advancedSaved(next: Settings) {
+    if (!mounted.current) return;
+    // The child already accepted this revision. A second reload would erase its
+    // saved confirmation and could replace edits started just after the save.
+    read.current?.abort(); read.current = null;
+    pendingAdvancedRefresh.current = false;
+    current.current = { ...current.current, settings: next, advancedDirty: false };
+    setSettings(next); setAdvancedDirty(false); setLoading(false);
+    if (!selectionEdited.current) {
+      const assigned = next.workers.filter(worker => worker.enabled && worker.location === 'local').flatMap(worker => worker.deviceIds);
+      setSelected(assigned.length ? assigned : hardware?.gpus.filter(gpu => gpu.vendor === 'amd' || gpu.vendor === 'nvidia').map(gpu => gpu.id) || []);
+    }
+    onSavedRef.current();
+  }
+
   const advancedSection = section !== 'gpus' && section !== 'integrations' && section !== 'assistant' && section !== 'app';
   useEffect(() => {
     if (advancedSection) setAdvancedVisited(true);
@@ -175,6 +190,6 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     {(integrationsVisited || section === 'integrations') && <div hidden={section !== 'integrations'} role="tabpanel" id="settings-panel-integrations" aria-labelledby="settings-tab-integrations" tabIndex={0}><IntegrationsSettings active={active && section === 'integrations'} /></div>}
     {(assistantVisited || section === 'assistant') && <div hidden={section !== 'assistant'} role="tabpanel" id="settings-panel-assistant" aria-labelledby="settings-tab-assistant" tabIndex={0}><LanguageModels active={active && section === 'assistant'} assistant onConfigure={() => selectSection('integrations')} /></div>}
     {section === 'app' && <div role="tabpanel" id="settings-panel-app" aria-labelledby="settings-tab-app" tabIndex={0}><AppSettings busy={activeWork || busy || advancedDirty} /></div>}
-    {(advancedVisited || advancedSection) && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && advancedSection && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); if (current.current.active) document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { if (mounted.current) { void load(); onSavedRef.current(); } }} /></fieldset>}
+    {(advancedVisited || advancedSection) && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && advancedSection && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); if (current.current.active) document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={advancedSaved} /></fieldset>}
   </TabbedWorkspace>;
 }
