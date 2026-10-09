@@ -1,34 +1,32 @@
 'use client';
-import { useState } from 'react';
-import { Popover } from '@/components/ui/Popover';
-import { LoaderCircle, Trash2 } from '@/components/ui/icons';
+import { useEffect, useState } from 'react';
+import { Check, LoaderCircle, Trash2 } from '@/components/ui/icons';
 import { errorMessage } from '@/lib/api';
 
-export function DeleteImageButton({ disabled, onDelete }: { disabled: boolean; onDelete: () => Promise<void> }) {
+export function DeleteImageButton({ disabled, onDelete, onError }: { disabled: boolean; onDelete: () => Promise<void>; onError: (message: string) => void }) {
+  const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  async function remove(close: () => void) {
+  useEffect(() => {
+    if (!armed) return;
+    const timer = setTimeout(() => setArmed(false), 5000);
+    return () => clearTimeout(timer);
+  }, [armed]);
+  async function remove() {
     if (busy || disabled) return;
-    setBusy(true); setError('');
+    if (!armed) { setArmed(true); return; }
+    setArmed(false); setBusy(true); onError('');
     try {
       await onDelete();
-      close();
       // The deleted tile may have held focus. Keep keyboard navigation in the gallery.
       requestAnimationFrame(() => {
         if (document.activeElement === document.body) document.querySelector<HTMLButtonElement>('[aria-label="Image filter"] [aria-pressed="true"]')?.focus({ preventScroll: true });
       });
-    } catch (error) { setError(errorMessage(error)); }
+    } catch (error) { onError(errorMessage(error)); }
     finally { setBusy(false); }
   }
-  return <Popover label="Delete image" title="Delete this image?" width={280} side="bottom" align="end" initialFocus="[data-delete-cancel]"
-    trigger={({ triggerProps }) => <button {...triggerProps} type="button" data-delete-action disabled={disabled || busy} aria-label="Delete image" title="Delete image" aria-busy={busy} onClick={() => setError('')} className="grid size-8 place-items-center rounded-full bg-black/65 text-white hover:bg-black/85 disabled:opacity-50">{busy ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}</button>}>
-    {close => <div className="px-1 pb-1">
-      <p className="text-xs leading-relaxed text-ink-2">This permanently deletes the image and removes it from favorites.</p>
-      {error && <p role="alert" className="error-notice mt-3 text-xs">{error}</p>}
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" data-delete-cancel disabled={busy} onClick={close} className="min-h-10 rounded-lg px-3 text-xs font-medium hover:bg-chip disabled:opacity-50">Cancel</button>
-        <button type="button" disabled={busy || disabled} aria-busy={busy} onClick={() => void remove(close)} className="min-h-10 rounded-lg bg-hot px-3 text-xs font-medium text-void hover:brightness-110 disabled:opacity-50">{busy ? 'Deleting…' : 'Delete image'}</button>
-      </div>
-    </div>}
-  </Popover>;
+  return <button type="button" data-delete-action disabled={disabled || busy} aria-label={busy ? 'Deleting image' : armed ? 'Confirm image deletion' : 'Delete image'} title={armed ? 'Click again to permanently delete' : 'Delete image'} aria-busy={busy}
+    onClick={() => void remove()} onBlur={() => setArmed(false)} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setArmed(false); } }}
+    className={`grid size-8 place-items-center rounded-full transition-colors disabled:opacity-50 ${armed ? 'bg-hot text-void hover:brightness-110' : 'bg-black/65 text-white hover:bg-black/85'}`}>
+    {busy ? <LoaderCircle size={16} className="animate-spin" /> : armed ? <Check size={18} /> : <Trash2 size={16} />}
+  </button>;
 }
