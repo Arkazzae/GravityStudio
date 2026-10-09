@@ -15,6 +15,7 @@ import { ModelLibrary } from "./models.ts";
 import { modelRegistry } from "./registry.ts";
 import { CredentialVault } from "./credentials.ts";
 import { INTEGRATION_PROVIDERS, integrationProvider, testIntegration } from "./integrations.ts";
+import { TextService } from "./text.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -58,11 +59,13 @@ export interface ServerOptions {
   runtime?: Pick<RuntimeSetup, "status" | "start" | "close" | "managedWorkers">;
   models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
   integrationFetch?: typeof fetch;
+  textFetch?: typeof fetch;
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
   await recoverOutputDeletions(store);
   const credentials = new CredentialVault(store);
+  const text = new TextService(store, credentials, { fetch: options.textFetch });
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
   const models = options.models ?? new ModelLibrary(store, engine, { huggingFaceToken: () => credentials.get("huggingface") });
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
@@ -113,6 +116,25 @@ export async function createStudioServer(options: ServerOptions) {
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
       const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      if (path.startsWith("/api/text/") || path === "/api/prompts/refine") {
+        requireSession();
+        if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        if (path === "/api/text/settings" && method === "GET") return json(response, text.settings());
+        if (path === "/api/text/connection" && method === "PUT") return json(response, text.saveConnection(await readJson(request, 8192)));
+        if (path === "/api/text/assistant" && method === "PUT") return json(response, await text.saveAssistant(await readJson(request, 2048)));
+        if ((path === "/api/text/models" && method === "GET") || (path === "/api/prompts/refine" && method === "POST")) {
+          const controller = new AbortController();
+          const abort = () => { if (!response.writableEnded) controller.abort(); };
+          response.once("close", abort);
+          try {
+            const result = path === "/api/text/models"
+              ? await text.models(new URL(request.url!, "http://localhost").searchParams.get("provider"), controller.signal, new URL(request.url!, "http://localhost").searchParams.get("refresh") === "true")
+              : await text.refine(await readJson(request), controller.signal);
+            if (!controller.signal.aborted) return json(response, result);
+            return;
+          } finally { response.off("close", abort); }
+        }
+      }
       if (path === "/api/integrations" && method === "GET") {
         requireSession();
         return json(response, { providers: INTEGRATION_PROVIDERS.map(provider => ({ ...provider, credential: credentials.status(provider.id) })) });
@@ -271,5 +293,5 @@ export async function createStudioServer(options: ServerOptions) {
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
-  return Object.assign(server, { closeOperations: async () => { stopping = true; await Promise.all([runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
+  return Object.assign(server, { closeOperations: async () => { stopping = true; await Promise.all([text.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values())]); } });
 }
