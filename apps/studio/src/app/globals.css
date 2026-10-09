@@ -195,7 +195,7 @@
 @font-face { font-family: Inter; font-style: normal; font-weight: 100 900; font-display: swap; src: url('/fonts/inter-latin.woff2') format('woff2'); unicode-range: U+0-FF,U+131,U+152-153,U+2BB-2BC,U+2C6,U+2DA,U+2DC,U+304,U+308,U+329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
 :root { --font-inter: Inter; }
 button:not(:disabled), summary { cursor: pointer; }
-:where(button,a,input,select,textarea):focus-visible { outline: 2px solid var(--color-volt); outline-offset: 3px; }
+:where(button,a,input,select,textarea:not(#image-prompt)):focus-visible { outline: 2px solid var(--color-volt); outline-offset: 3px; }
 input, textarea { caret-color: var(--color-volt); }
 .field { display: flex; flex-direction: column; gap: 7px; font-size: 13px; color: var(--color-ink-2); }
 .field input, .field select, .field textarea { width: 100%; min-width: 0; min-height: 42px; border: 1px solid var(--color-line-2); border-radius: 10px; background: var(--color-panel-2); padding: 10px 12px; color: var(--color-ink); font-size: 13px; }
