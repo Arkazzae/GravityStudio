@@ -42,17 +42,23 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
     return () => observer.disconnect();
   }, []);
   useEffect(() => { if (!dock.current) return; const observer = new ResizeObserver(([entry]) => onHeight(entry.contentRect.height + 24)); observer.observe(dock.current); return () => observer.disconnect(); }, [onHeight]);
-  async function upload(files: File[]) {
-    if (!files.length || uploading) return false;
-    if (files.length + draft.images.length > maxImages) { setError(`This model accepts up to ${maxImages} reference image${maxImages === 1 ? '' : 's'}.`); return false; }
-    if (files.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type))) { setError('Choose PNG, JPEG, or WebP images.'); return false; }
+  async function upload(files: File[], signal?: AbortSignal): Promise<{ ok: boolean; error?: string }> {
+    const reject = (message: string) => { setError(message); return { ok: false, error: message }; };
+    if (!files.length || uploading) return reject(uploading ? 'Wait for the current upload to finish.' : 'Choose an image to add.');
+    if (files.length + draft.images.length > maxImages) return reject(`This model accepts up to ${maxImages} reference image${maxImages === 1 ? '' : 's'}.`);
+    if (files.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type))) return reject('Choose PNG, JPEG, or WebP images.');
     setUploading(true); setError('');
     const added: InputImage[] = [];
     try {
-      for (const file of files) added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name) }, body: file }));
-    } catch (error) { setError(errorMessage(error)); }
-    finally { if (added.length) setDraft(current => ({ ...current, images: [...current.images, ...added] })); setUploading(false); }
-    return added.length === files.length;
+      for (const file of files) {
+        signal?.throwIfAborted();
+        added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name) }, body: file, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000) }));
+      }
+      signal?.throwIfAborted();
+      setDraft(current => ({ ...current, images: [...current.images, ...added] }));
+      return { ok: true };
+    } catch (error) { return signal?.aborted ? { ok: false } : reject(errorMessage(error)); }
+    finally { setUploading(false); }
   }
   async function submit() {
     if (!canSubmit) return;
@@ -83,6 +89,6 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
-    {browsing && <ReferencePicker jobs={jobs} onPick={upload} onClose={() => setBrowsing(false)} />}
+    {browsing && <ReferencePicker jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} onClose={() => setBrowsing(false)} />}
   </div>;
 }

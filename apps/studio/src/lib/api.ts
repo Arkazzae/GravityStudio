@@ -26,7 +26,7 @@ export interface ModelLibraryState { models: LibraryModel[]; download: ModelDown
 export interface InputImage { id: string; url: string; name: string; width: number; height: number }
 export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string }
 export interface Job {
-  id: string; modelId: string; prompt: string; parameters: GenerationParameters;
+  id: string; modelId: string; modelName?: string; prompt: string; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
   stage?: string; progress: number | null; createdAt: string;
   outputs: Array<{ id: string; url: string; width?: number; height?: number; mimeType: string }>;
