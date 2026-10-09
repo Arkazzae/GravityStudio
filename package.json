@@ -7,14 +7,17 @@
   "engines": { "node": ">=24.13.0" },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "start": "node scripts/dev.mjs --production",
     "dev:server": "node --watch apps/server/main.ts",
     "dev:studio": "pnpm --dir apps/studio dev",
     "start:server": "node apps/server/main.ts",
     "build": "pnpm --dir apps/studio build",
     "typecheck": "tsc --noEmit && pnpm --dir apps/studio typecheck",
     "test": "node --test --test-isolation=none tests/**/*.test.ts",
+    "test:browser": "node --test --test-isolation=none tests/browser/studio.browser.ts",
     "check": "pnpm typecheck && pnpm test",
-    "doctor": "node scripts/doctor.ts"
+    "doctor": "node scripts/doctor.ts",
+    "runtime": "node scripts/runtime.ts"
   },
   "devDependencies": {
     "@types/node": "26.5.0",
