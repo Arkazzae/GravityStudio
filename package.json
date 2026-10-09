@@ -12,7 +12,7 @@
     "start:server": "node apps/server/main.ts",
     "build": "pnpm --dir apps/studio build",
     "typecheck": "tsc --noEmit && pnpm --dir apps/studio typecheck",
-    "test": "node --test tests/**/*.test.ts",
+    "test": "node --test --test-isolation=none tests/**/*.test.ts",
     "check": "pnpm typecheck && pnpm test",
     "doctor": "node scripts/doctor.ts"
   },

@@ -127,6 +127,17 @@ export class Store {
     if (!row) throw new ApiError(404, "JOB_NOT_FOUND", "This job does not exist.");
     return JSON.parse(row.body) as StoredJob;
   }
+  idempotentJob(userId: string, key: string, requestHash: string): StoredJob | undefined {
+    const row = this.db.prepare("SELECT job_id,request_hash FROM idempotency WHERE user_id=? AND key=?").get(userId, key) as { job_id: string; request_hash: string } | undefined;
+    if (!row) return undefined;
+    if (row.request_hash !== requestHash) throw new ApiError(409, "IDEMPOTENCY_CONFLICT", "This request key was already used for different settings.");
+    return this.job(row.job_id, userId);
+  }
+  saveExecution(id: string, snapshot: unknown) {
+    const job = this.job(id);
+    if (job.submissionStarted || job.status !== "preparing") throw new Error("An execution snapshot is immutable after submission begins.");
+    this.db.prepare("UPDATE jobs SET body=? WHERE id=?").run(json({ ...job, snapshot }), id);
+  }
   jobs(userId?: string, limit = 100): StoredJob[] {
     const rows = (userId ? this.db.prepare("SELECT body FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT ?").all(userId, limit) : this.db.prepare("SELECT body FROM jobs ORDER BY created_at ASC").all()) as { body: string }[];
     return rows.map(row => JSON.parse(row.body) as StoredJob);

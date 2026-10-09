@@ -4,7 +4,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import type { NodeInfo } from "../../packages/inference/index.ts";
 
-export const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lWQAAAAASUVORK5CYII=", "base64"));
+export const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWMISKkAAAI0AS2SBuVdAAAAAElFTkSuQmCC", "base64"));
 
 /** A deliberately small protocol fixture; it does not run or simulate diffusion. */
 export const sdxlObjectInfo: Record<string, NodeInfo> = {
