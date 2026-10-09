@@ -231,7 +231,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('[aria-label="Use these settings"]');
   await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(prompt)}`, 'Restore accepted prompt');
   await uploadReference();
-  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Upload reference images\"]').disabled && !document.querySelector('button[aria-label=\"Add reference image\"]')"), true, 'The single-reference model prevents a second upload');
+  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Upload reference images\"]').disabled && document.querySelector('button[aria-label=\"Add reference image\"]').disabled && document.querySelector('button[aria-label=\"Browse saved images\"]').disabled"), true, 'The single-reference model keeps both reference controls visible and prevents a second upload');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
   await openAdvanced();
   await browser.fill('input[aria-label="Image strength value"]', '.45');
@@ -255,7 +255,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('main [role=alert]') && !Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === 'Generate').disabled", 'Reset restores a valid, generatable image size');
   assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityResetReference"), true, 'Recovery from invalid dimensions keeps the reference');
   await browser.click('button[aria-label="Remove reference 1"]');
-  await browser.until("!!document.querySelector('button[aria-label=\"Browse saved images\"]')", 'Removing a reference makes upload and saved-image selection available');
+  await browser.until("document.querySelector('button[aria-label=\"Browse saved images\"]')?.disabled === false", 'Removing a reference makes upload and saved-image selection available');
   await browser.click('[aria-label="Browse saved images"]');
   await browser.until("!!document.querySelector('dialog[open]')", 'Reference picker opens');
   await browser.click('dialog button[aria-label^="Use reference:"]');
@@ -328,7 +328,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await checkWorkspaceModal('Models', 'backdrop', 'mobile');
   await checkWorkspaceModal('Settings', 'escape', 'mobile');
   await browser.click('button[aria-label="Remove reference 1"]');
-  await browser.until("!!document.querySelector('button[aria-label=\"Add reference image\"]')", 'Mobile upload control is available after removing a reference');
+  await browser.until("document.querySelector('button[aria-label=\"Add reference image\"]')?.disabled === false", 'Mobile upload control is available after removing a reference');
   for (const label of ['Add reference image', 'Browse saved images']) {
     assert.equal(await browser.evaluate(`(() => { const rect = document.querySelector('button[aria-label=${JSON.stringify(label)}]').getBoundingClientRect(); return rect.width >= 40 && rect.height >= 40 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; })()`), true, `${label} remains reachable on mobile`);
   }
@@ -403,6 +403,102 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.click(`button[aria-label="Close ${label.toLowerCase()}"]`);
     await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('#image-prompt')", `${label} entry dialog closes to Image`);
   }
+
+  // Read-only UI fixture: expose three real catalog manifests as selectable without
+  // installing their weights. No generation is submitted while readiness is overridden.
+  const geometryModels = [
+    { id: 'wai-illustrious-v17', name: 'WAI Illustrious v17', short: 'wai' },
+    { id: 'flux-2-klein-4b', name: 'FLUX.2 Klein 4B', short: 'klein' },
+    { id: 'krea-2-turbo', name: 'Krea 2 Turbo', short: 'krea' },
+  ];
+  const draftKey = `gravity:image-draft:${store.owner()!.id}`;
+  const savedDraft = await browser.evaluate<string | null>(`localStorage.getItem(${JSON.stringify(draftKey)})`);
+  const jobCount = store.jobs(store.owner()!.id).length;
+  const submissionCount = comfy.state.submissions.length;
+  const geometryPrompt = 'Keep this exact prompt while switching between image model families.';
+  const dockSelectors = {
+    dock: '[data-workspace-scroll="dock"]', prompt: '#image-prompt',
+    model: 'button[aria-label^="Model:"]', aspect: 'button[aria-label^="Aspect ratio:"]',
+    advanced: 'button[aria-label="Advanced settings"]', reset: 'button[aria-label="Reset settings to defaults"]',
+    generate: 'button[title^="Submit to your generation queue"]',
+    add: 'button[aria-label="Add reference image"]', browse: 'button[aria-label="Browse saved images"]',
+  };
+  type Geometry = Record<string, { x: number; y: number; width: number; height: number }>;
+  async function geometry(selectors: Record<string, string>) {
+    await browser.evaluate("Promise.all(document.querySelector('[data-workspace-scroll=\"dock\"]').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+    await browser.evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))');
+    return browser.evaluate<Geometry>(`Object.fromEntries(Object.entries(${JSON.stringify(selectors)}).map(([name, selector]) => { const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect(); return [name, {x, y, width, height}]; }))`);
+  }
+  function sameGeometry(actual: Geometry, expected: Geometry, label: string) {
+    for (const name of Object.keys(expected)) for (const axis of ['x', 'y', 'width', 'height'] as const) {
+      assert.ok(Math.abs(actual[name][axis] - expected[name][axis]) <= 1, `${label}: ${name}.${axis} changed from ${expected[name][axis]} to ${actual[name][axis]}`);
+    }
+  }
+  async function selectGeometryModel(name: string) {
+    await browser.click('button[aria-label^="Model:"]');
+    const row = `Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).find(row => row.textContent.includes(${JSON.stringify(name)}))`;
+    await browser.until(`(() => { const row = (${row}); return row && !row.disabled && getComputedStyle(row).visibility === 'visible'; })()`, `${name} is selectable in the UI fixture`);
+    await browser.evaluate(`(${row}).focus()`);
+    await browser.key('Enter');
+    await browser.until(`!!document.querySelector('button[aria-label=${JSON.stringify(`Model: ${name}`)}]') && !document.querySelector('[popover]:popover-open')`, `${name} selected`);
+  }
+  try {
+    if (await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')")) await browser.clickText('Remove all');
+    await browser.fill('#image-prompt', geometryPrompt);
+    await browser.evaluate(`(() => {
+      const ids = new Set(${JSON.stringify(geometryModels.map(model => model.id))});
+      window.__gravityOriginalFetch = window.fetch;
+      window.fetch = async (input, options) => {
+        const response = await window.__gravityOriginalFetch.call(window, input, options);
+        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+        if (url.origin !== location.origin || url.pathname !== '/api/catalog' || (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET' || !response.ok) return response;
+        const catalog = await response.json();
+        catalog.models = catalog.models.map(model => ids.has(model.id) ? { ...model, ready: true, capabilities: { ...model.capabilities, ready: true }, missingReasons: [], unavailableReason: '' } : model);
+        return new Response(JSON.stringify(catalog), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+      };
+      document.dispatchEvent(new Event('visibilitychange'));
+    })()`);
+    for (const viewport of [{ name: 'desktop', width: 1440, height: 960, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile });
+      let dockBaseline: Geometry | undefined;
+      let advancedBaseline: Geometry | undefined;
+      await browser.evaluate("void (window.__gravityGeometryPrompt = document.querySelector('#image-prompt'))");
+      for (const model of geometryModels) {
+        await selectGeometryModel(model.name);
+        const bounds = await geometry(dockSelectors);
+        if (dockBaseline) sameGeometry(bounds, dockBaseline, `${viewport.name} ${model.name}`);
+        else dockBaseline = bounds;
+        assert.ok(Math.abs(bounds.model.width - (viewport.mobile ? 160 : 184)) < .1);
+        assert.ok(Math.abs(bounds.aspect.width - (viewport.mobile ? 80 : 128)) < .1);
+        assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
+        for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
+        assert.equal(await browser.evaluate(`document.querySelector('#image-prompt') === window.__gravityGeometryPrompt && document.querySelector('#image-prompt').value === ${JSON.stringify(geometryPrompt)}`), true, 'Model changes preserve the same prompt element and text');
+        const noReferences = model.short === 'krea';
+        for (const selector of [dockSelectors.add, dockSelectors.browse, 'input[aria-label="Upload reference images"]']) {
+          assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), noReferences, `${model.name} advertises its reference capability`);
+        }
+        if (noReferences) assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(dockSelectors.add)}).title`), /not supported/i);
+        assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, 'Switching models does not overflow the page');
+        await browser.screenshot(join(output, `toolbar-${model.short}-${viewport.name}.png`));
+        await openAdvanced();
+        await browser.evaluate("document.querySelectorAll('[popover]:popover-open *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
+        await browser.evaluate("Promise.all(document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+        const advanced = await geometry({ panel: '[aria-label="Advanced settings"]:popover-open', seed: '[popover]:popover-open input[aria-label="Seed"]', width: '[popover]:popover-open input[aria-label="Width value"]', guidance: '[popover]:popover-open input[aria-label="Guidance value"]' });
+        if (advancedBaseline) sameGeometry(advanced, advancedBaseline, `${viewport.name} ${model.name} Advanced`);
+        else advancedBaseline = advanced;
+        assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open textarea[aria-label=\"Negative prompt\"]')"), model.short === 'wai', 'Only models advertising negative prompts expose the field');
+        await screenshotPopover(`advanced-${model.short}-${viewport.name}.png`);
+        await browser.key('Escape');
+      }
+    }
+    assert.equal(store.jobs(store.owner()!.id).length, jobCount, 'The geometry fixture creates no generation jobs');
+    assert.equal(comfy.state.submissions.length, submissionCount, 'The geometry fixture submits no ComfyUI prompts');
+  } finally {
+    await browser.evaluate(`(() => { if (window.__gravityOriginalFetch) { window.fetch = window.__gravityOriginalFetch; delete window.__gravityOriginalFetch; } delete window.__gravityGeometryPrompt; ${savedDraft === null ? `localStorage.removeItem(${JSON.stringify(draftKey)});` : `localStorage.setItem(${JSON.stringify(draftKey)}, ${JSON.stringify(savedDraft)});`} })()`);
+    await browser.send('Page.reload');
+    await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Real catalog and saved draft restored after the geometry fixture');
+  }
+  assert.equal(await browser.evaluate(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.filter(model => ${JSON.stringify(geometryModels.map(model => model.id))}.includes(model.id)).every(model => !model.ready))`), true, 'Real readiness is restored after the UI-only fixture');
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });

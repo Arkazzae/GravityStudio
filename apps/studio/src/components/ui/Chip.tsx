@@ -35,10 +35,10 @@ export function Chip({
       )}
       {...props}
     >
-      {icon ? <span className="text-ink-2 [&_svg]:size-4 [&_svg]:stroke-[1.8]">{icon}</span> : null}
-      <span className="truncate whitespace-nowrap">{children}</span>
-      {chevron === "down" ? <ChevronDown className="-mr-0.5 size-3.5 shrink-0 text-ink-3" strokeWidth={2} /> : null}
-      {chevron === "right" ? <ChevronRight className="-mr-0.5 size-3.5 shrink-0 text-ink-3" strokeWidth={2} /> : null}
+      {icon ? <span className="grid size-[18px] shrink-0 place-items-center text-ink-2 [&_svg]:size-4 [&_svg]:stroke-[1.8]">{icon}</span> : null}
+      <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">{children}</span>
+      {chevron === "down" ? <ChevronDown className="-mr-0.5 ml-auto size-3.5 shrink-0 text-ink-3" strokeWidth={2} /> : null}
+      {chevron === "right" ? <ChevronRight className="-mr-0.5 ml-auto size-3.5 shrink-0 text-ink-3" strokeWidth={2} /> : null}
     </button>
   );
 }
