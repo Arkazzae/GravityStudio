@@ -54,7 +54,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     { id: 'browser-comfy', baseUrl: comfy.url, deviceId: 'amd:9700b' },
     { id: 'browser-comfy-first', baseUrl: otherComfy.url, deviceId: 'amd:9700a' },
   ];
-  // Only container execution and the Hugging Face response are fixtures; the owner API,
+  // Only container execution and upstream provider responses are fixtures; the owner API,
   // model download, validation, activation, settings and generation use their real code.
   const runtime = {
     status: () => structuredClone(runtimeState),
@@ -99,7 +99,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(String(input), source); await checkpointResponseReady;
     return new Response(fixtureCheckpoint, { headers: { 'Content-Length': String(fixtureCheckpoint.length) } });
   } });
-  const server = await createStudioServer({ store, engine, runtime, models, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
+  let integrationResponseStatus = 200;
+  const integrationRequests: Array<{ url: string; authorization: string | null }> = [];
+  const server = await createStudioServer({ store, engine, runtime, models, integrationFetch: async (input, init) => {
+    integrationRequests.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
+    return Response.json({ data: [] }, { status: integrationResponseStatus });
+  }, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   await engine.start();
@@ -657,7 +662,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Connections', 'Model files', 'API access']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Connections', 'Model files', 'Integrations', 'API access']);
+  assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-integrations')"), false, 'Integration settings load only after selecting their tab');
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
     await browser.until(`document.querySelector('#settings-tab-${section}')?.getAttribute('aria-selected') === 'true' && document.querySelector('#settings-panel-${section}')?.hidden === false`, `${key} selects the ${section} section`);
@@ -755,6 +761,44 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('[aria-label="Revoke Browser test MCP"]');
   await browser.until("document.body.innerText.includes('No access tokens yet.')", 'Token revoked');
   assert.equal((await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
+  // Fail one list request to exercise retry without contacting any external provider.
+  await browser.evaluate("(() => { const originalFetch = window.fetch.bind(window); window.fetch = (input, init) => { if (String(input) === '/api/integrations' && !init?.method) { window.fetch = originalFetch; return Promise.resolve(new Response(JSON.stringify({error: {message: 'Integration list unavailable.'}}), {status: 503, headers: {'Content-Type': 'application/json'}})); } return originalFetch(input, init); }; })()");
+  await browser.click('#settings-tab-api');
+  await settingsKey('ArrowUp', 'integrations');
+  await browser.until("document.querySelector('#settings-panel-integrations [role=alert]')?.textContent.includes('Integration list unavailable.')", 'Integration list failure is actionable');
+  await clickScopedText('#settings-panel-integrations', 'Try again');
+  await browser.until("document.querySelectorAll('#settings-panel-integrations input[type=password]').length === 6", 'All six providers load after retry');
+  const providerScope = 'form[aria-labelledby="integration-openai-title"]';
+  const providerInput = `${providerScope} input[type=password]`;
+  const originalProviderKey = 'browser-provider-key-ab12';
+  const replacementProviderKey = 'browser-provider-key-cd34';
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerInput)}).getAttribute('autocomplete')`), 'off', 'Provider keys do not use saved browser credentials');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerInput)}).value`), '', 'Saved keys never populate the password input');
+  await browser.fill(providerInput, originalProviderKey);
+  await clickScopedText(providerScope, 'Save key');
+  await browser.until(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('•••• ab12') && document.querySelector(${JSON.stringify(providerInput)}).value === ''`, 'Saving clears the raw key and shows its suffix');
+  assert.equal(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(originalProviderKey)})`), false, 'The saved raw key is absent from the DOM');
+  const providerMetadata = await browser.evaluate<string>("fetch('/api/integrations').then(response => response.text())");
+  assert.equal(providerMetadata.includes(originalProviderKey), false, 'Integration responses exclude saved raw keys');
+  assert.equal(providerMetadata.includes('ab12'), true, 'Integration responses include the saved suffix');
+  assert.equal(await browser.evaluate(`JSON.stringify({...localStorage, ...sessionStorage}).includes(${JSON.stringify(originalProviderKey)})`), false, 'Provider keys are absent from browser storage');
+  await clickScopedText(providerScope, 'Check access');
+  await browser.until(`(() => { const form = document.querySelector(${JSON.stringify(providerScope)}); const status = form.querySelector('[role=status]'); return status && status.textContent !== 'Key saved. Check access to verify it.' && form.getAttribute('aria-busy') === 'false'; })()`, 'Saved provider key passes its access check');
+  assert.deepEqual(integrationRequests.at(-1), { url: 'https://api.openai.com/v1/models', authorization: `Bearer ${originalProviderKey}` }, 'The access check uses the saved server-side key');
+  integrationResponseStatus = 401;
+  await clickScopedText(providerScope, 'Check access');
+  await browser.until(`!!document.querySelector(${JSON.stringify(providerScope)} + ' [role=alert]')`, 'Provider authentication failure is shown');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('•••• ab12') && document.querySelector(${JSON.stringify(providerInput)}).value === ''`), true, 'A failed access check preserves the saved key without revealing it');
+  integrationResponseStatus = 200;
+  await browser.fill(providerInput, 'invalid replacement key');
+  await clickScopedText(providerScope, 'Replace key');
+  await browser.until(`!!document.querySelector(${JSON.stringify(providerScope)} + ' [role=alert]')`, 'Invalid replacement key is rejected');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('•••• ab12') && document.querySelector(${JSON.stringify(providerInput)}).value === 'invalid replacement key'`), true, 'Failed replacement preserves both the saved key and the edit for correction');
+  await browser.fill(providerInput, replacementProviderKey);
+  await clickScopedText(providerScope, 'Replace key');
+  await browser.until(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('•••• cd34') && document.querySelector(${JSON.stringify(providerInput)}).value === ''`, 'Replacing a key updates its suffix and clears the field');
+  await browser.screenshot(join(output, 'integrations-mobile.png'));
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-integrations').scrollWidth <= document.querySelector('#settings-panel-integrations').clientWidth"), true, 'Integration controls fit the mobile content area');
   await browser.click('#settings-tab-connections');
   await browser.fill(workerNameInput, 'GPU 2');
   await browser.click('#settings-tab-models');
@@ -769,6 +813,17 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal('managedWorkers' in store.settings(), false, 'Managed runtime metadata stays outside persisted settings');
   await browser.click('button[aria-label="Close settings"]');
   await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes before account controls are used');
+  await browser.send('Page.reload');
+  await browser.until("!!document.querySelector('#image-prompt')", 'Workspace reloads with integration credentials stored');
+  await browser.click('header button[aria-label="Settings"]');
+  await browser.click('#settings-tab-integrations');
+  await browser.until(`document.querySelector(${JSON.stringify(providerScope)})?.textContent.includes('•••• cd34')`, 'Reloading restores only the saved suffix');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerInput)}).value`), '', 'Reloading never returns the saved raw key');
+  assert.equal(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(replacementProviderKey)})`), false, 'Reloading exposes no saved key in the DOM');
+  await browser.click('[aria-label="Remove OpenAI (GPT) key"]');
+  await browser.until(`document.querySelector(${JSON.stringify(providerScope)}).textContent.includes('No key saved')`, 'Removing a provider key clears its saved status');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes after removing the key');
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');
   await browser.until("document.body.innerText.includes('Welcome back.')", 'Signed out');
