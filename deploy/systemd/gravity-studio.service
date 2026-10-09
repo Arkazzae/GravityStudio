@@ -1,0 +1,20 @@
+[Unit]
+Description=Gravity Studio
+
+[Service]
+Type=simple
+# Replace all /absolute/path placeholders before installing this user service.
+WorkingDirectory=/absolute/path/to/gravity-studio
+ExecStart=/absolute/path/to/node/bin/node /absolute/path/to/gravity-studio/scripts/dev.mjs --production
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+# Include the directories containing Node and optional GPU inventory utilities.
+Environment=PATH=/absolute/path/to/node/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
