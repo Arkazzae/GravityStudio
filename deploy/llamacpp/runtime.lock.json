@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "platform": "linux/amd64",
+  "source": "https://github.com/ggml-org/llama.cpp",
+  "revision": "3d65c90d04d337e88f2b1f7f0061f40a5324e662",
+  "release": "b11515",
+  "profiles": {
+    "rocm": {
+      "image": "ghcr.io/ggml-org/llama.cpp@sha256:87fc2745ae92daa24606ea52522b9aee5051983d82ec66ae5ff6ce6377b4905f",
+      "toolkit": "7.2.1",
+      "architectures": ["gfx908", "gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"]
+    },
+    "cuda": {
+      "image": "ghcr.io/ggml-org/llama.cpp@sha256:e3f1cdbb7bd8c4d64df34e97336f2b56f67735fb988e074280805b587179f874",
+      "toolkit": "12.8.1",
+      "architectures": ["sm_75", "sm_80", "sm_86", "sm_89", "sm_90", "sm_100", "sm_120"]
+    }
+  }
+}
