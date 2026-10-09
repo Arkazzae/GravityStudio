@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Engine } from "../../apps/server/engine.ts";
 import { ModelLibrary, huggingFaceFile } from "../../apps/server/models.ts";
 import { modelRegistry, saveImportedModel } from "../../apps/server/registry.ts";
 import { configuredModel, settingsView, validateSettings } from "../../apps/server/settings.ts";
 import { Store } from "../../apps/server/store.ts";
 import type { ModelManifest } from "../../packages/inference/index.ts";
-import { engineFixture, inventory } from "./helpers/engine-fixture.ts";
+import { engineFixture, GiB, inventory } from "./helpers/engine-fixture.ts";
 
 const source = "https://huggingface.co/example/checkpoints/blob/main/portrait.safetensors";
 const importRequest = { url: source, name: "Portrait", familyId: "sdxl" };
@@ -30,6 +31,53 @@ async function fixture(t: TestContext, options: ConstructorParameters<typeof Mod
   t.after(async () => { await library.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
   return { directory, store, library };
 }
+
+test("an existing studio discovers Qwen's download and capabilities without enabling it or replacing saved model settings", async t => {
+  const { store, library } = await fixture(t, { fetch: async () => assert.fail("Browsing the catalog must not download model files") });
+  const previous = settingsView(store);
+  previous.modelConfigurations = previous.modelConfigurations.filter(model => model.modelId !== "qwen-image-2.1");
+  const customized = previous.modelConfigurations.find(model => model.modelId === "sdxl-base")!;
+  customized.artifacts.checkpoint = "my-portrait.safetensors";
+  customized.memory = { ramBytes: 20 * GiB, vramBytes: 12 * GiB, source: "estimate" };
+  store.saveSettings(previous);
+
+  const catalog = await new Engine(store).catalog();
+  const card = catalog.models.find(model => model.id === "qwen-image-2.1");
+  assert.ok(card, "Qwen appears for studios configured before this model was added");
+  assert.equal(card.familyId, "qwen-image-2.1");
+  assert.equal(card.ready, false);
+  assert.deepEqual(card.operations, ["text-to-image", "reference"]);
+  assert.equal(card.capabilities.imageInput, true);
+  assert.equal(card.capabilities.maxImages, 10);
+  assert.equal(card.limits.maxImages, 10);
+  assert.equal(card.capabilities.negativePrompt, true);
+  assert.equal(card.license, "Qwen Research License (non-commercial)");
+
+  const available = await library.view();
+  const entry = available.models.find(model => model.id === card.id);
+  assert.ok(entry);
+  assert.equal(entry.source, "catalog");
+  assert.equal(entry.license, card.license);
+  assert.equal(entry.downloadable, true);
+  assert.equal(entry.installed, false);
+  assert.equal(entry.enabled, false);
+  assert.equal(available.download, null);
+  assert.deepEqual(entry.artifacts.map(artifact => artifact.role), ["diffusion", "text-encoder", "vae"]);
+  assert.ok(entry.artifacts.every(artifact => !artifact.installed));
+  for (const artifact of card.artifacts) assert.match(huggingFaceFile(artifact.source), /^https:\/\/huggingface\.co\/Comfy-Org\/Qwen-Image-2\.1\/resolve\/[a-f0-9]{40}\//);
+  await assert.rejects(library.activate({ modelId: card.id }), { code: "MODEL_FILES_MISSING" });
+
+  const settings = settingsView(store);
+  const configuration = settings.modelConfigurations.find(model => model.modelId === card.id)!;
+  assert.equal(configuration.enabled, false);
+  assert.deepEqual(configuration.workerIds, []);
+  assert.deepEqual(configuration.memory, { ramBytes: 48 * GiB, vramBytes: 24 * GiB, source: "estimate" });
+  assert.deepEqual(configuration.artifacts, Object.fromEntries(card.artifacts.map(artifact => [artifact.role, artifact.filename])));
+  assert.deepEqual(settings.modelConfigurations.find(model => model.modelId === customized.modelId), customized);
+  store.saveSettings(validateSettings(settings, inventory(), modelRegistry(store)));
+  assert.deepEqual(store.settings().modelConfigurations.find(model => model.modelId === card.id), configuration);
+  assert.deepEqual(store.settings().modelConfigurations.find(model => model.modelId === customized.modelId), customized);
+});
 
 test("Hugging Face links normalize to file downloads and reject unsupported sources", () => {
   assert.equal(huggingFaceFile(`${source}?download=true`), source.replace("/blob/", "/resolve/"));

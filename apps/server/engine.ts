@@ -123,7 +123,7 @@ export class Engine {
       const family = FAMILY_RECIPES[model.familyId];
       return { ...card, unavailableReason: card.missingReasons.join(" "),
         limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
-        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" },
+        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1" },
       };
     });
     return { models, families: Object.values(FAMILY_RECIPES).map(({ id, name }) => ({ id, name })) };
