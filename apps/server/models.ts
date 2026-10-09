@@ -39,7 +39,12 @@ export function huggingFaceFile(value: unknown): string {
   return `https://huggingface.co/${[owner, repo, "resolve", revision, ...files].map(encodeURIComponent).join("/")}`;
 }
 
-const downloadHosts = new Set(["huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co", "cas-bridge.xethub.hf.co"]);
+// Official storage hosts: https://huggingface.co/docs/hub/models-downloading
+const downloadHosts = new Set([
+  "huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co",
+  "cas-bridge.xethub.hf.co", "cas-server.xethub.hf.co", "cas-server.xethub-eu.hf.co",
+  "transfer.xethub.hf.co", "transfer.xethub-eu.hf.co", "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co",
+]);
 function checkDownloadUrl(url: URL) {
   if (url.protocol !== "https:" || url.username || url.password || url.port || !downloadHosts.has(url.hostname)) throw downloadError("UNSAFE_MODEL_REDIRECT", "Hugging Face redirected this file to an unsupported download host.");
 }

@@ -75,12 +75,15 @@ test("HF credentials are sent only to Hugging Face and never forwarded to its CD
   const previous = process.env.HF_TOKEN; process.env.HF_TOKEN = "fixture-private-token";
   t.after(() => { if (previous === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = previous; });
   const calls: { host: string; authorization: string | null }[] = [];
+  const redirects = ["cas-bridge.xethub.hf.co", "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co"];
   const { library } = await fixture(t, { fetch: async (input, init) => {
     const url = new URL(String(input)); calls.push({ host: url.hostname, authorization: new Headers(init?.headers).get("Authorization") });
-    return calls.length === 1 ? new Response(null, { status: 302, headers: { location: "https://cas-bridge.xethub.hf.co/test?signature=fixture" } }) : response();
+    const host = redirects[calls.length - 1];
+    return host ? new Response(null, { status: 302, headers: { location: `https://${host}/test?signature=fixture` } }) : response();
   } });
   library.start(importRequest); await library.waitForIdle();
-  assert.deepEqual(calls, [{ host: "huggingface.co", authorization: "Bearer fixture-private-token" }, { host: "cas-bridge.xethub.hf.co", authorization: null }]);
+  assert.equal((await library.view()).download?.status, "succeeded");
+  assert.deepEqual(calls, [{ host: "huggingface.co", authorization: "Bearer fixture-private-token" }, ...redirects.map(host => ({ host, authorization: null }))]);
   assert(!JSON.stringify(await library.view()).includes("fixture-private-token"));
 });
 
