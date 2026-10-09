@@ -20,8 +20,10 @@ import type { LocalTextStatus } from '../../packages/contracts/text.ts';
 import { ApiError } from '../../packages/contracts/index.ts';
 import type { RuntimeSetupStatus } from '../../apps/server/runtime.ts';
 import { createStudioServer } from '../../apps/server/http.ts';
+import { createSession } from '../../apps/server/auth.ts';
 import { dualR9700 } from '../hardware/fixtures.ts';
 import { completed, fakeComfy } from '../inference/fake-comfy.ts';
+import { engineFixture } from '../server/helpers/engine-fixture.ts';
 import { openBrowser } from './helpers.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -1956,4 +1958,197 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   }
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
+});
+
+test('file drops route to references or Assets without claiming text or navigating away from dialogs', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort();
+  const origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'file-drop-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => {
+    child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL');
+    await server.closeOperations(); await close(server); await fixture.close();
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`File-drop frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  await browser.navigate(`${origin}/image`);
+  await browser.until("document.querySelector('button[aria-label=\"Model: SDXL Base 1.0\"]') && !document.querySelector('dialog[open]')", 'The authenticated file-drop workspace has its single-reference model');
+  await browser.fill('#image-prompt', 'Keep this prompt while importing files.');
+  await browser.evaluate(`(() => {
+    window.__gravityFileDropFetch = window.fetch;
+    window.__gravityFileDropUploads = { names: [], pending: 0 };
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const upload = url.origin === location.origin && url.pathname === '/api/inputs' && String(options.method || 'GET').toUpperCase() === 'POST';
+      if (upload) { window.__gravityFileDropUploads.names.push(decodeURIComponent(new Headers(options.headers).get('X-Filename') || '')); window.__gravityFileDropUploads.pending++; }
+      try { if (upload && window.__gravityFileDropGate) await window.__gravityFileDropGate; return await window.__gravityFileDropFetch.call(window, input, options); }
+      finally { if (upload) window.__gravityFileDropUploads.pending--; }
+    };
+  })()`);
+  const bytes = Buffer.from(fixture.workers[0].state.outputBytes).toString('base64');
+  type TransferFile = { name: string; type?: string; size?: number };
+  async function transfer(type: 'dragenter' | 'dragleave' | 'dragover' | 'drop' | 'paste', target: string, files: TransferFile[] = [], text?: string) {
+    return browser.evaluate<boolean>(`(() => {
+      const target = ${target === 'document' ? 'document' : `document.querySelector(${JSON.stringify(target)})`};
+      if (!target) throw new Error('Missing file-transfer target');
+      const transfer = new DataTransfer();
+      const bytes = Uint8Array.from(atob(${JSON.stringify(bytes)}), character => character.charCodeAt(0));
+      for (const file of ${JSON.stringify(files)}) transfer.items.add(new File([file.size === undefined ? bytes : new Uint8Array(file.size)], file.name, {type: file.type || 'image/png'}));
+      ${text === undefined ? '' : `transfer.setData('text/plain', ${JSON.stringify(text)});`}
+      const event = ${type === 'paste' ? "new ClipboardEvent('paste', {clipboardData: transfer, bubbles: true, cancelable: true})" : `new DragEvent(${JSON.stringify(type)}, {dataTransfer: transfer, bubbles: true, cancelable: true})`};
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    })()`);
+  }
+  const png = (name: string): TransferFile[] => [{ name }];
+  const references = "document.querySelectorAll('button[aria-label^=\"Remove reference \"]').length";
+  const overlay = (target: 'references' | 'assets') => `document.querySelector('[data-file-drop-target="${target}"]')`;
+  async function idle() { await browser.until('window.__gravityFileDropUploads.pending === 0', 'File requests settle'); await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))'); }
+  async function uploadCount() { return browser.evaluate<number>('window.__gravityFileDropUploads.names.length'); }
+  async function removeReference() { await browser.click('button[aria-label="Remove reference 1"]'); await browser.until(`${references} === 0`, 'The reference slot is available again'); }
+
+  assert.equal(await transfer('dragover', '#image-prompt', [], 'ordinary dragged text'), false, 'A text drag remains available to the textarea');
+  assert.equal(await transfer('drop', '#image-prompt', [], 'ordinary dragged text'), false, 'A text drop is not claimed as a file upload');
+  assert.equal(await transfer('paste', '#image-prompt', [], 'ordinary pasted text'), false, 'A text-only paste keeps its native textarea behavior');
+  assert.equal(await uploadCount(), 0);
+  assert.equal(await browser.evaluate(`!!${overlay('references')}`), false, 'Text transfers never show the file overlay');
+
+  await transfer('dragenter', 'main', png('nested.png'));
+  await browser.until(`!!${overlay('references')} && ${overlay('references')}.textContent.trim().length > 0`, 'Entering the gallery announces reference import');
+  await browser.screenshot(join(output, 'file-drop-references-desktop.png'));
+  await transfer('dragenter', '#image-prompt', png('nested.png'));
+  await transfer('dragleave', '#image-prompt', png('nested.png'));
+  await idle();
+  assert.equal(await browser.evaluate(`!!${overlay('references')}`), true, 'Leaving a nested child keeps the parent drop overlay visible');
+  await transfer('dragleave', 'main', png('nested.png'));
+  await browser.until(`!${overlay('references')}`, 'Leaving the workspace clears the drop overlay');
+  for (const [target, name] of [['main', 'gallery-drop.png'], ['header', 'header-drop.png'], ['document', 'document-drop.png'], ['#image-prompt', 'nested-prompt-drop.png']] as const) {
+    const before = await uploadCount();
+    assert.equal(await transfer('dragover', target, png(name)), true, 'File dragover permits a drop on the whole workspace');
+    assert.equal(await transfer('drop', target, png(name)), true, 'File drops prevent browser navigation');
+    await browser.until(`${references} === 1 && window.__gravityFileDropUploads.pending === 0`, `Dropping on ${target} attaches a reference`);
+    assert.equal(await uploadCount(), before + 1, 'Bubbling through nested and document handlers uploads each file exactly once');
+    assert.equal(fixture.store.inputs(fixture.owner.id).filter(input => input.name === name).length, 1);
+    assert.equal(await browser.evaluate(`!!${overlay('references')}`), false, 'A completed drop clears its overlay');
+    await removeReference();
+  }
+  const simultaneousBefore = await uploadCount();
+  const prevented = await browser.evaluate<boolean[]>(`(() => {
+    window.__gravityFileDropGate = new Promise(resolve => { window.__gravityReleaseFileDrop = resolve; });
+    const bytes = Uint8Array.from(atob(${JSON.stringify(bytes)}), character => character.charCodeAt(0));
+    return ['simultaneous-first.png', 'simultaneous-second.png'].map(name => {
+      const transfer = new DataTransfer(); transfer.items.add(new File([bytes], name, {type: 'image/png'}));
+      const event = new DragEvent('drop', {dataTransfer: transfer, bubbles: true, cancelable: true});
+      document.querySelector('#image-prompt').dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+  })()`);
+  try {
+    assert.deepEqual(prevented, [true, true]);
+    assert.equal(await uploadCount(), simultaneousBefore + 1, 'Two synchronous drops share one in-flight reference upload');
+    assert.equal(await browser.evaluate(references), 0, 'The concurrency check runs before the held upload can finish');
+  } finally { await browser.evaluate('window.__gravityReleaseFileDrop(); delete window.__gravityFileDropGate; delete window.__gravityReleaseFileDrop'); }
+  await browser.until(`${references} === 1 && window.__gravityFileDropUploads.pending === 0`, 'The first synchronous drop completes once');
+  assert.equal(fixture.store.inputs(fixture.owner.id).filter(input => input.name === 'simultaneous-first.png').length, 1);
+  assert.equal(fixture.store.inputs(fixture.owner.id).filter(input => input.name === 'simultaneous-second.png').length, 0, 'The second event cannot bypass the single-reference limit while React is updating');
+  await removeReference();
+  const invalidBefore = await uploadCount();
+  for (const [files, message] of [
+    [[{ name: 'unsupported.gif', type: 'image/gif' }], 'PNG, JPEG, or WebP'],
+    [[{ name: 'too-large.png', size: 20 * 1024 ** 2 + 1 }], '20 MiB'],
+    [[{ name: 'empty.png', size: 0 }], 'non-empty'],
+    [[{ name: 'one.png' }, { name: 'two.png' }], '1 reference'],
+  ] satisfies [TransferFile[], string][]) {
+    assert.equal(await transfer('drop', 'main', files), true);
+    await browser.until(`document.querySelector('main [role=alert]')?.textContent.includes(${JSON.stringify(message)})`, 'Unsupported, oversized or over-capacity files have actionable errors');
+    await idle();
+    assert.equal(await uploadCount(), invalidBefore, 'Rejected files never reach the upload API');
+    assert.equal(await browser.evaluate(references), 0);
+  }
+  assert.equal(await transfer('paste', 'document', png('clipboard-reference.png')), true, 'File paste works outside the prompt field');
+  await browser.until(`${references} === 1 && window.__gravityFileDropUploads.pending === 0`, 'Pasted files become references');
+  const fullBefore = await uploadCount();
+  await transfer('drop', 'header', png('over-capacity.png'));
+  await browser.until("document.querySelector('main [role=alert]')?.textContent.includes('1 reference')", 'A full model reports its reference limit');
+  assert.equal(await uploadCount(), fullBefore);
+  assert.equal(await browser.evaluate(references), 1, 'A rejected drop preserves the existing reference');
+  await removeReference();
+
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open] article[data-source=import]')", 'The picker loads existing imported files');
+  const picked = '#reference-picker-dialog article[data-source=import] button[aria-pressed]:not([data-favorite-action])';
+  await browser.click(picked);
+  assert.equal(await transfer('drop', '#reference-picker-dialog input[aria-label="Search assets"]', [{ name: 'picker-invalid.gif', type: 'image/gif' }]), true);
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open] [role=alert]')", 'Invalid direct picker drops stay in the picker');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(picked)}).getAttribute('aria-pressed')`), 'true', 'A rejected picker drop preserves its unfinished selection');
+  await transfer('dragenter', '#reference-picker-dialog', png('picker-drop.png'));
+  await browser.until(`!!document.querySelector('#reference-picker-dialog [data-file-drop-target="references"]')`, 'The active picker owns the reference drop overlay');
+  assert.equal(await transfer('drop', '#reference-picker-dialog input[aria-label="Search assets"]', png('picker-drop.png')), true);
+  await browser.until(`!document.querySelector('#reference-picker-dialog[open]') && ${references} === 1 && window.__gravityFileDropUploads.pending === 0`, 'Successful picker drops attach a reference and close the picker');
+  assert.equal(fixture.store.inputs(fixture.owner.id).filter(input => input.name === 'picker-drop.png').length, 1, 'The modal and workspace do not duplicate a picker upload');
+  await removeReference();
+
+  await browser.click('header button[aria-label="Assets"]');
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open] article[data-source=import]')", 'Assets opens for library imports');
+  await transfer('dragenter', '#assets-browser-dialog input[aria-label="Search assets"]', png('library-drop.png'));
+  await browser.until(`!!document.querySelector('#assets-browser-dialog [data-file-drop-target="assets"]')`, 'Assets identifies library imports in its drop overlay');
+  await browser.screenshot(join(output, 'file-drop-assets-desktop.png'));
+  assert.equal(await browser.evaluate(`!!${overlay('references')}`), false, 'An active library modal suppresses the workspace reference overlay');
+  const libraryBefore = await uploadCount();
+  assert.equal(await transfer('drop', '#assets-browser-dialog input[aria-label="Search assets"]', png('library-drop.png')), true);
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open] button[aria-label=\"Open library-drop.png\"]') && window.__gravityFileDropUploads.pending === 0", 'Nested Assets drops save to the library and leave it open');
+  assert.equal(await uploadCount(), libraryBefore + 1);
+  assert.equal(await browser.evaluate(references), 0, 'Library imports do not select a composer reference');
+  assert.equal(await transfer('paste', '#assets-browser-dialog input[aria-label="Search assets"]', png('library-paste.png')), true);
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open] button[aria-label=\"Open library-paste.png\"]') && window.__gravityFileDropUploads.pending === 0", 'File paste in Assets stays a library operation');
+  const batchBefore = await uploadCount();
+  assert.equal(await transfer('drop', '#assets-browser-dialog [aria-label="Asset gallery"]', [{ name: 'library-batch-one.png' }, { name: 'library-batch-two.png' }]), true);
+  await browser.until("document.querySelector('#assets-browser-dialog[open] button[aria-label=\"Open library-batch-one.png\"]') && document.querySelector('#assets-browser-dialog[open] button[aria-label=\"Open library-batch-two.png\"]') && window.__gravityFileDropUploads.pending === 0", 'A multi-file Assets drop imports the entire batch');
+  assert.equal(await uploadCount(), batchBefore + 2, 'Each file in an Assets batch uploads exactly once');
+  assert.equal(await browser.evaluate(references), 0, 'The library batch is independent of the selected model reference limit');
+  const outsideBefore = await uploadCount();
+  await transfer('drop', 'document', png('library-document-drop.png'));
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open] button[aria-label=\"Open library-document-drop.png\"]') && window.__gravityFileDropUploads.pending === 0", 'The active modal routes document-level file drops to Assets');
+  assert.equal(await uploadCount(), outsideBefore + 1);
+  assert.equal(await browser.evaluate(references), 0);
+  const previewBefore = await uploadCount();
+  await browser.click('#assets-browser-dialog button[aria-label="Open library-drop.png"]');
+  await browser.until("!!document.querySelector('#assets-input-viewer[open]')", 'An imported-image viewer is the active dialog');
+  assert.equal(await transfer('dragover', '#assets-input-viewer', png('blocked-viewer.png')), true);
+  assert.equal(await transfer('drop', '#assets-input-viewer', png('blocked-viewer.png')), true);
+  await idle();
+  assert.equal(await uploadCount(), previewBefore, 'An image viewer blocks navigation without uploading into the underlying Assets modal');
+  assert.equal(await browser.evaluate('location.pathname'), '/image');
+  await browser.click('#assets-input-viewer button[aria-label="Close preview"]');
+  await browser.key('Escape');
+  await browser.until("!document.querySelector('dialog[open]')", 'Assets closes before other modal routing checks');
+  for (const panel of ['Settings', 'Models']) {
+    await browser.click(`header button[aria-label="${panel}"]`);
+    await browser.until(`!!document.querySelector('#${panel.toLowerCase()}-dialog[open]')`, `${panel} is the active modal`);
+    const before = await uploadCount();
+    assert.equal(await transfer('dragover', 'document', png(`blocked-${panel}.png`)), true);
+    assert.equal(await transfer('drop', 'document', png(`blocked-${panel}.png`)), true);
+    await idle();
+    assert.equal(await uploadCount(), before, 'Unrelated dialogs block file navigation without attaching or importing files');
+    assert.equal(await browser.evaluate(`!!${overlay('references')} || !!${overlay('assets')}`), false, 'Unrelated dialogs show no import overlay');
+    assert.equal(await browser.evaluate('location.pathname'), '/image');
+    await browser.click(`button[aria-label="Close ${panel.toLowerCase()}"]`);
+  }
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
+  assert.deepEqual(browser.errors, []);
 });
