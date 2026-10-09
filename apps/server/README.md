@@ -86,7 +86,7 @@ These operations require the owner's browser session, with an allowed `Origin` f
 | --- | --- | --- |
 | GET | `/api/text/settings` | `{ revision, connection: { baseUrl, credential }, assistant }`; secrets are never returned |
 | PUT | `/api/text/connection` | `{ revision, baseUrl, apiKey? }`; omitted key preserves it for the same URL, `null` removes it |
-| GET | `/api/text/models?provider=gemini` | `{ provider, models: [{ id, name, inputTokenLimit?, outputTokenLimit? }] }`; also accepts `openai-compatible` |
+| GET | `/api/text/models?provider=gemini` | `{ provider, models: [{ id, name, inputTokenLimit?, outputTokenLimit? }] }`; also accepts `openai-compatible` and `local` |
 | PUT | `/api/text/assistant` | `{ revision, provider, modelId }`; set both provider and model ID to `null` to disable |
 | POST | `/api/prompts/refine` | `{ settingsRevision, imageModelId, prompt, instruction? }`; returns `{ prompt, originalPrompt, provider, modelId, usage? }` |
 | GET | `/api/text/local` | MiMo installation, runtime, download progress and GPU selection |
