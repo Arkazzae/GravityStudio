@@ -42,6 +42,6 @@ export function TabbedWorkspace<T extends string>({ id, label, sections, selecte
         <Icon size={18} className={busy ? 'animate-spin' : undefined} /><span className={styles.tabLabel}>{title}</span>
       </button>)}
     </nav>
-    <div ref={content} className={`${styles.content} @container`}>{children}</div>
+    <div ref={content} data-dialog-scroll={selected} className={`${styles.content} @container`}>{children}</div>
   </div>;
 }

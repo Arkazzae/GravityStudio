@@ -8,24 +8,33 @@ import { TextConnectionSettings } from './TextConnectionSettings';
 export function IntegrationsSettings({ active = true }: { active?: boolean }) {
   const [providers, setProviders] = useState<IntegrationStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const request = useRef<AbortController | null>(null);
+  const actions = useRef(0);
+  const visible = useRef(active); visible.current = active;
 
   const load = useCallback(async () => {
+    if (actions.current) return;
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
     setLoading(true); setError('');
     try {
-      const result = await api<{ providers: IntegrationStatus[] }>('/integrations', { signal: controller.signal });
-      if (request.current === controller && !controller.signal.aborted) setProviders(result.providers);
+      const result = await api<{ providers: IntegrationStatus[] }>('/integrations', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+      if (request.current === controller && !controller.signal.aborted) { setProviders(result.providers); setLoaded(true); }
     } catch (error) {
       if (request.current === controller && !controller.signal.aborted) setError(errorMessage(error));
     } finally {
       if (request.current === controller && !controller.signal.aborted) { request.current = null; setLoading(false); }
     }
   }, []);
-  useEffect(() => { void load(); return () => { request.current?.abort(); request.current = null; }; }, [load]);
+  useEffect(() => { if (active) void load(); return () => { request.current?.abort(); request.current = null; }; }, [active, load]);
+  const actionChanged = useCallback((running: boolean) => {
+    actions.current += running ? 1 : -1;
+    request.current?.abort(); request.current = null; setLoading(false);
+    if (!actions.current && visible.current) void load();
+  }, [load]);
 
   return <section aria-labelledby="integrations-title">
     <h2 id="integrations-title" className="text-lg font-medium">Integrations</h2>
@@ -33,13 +42,13 @@ export function IntegrationsSettings({ active = true }: { active?: boolean }) {
     <p className="mb-6 mt-3 text-xs leading-relaxed text-ink-2">Access checks use the saved key and do not generate content. Provider keys are separate from the Studio tokens in API access.</p>
     {loading && <p role="status" className="py-5 text-sm text-ink-2">Loading integrations…</p>}
     {error && <div role="alert" className="error-notice">{error}<button type="button" onClick={() => void load()} className="ml-3 underline">Try again</button></div>}
-    {!loading && !error && <><TextConnectionSettings active={active} /><div className="divide-y divide-line">{providers.map(provider => <ProviderSettings key={provider.id} initialStatus={provider} />)}</div></>}
+    {loaded && <><TextConnectionSettings active={active} /><div className="divide-y divide-line">{providers.map(provider => <ProviderSettings key={provider.id} initialStatus={provider} onActionChange={actionChanged} />)}</div></>}
   </section>;
 }
 
 type ProviderAction = 'save' | 'remove' | 'test';
 
-function ProviderSettings({ initialStatus }: { initialStatus: IntegrationStatus }) {
+function ProviderSettings({ initialStatus, onActionChange }: { initialStatus: IntegrationStatus; onActionChange: (running: boolean) => void }) {
   const [provider, setProvider] = useState(initialStatus);
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState<ProviderAction | null>(null);
@@ -47,11 +56,13 @@ function ProviderSettings({ initialStatus }: { initialStatus: IntegrationStatus 
   const [message, setMessage] = useState('');
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
+  useEffect(() => { if (!request.current) setProvider(initialStatus); }, [initialStatus]);
 
   async function run(action: ProviderAction) {
     if (request.current || (action === 'save' && !apiKey.trim())) return;
     const controller = new AbortController();
     request.current = controller;
+    onActionChange(true);
     setBusy(action); setError(''); setMessage('');
     const path = `/integrations/${provider.id}`;
     try {
@@ -67,7 +78,7 @@ function ProviderSettings({ initialStatus }: { initialStatus: IntegrationStatus 
     } catch (error) {
       if (request.current === controller && !controller.signal.aborted) setError(errorMessage(error));
     } finally {
-      if (request.current === controller && !controller.signal.aborted) { request.current = null; setBusy(null); }
+      if (request.current === controller && !controller.signal.aborted) { request.current = null; setBusy(null); onActionChange(false); }
     }
   }
 

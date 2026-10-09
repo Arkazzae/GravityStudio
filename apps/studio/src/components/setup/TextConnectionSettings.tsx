@@ -10,47 +10,56 @@ export function TextConnectionSettings({ active = true }: { active?: boolean }) 
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const errorSource = useRef<'read' | 'action' | null>(null);
   const [message, setMessage] = useState('');
   const request = useRef<AbortController | null>(null);
+  const operation = useRef<'read' | 'action' | null>(null);
   const editor = useRef({ settings, baseUrl, apiKey });
   editor.current = { settings, baseUrl, apiKey };
   const load = useCallback(async (preserveDraft = false) => {
-    request.current?.abort();
-    const controller = new AbortController(); request.current = controller;
-    setBusy(true); setError('');
+    if (request.current) return;
+    const controller = new AbortController(); request.current = controller; operation.current = 'read';
+    setBusy(true);
+    if (!preserveDraft) { setError(''); errorSource.current = null; }
     try {
-      const next = await api<TextSettings>('/text/settings', { signal: controller.signal });
+      const next = await api<TextSettings>('/text/settings', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
       if (!controller.signal.aborted) {
+        if (errorSource.current === 'read') { setError(''); errorSource.current = null; }
         const current = editor.current;
         const edited = current.settings && (current.baseUrl !== current.settings.connection.baseUrl || !!current.apiKey);
         const sameConnection = JSON.stringify(current.settings?.connection) === JSON.stringify(next.connection);
         if (preserveDraft && edited && !sameConnection) {
-          setError('This connection changed in another window. Reload the connection before saving your edits.');
+          errorSource.current = 'action'; setError('This connection changed in another window. Reload the connection before saving your edits.');
         } else {
           setSettings(next);
           if (!preserveDraft || !edited) { setBaseUrl(next.connection.baseUrl); setApiKey(''); }
         }
       }
-    } catch (error) { if (!controller.signal.aborted) setError(errorMessage(error)); }
-    finally { if (!controller.signal.aborted) { request.current = null; setBusy(false); } }
+    } catch (error) { if (!controller.signal.aborted && errorSource.current !== 'action') { errorSource.current = 'read'; setError(errorMessage(error)); } }
+    finally { if (request.current === controller) { request.current = null; operation.current = null; setBusy(false); } }
   }, []);
-  useEffect(() => { if (active && !request.current) void load(true); }, [active, load]);
-  useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
+  useEffect(() => {
+    if (active) void load(true);
+    return () => {
+      if (operation.current === 'read') { request.current?.abort(); request.current = null; operation.current = null; setBusy(false); }
+    };
+  }, [active, load]);
+  useEffect(() => () => { request.current?.abort(); request.current = null; operation.current = null; }, []);
 
   async function run(action: 'save' | 'remove' | 'check') {
     if (!settings || request.current) return;
-    const controller = new AbortController(); request.current = controller;
-    setBusy(true); setError(''); setMessage('');
+    const controller = new AbortController(); request.current = controller; operation.current = 'action';
+    setBusy(true); setError(''); setMessage(''); errorSource.current = 'action';
     try {
       if (action === 'check') {
         const result = await api<{ models: TextModel[] }>('/text/models?provider=openai-compatible&refresh=true', { signal: controller.signal });
-        if (!controller.signal.aborted) setMessage(`Connected · ${result.models.length} model${result.models.length === 1 ? '' : 's'} available. Choose one in Assistant or Models → Language.`);
+        if (!controller.signal.aborted) { errorSource.current = null; setMessage(`Connected · ${result.models.length} model${result.models.length === 1 ? '' : 's'} available. Choose one in Assistant or Models → Language.`); }
       } else {
         const next = await api<TextSettings>('/text/connection', { method: 'PUT', signal: controller.signal, body: JSON.stringify({ revision: settings.revision, baseUrl: action === 'remove' ? settings.connection.baseUrl : baseUrl.trim(), ...(action === 'remove' ? { apiKey: null } : apiKey.trim() ? { apiKey: apiKey.trim() } : {}) }) });
-        if (!controller.signal.aborted) { setSettings(next); setBaseUrl(next.connection.baseUrl); setApiKey(''); setMessage(action === 'remove' ? 'Key removed.' : 'Connection saved. Choose your model in Assistant or Models → Language.'); }
+        if (!controller.signal.aborted) { errorSource.current = null; setSettings(next); setBaseUrl(next.connection.baseUrl); setApiKey(''); setMessage(action === 'remove' ? 'Key removed.' : 'Connection saved. Choose your model in Assistant or Models → Language.'); }
       }
     } catch (error) { if (!controller.signal.aborted) setError(errorMessage(error)); }
-    finally { if (!controller.signal.aborted) { request.current = null; setBusy(false); } }
+    finally { if (request.current === controller) { request.current = null; operation.current = null; setBusy(false); } }
   }
   const changed = !!settings && baseUrl.trim() !== settings.connection.baseUrl;
   const button = 'inline-flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi disabled:opacity-50';

@@ -9,64 +9,87 @@ const downloadBusy = (download?: ModelDownload | null) => !!download && !['succe
 const size = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
 type ModelsSection = 'library' | 'installed' | 'huggingface' | 'downloads' | 'language';
 
-export function ModelLibrary({ onChanged, onConfigureText }: { onChanged: () => void; onConfigureText: () => void }) {
+export function ModelLibrary({ onChanged, onConfigureText, active = true }: { onChanged: () => void; onConfigureText: () => void; active?: boolean }) {
   const [section, setSection] = useState<ModelsSection>('library');
+  const [languageVisited, setLanguageVisited] = useState(false);
   const [library, setLibrary] = useState<ModelLibraryState | null>(null);
   const [error, setError] = useState('');
+  const errorSource = useRef<'read' | 'action' | null>(null);
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
   const mounted = useRef(true);
+  const visible = useRef(active); visible.current = active;
+  const read = useRef<AbortController | null>(null);
+  const write = useRef<AbortController | null>(null);
+  const libraryRef = useRef(library); libraryRef.current = library;
   const onChangedRef = useRef(onChanged);
   onChangedRef.current = onChanged;
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setError('');
-    try { const next = await api<ModelLibraryState>('/models/library', { signal }); if (!signal?.aborted) setLibrary(next); }
-    catch (error) { if (!signal?.aborted) setError(errorMessage(error)); }
+  const load = useCallback(async () => {
+    if (!mounted.current || read.current || write.current) return;
+    const controller = new AbortController(); read.current = controller;
+    try {
+      const next = await api<ModelLibraryState>('/models/library', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+      if (!controller.signal.aborted && mounted.current) {
+        if (downloadBusy(libraryRef.current?.download) && !downloadBusy(next.download)) onChangedRef.current();
+        setLibrary(next);
+        if (errorSource.current === 'read') { setError(''); errorSource.current = null; }
+      }
+    }
+    catch (error) { if (!controller.signal.aborted && mounted.current && errorSource.current !== 'action') { errorSource.current = 'read'; setError(errorMessage(error)); } }
+    finally { if (read.current === controller) read.current = null; }
   }, []);
-  useEffect(() => { mounted.current = true; const controller = new AbortController(); void load(controller.signal); return () => { mounted.current = false; controller.abort(); }; }, [load]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; read.current?.abort(); write.current?.abort(); }; }, []);
+  useEffect(() => {
+    if (active && !submitting) void load();
+    return () => { read.current?.abort(); read.current = null; };
+  }, [active, submitting, load]);
+  useEffect(() => { if (section === 'language') setLanguageVisited(true); }, [section]);
   const downloading = downloadBusy(library?.download);
   useEffect(() => {
-    if (!downloading) return;
+    if (!active || !downloading || submitting) return;
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout>;
     async function poll() {
-      try {
-        const next = await api<ModelLibraryState>('/models/library');
-        if (cancelled) return;
-        setLibrary(next); setError('');
-        if (downloadBusy(next.download)) timeout = setTimeout(() => void poll(), 1500);
-        else onChangedRef.current();
-      } catch (error) {
-        if (cancelled) return;
-        setError(errorMessage(error)); timeout = setTimeout(() => void poll(), 3000);
-      }
+      await load();
+      if (!cancelled) timeout = setTimeout(() => void poll(), 1500);
     }
     timeout = setTimeout(() => void poll(), 500);
     return () => { cancelled = true; clearTimeout(timeout); };
-  }, [downloading]);
+  }, [active, downloading, submitting, load]);
 
   function openSection(next: ModelsSection) {
     if (!mounted.current) return;
     setSection(next);
-    document.getElementById(`models-tab-${next}`)?.focus({ preventScroll: true });
+    if (visible.current) document.getElementById(`models-tab-${next}`)?.focus({ preventScroll: true });
   }
 
   async function download(body: { modelId: string } | { url: string; name: string; familyId: 'sdxl' }, id: string) {
-    setSubmitting(id); setError('');
+    if (write.current) return;
+    read.current?.abort(); read.current = null;
+    const controller = new AbortController(); write.current = controller;
+    setSubmitting(id); setError(''); errorSource.current = 'action';
     try {
-      const result = await api<ModelDownload>('/models/download', { method: 'POST', body: JSON.stringify(body) });
+      const result = await api<ModelDownload>('/models/download', { method: 'POST', body: JSON.stringify(body), signal: controller.signal });
+      if (controller.signal.aborted || !mounted.current) return;
+      errorSource.current = null;
       setLibrary(current => current ? { ...current, download: result } : { models: [], download: result });
       if (id === 'huggingface') { setUrl(''); setName(''); }
       openSection('downloads');
-    } catch (error) { setError(errorMessage(error)); }
-    finally { setSubmitting(null); }
+    } catch (error) { if (!controller.signal.aborted && mounted.current) setError(errorMessage(error)); }
+    finally { if (write.current === controller) write.current = null; if (!controller.signal.aborted && mounted.current) setSubmitting(null); }
   }
   async function activate(model: LibraryModel) {
-    setSubmitting(model.id); setError('');
-    try { setLibrary(await api<ModelLibraryState>('/models/activate', { method: 'POST', body: JSON.stringify({ modelId: model.id }) })); onChangedRef.current(); }
-    catch (error) { setError(errorMessage(error)); }
-    finally { setSubmitting(null); }
+    if (write.current) return;
+    read.current?.abort(); read.current = null;
+    const controller = new AbortController(); write.current = controller;
+    setSubmitting(model.id); setError(''); errorSource.current = 'action';
+    try {
+      const next = await api<ModelLibraryState>('/models/activate', { method: 'POST', body: JSON.stringify({ modelId: model.id }), signal: controller.signal });
+      if (!controller.signal.aborted && mounted.current) { errorSource.current = null; setLibrary(next); onChangedRef.current(); }
+    }
+    catch (error) { if (!controller.signal.aborted && mounted.current) setError(errorMessage(error)); }
+    finally { if (write.current === controller) write.current = null; if (!controller.signal.aborted && mounted.current) setSubmitting(null); }
   }
   const downloadState = library?.download;
   const progress = downloadState?.totalBytes ? Math.min(100, Math.round(downloadState.receivedBytes / downloadState.totalBytes * 100)) : null;
@@ -98,7 +121,7 @@ export function ModelLibrary({ onChanged, onConfigureText }: { onChanged: () => 
   }
 
   return <TabbedWorkspace id="models" label="Model sections" sections={sections} selected={section} onSelect={setSection}>
-    {section === 'language' && <div id="models-panel-language" role="tabpanel" aria-labelledby="models-tab-language" tabIndex={0}><LanguageModels onConfigure={onConfigureText} /></div>}
+    {(languageVisited || section === 'language') && <div hidden={section !== 'language'} id="models-panel-language" role="tabpanel" aria-labelledby="models-tab-language" tabIndex={0}><LanguageModels active={active && section === 'language'} onConfigure={onConfigureText} /></div>}
     {error && <p className="error-notice mb-6 break-words" role="alert">{error}{!library && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</p>}
     {downloading && section !== 'downloads' && <div className="mb-6 flex items-center gap-3 border-b border-line pb-5">
       <LoaderCircle size={16} className="shrink-0 animate-spin text-ink-2" /><p title={`Downloading ${downloadState?.modelName}`} className="min-w-0 flex-1 line-clamp-2 break-words text-xs leading-relaxed text-ink-2">Downloading {downloadState?.modelName}</p>

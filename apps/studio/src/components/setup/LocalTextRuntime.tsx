@@ -8,7 +8,7 @@ import type { LocalTextStatus, TextModel } from '@/lib/text-api';
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi disabled:cursor-default disabled:opacity-50';
 const sameIds = (left: string[], right: string[]) => left.length === right.length && left.every(id => right.includes(id));
 
-export function LocalTextRuntime({ onModelChange, disabled = false }: { onModelChange: (model: TextModel | null) => void; disabled?: boolean }) {
+export function LocalTextRuntime({ onModelChange, disabled = false, active = true }: { onModelChange: (model: TextModel | null) => void; disabled?: boolean; active?: boolean }) {
   const [status, setStatus] = useState<LocalTextStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
@@ -55,18 +55,21 @@ export function LocalTextRuntime({ onModelChange, disabled = false }: { onModelC
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
     return () => { mounted.current = false; read.current?.abort(); write.current?.abort(); read.current = null; write.current = null; };
-  }, [refresh]);
+  }, []);
+  useEffect(() => {
+    if (active) void refresh(false, true);
+    return () => { read.current?.abort(); read.current = null; };
+  }, [active, refresh]);
 
   useEffect(() => {
-    if (!status || !status.busy && !status.ready || mutating) return;
-    let active = true;
+    if (!active || !status || !status.busy && !status.ready || mutating) return;
+    let polling = true;
     let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { await refresh(false, true); if (active) timer = setTimeout(() => void poll(), status.busy ? 1500 : 5000); };
+    const poll = async () => { await refresh(false, true); if (polling) timer = setTimeout(() => void poll(), status.busy ? 1500 : 5000); };
     timer = setTimeout(() => void poll(), status.busy ? 1500 : 5000);
-    return () => { active = false; clearTimeout(timer); read.current?.abort(); read.current = null; };
-  }, [status?.busy, status?.ready, mutating, refresh]);
+    return () => { polling = false; clearTimeout(timer); read.current?.abort(); read.current = null; };
+  }, [active, status?.busy, status?.ready, mutating, refresh]);
 
   const selectedIds = automatic ? [] : selected;
   const dirty = !!status && !sameIds(selectedIds, status.gpuIds);

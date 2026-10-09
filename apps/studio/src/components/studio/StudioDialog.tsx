@@ -1,10 +1,12 @@
 'use client';
-import { useEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { X } from '@/components/ui/icons';
+import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import styles from './StudioDialog.module.css';
 
-export function StudioDialog({ panel, title, description, icon, onClose, triggerRef, children }: {
+export function StudioDialog({ panel, open, title, description, icon, onClose, triggerRef, children }: {
   panel: 'models' | 'settings';
+  open: boolean;
   title: string;
   description: string;
   icon: ReactNode;
@@ -14,25 +16,7 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
-  const pressedOutside = useRef(false);
-
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    element.showModal();
-    closeButton.current?.focus({ preventScroll: true });
-    return () => {
-      element.close();
-      const target = previousFocus?.isConnected && previousFocus.getClientRects().length ? previousFocus : triggerRef.current;
-      target?.focus({ preventScroll: true });
-    };
-  }, [triggerRef]);
-
-  function outside(clientX: number, clientY: number) {
-    const rect = dialog.current?.getBoundingClientRect();
-    return !!rect && (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom);
-  }
+  const events = useRetainedDialog({ dialog, open, onClose, initialFocus: closeButton, triggerRef });
 
   function keepFocus(event: KeyboardEvent<HTMLDialogElement>) {
     if (event.key !== 'Tab') return;
@@ -46,13 +30,10 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
 
   return <dialog ref={dialog} id={`${panel}-dialog`} aria-labelledby={`${panel}-title`} aria-describedby={`${panel}-description`}
     className={`${styles.dialog} ${styles.centered}`}
-    onKeyDown={keepFocus}
-    onClose={event => { if (!event.currentTarget.open) onClose(); }}
-    onPointerDown={event => { pressedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
-    onClick={event => { if (pressedOutside.current && event.target === event.currentTarget && outside(event.clientX, event.clientY)) onClose(); pressedOutside.current = false; }}>
+    onKeyDown={keepFocus} {...events}>
     <header className={styles.header}>
       <div className="min-w-0"><h1 id={`${panel}-title`}>{icon}{title}</h1><p id={`${panel}-description`}>{description}</p></div>
-      <button ref={closeButton} type="button" className={styles.close} aria-label={`Close ${panel}`} title={`Close ${panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
+      <button ref={closeButton} data-dialog-dismiss type="button" className={styles.close} aria-label={`Close ${panel}`} title={`Close ${panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
     </header>
     <div className={styles.body}>{children}</div>
   </dialog>;

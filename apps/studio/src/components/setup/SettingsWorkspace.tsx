@@ -21,7 +21,7 @@ const sections = [
 ] as const;
 export type SettingsSection = typeof sections[number]['id'];
 
-export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, initialSection = 'gpus', activeWork = false }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; initialSection?: SettingsSection; activeWork?: boolean }) {
+export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, section, onSectionChange, active = true, activeWork = false }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; section: SettingsSection; onSectionChange: (section: SettingsSection) => void; active?: boolean; activeWork?: boolean }) {
   const [hardware, setHardware] = useState(initialHardware);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSetupStatus | null>(null);
@@ -30,79 +30,123 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
-  const [section, setSection] = useState<SettingsSection>(initialSection);
+  const errorSource = useRef<'read' | 'action' | null>(null);
   const [advancedVisited, setAdvancedVisited] = useState(false);
-  const [integrationsVisited, setIntegrationsVisited] = useState(initialSection === 'integrations');
+  const [integrationsVisited, setIntegrationsVisited] = useState(false);
+  const [assistantVisited, setAssistantVisited] = useState(false);
   const [advancedRevision, setAdvancedRevision] = useState(0);
   const [advancedDirty, setAdvancedDirty] = useState(false);
+  const pendingAdvancedRefresh = useRef(false);
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
+  const mounted = useRef(true);
+  const selectionEdited = useRef(false);
+  const read = useRef<AbortController | null>(null);
+  const write = useRef<AbortController | null>(null);
+  const current = useRef({ settings, advancedDirty, active });
+  current.current = { settings, advancedDirty, active };
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; read.current?.abort(); write.current?.abort(); }; }, []);
 
-  const load = useCallback(async () => {
-    setError('');
+  const load = useCallback(async (resetSelection = false) => {
+    if (!mounted.current) return;
+    read.current?.abort();
+    const controller = new AbortController(); read.current = controller;
     try {
-      const [nextSettings, nextRuntime, nextHardware] = await Promise.all([api<Settings>('/settings'), api<RuntimeSetupStatus>('/runtime'), api<Hardware>('/hardware')]);
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+      const [nextSettings, nextRuntime, nextHardware] = await Promise.all([api<Settings>('/settings', { signal }), api<RuntimeSetupStatus>('/runtime', { signal }), api<Hardware>('/hardware', { signal })]);
+      if (controller.signal.aborted || !mounted.current) return;
+      if (errorSource.current === 'read') { setError(''); errorSource.current = null; }
+      if (current.current.settings && nextSettings.revision !== current.current.settings.revision) {
+        if (current.current.advancedDirty || !current.current.active) pendingAdvancedRefresh.current = true;
+        else { pendingAdvancedRefresh.current = false; setAdvancedRevision(value => value + 1); }
+      }
       setSettings(nextSettings); setRuntime(nextRuntime); setHardware(nextHardware);
       const assigned = nextSettings.workers.filter(worker => worker.enabled && worker.location === 'local').flatMap(worker => worker.deviceIds);
-      setSelected(assigned.length ? assigned : nextHardware.gpus.filter(gpu => gpu.vendor === 'amd' || gpu.vendor === 'nvidia').map(gpu => gpu.id));
-    } catch (error) { setError(errorMessage(error)); }
-    finally { setLoading(false); }
+      if (resetSelection || !selectionEdited.current) {
+        setSelected(assigned.length ? assigned : nextHardware.gpus.filter(gpu => gpu.vendor === 'amd' || gpu.vendor === 'nvidia').map(gpu => gpu.id));
+        selectionEdited.current = false;
+      }
+    } catch (error) { if (!controller.signal.aborted && mounted.current && errorSource.current !== 'action') { errorSource.current = 'read'; setError(errorMessage(error)); } }
+    finally { if (read.current === controller) read.current = null; if (!controller.signal.aborted && mounted.current) setLoading(false); }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (active && !write.current) void load();
+    return () => { read.current?.abort(); read.current = null; };
+  }, [active, load]);
+  useEffect(() => {
+    if (active && !advancedDirty && pendingAdvancedRefresh.current) {
+      pendingAdvancedRefresh.current = false;
+      setAdvancedRevision(value => value + 1);
+    }
+  }, [active, advancedDirty]);
   useEffect(() => { if (initialHardware) setHardware(initialHardware); }, [initialHardware]);
   useEffect(() => {
-    if (!runtime?.busy) return;
+    if (!active || !runtime?.busy || starting) return;
     let cancelled = false;
+    const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const next = await api<RuntimeSetupStatus>('/runtime');
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+        const next = await api<RuntimeSetupStatus>('/runtime', { signal });
         if (cancelled) return;
         if (!next.busy && next.phase === 'ready') {
-          const [nextSettings, nextHardware] = await Promise.all([api<Settings>('/settings'), api<Hardware>('/hardware')]);
+          const [nextSettings, nextHardware] = await Promise.all([api<Settings>('/settings', { signal }), api<Hardware>('/hardware', { signal })]);
           if (cancelled) return;
-          setSettings(nextSettings); setHardware(nextHardware); setAdvancedRevision(value => value + 1); onSavedRef.current();
+          setSettings(nextSettings); setHardware(nextHardware);
+          if (current.current.advancedDirty) pendingAdvancedRefresh.current = true;
+          else { pendingAdvancedRefresh.current = false; setAdvancedRevision(value => value + 1); }
+          onSavedRef.current();
         }
-        setRuntime(next); setError('');
+        setRuntime(next);
+        if (errorSource.current === 'read') { setError(''); errorSource.current = null; }
         if (next.busy) timeout = setTimeout(() => void poll(), 1500);
       } catch (error) {
         if (cancelled) return;
-        setError(errorMessage(error));
+        if (errorSource.current !== 'action') { errorSource.current = 'read'; setError(errorMessage(error)); }
         timeout = setTimeout(() => void poll(), 3000);
       }
     }
     timeout = setTimeout(() => void poll(), 500);
-    return () => { cancelled = true; clearTimeout(timeout); };
-  }, [runtime?.busy]);
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
+  }, [active, runtime?.busy, starting]);
 
   const busy = starting || !!runtime?.busy;
   const assigned = settings?.workers.filter(worker => worker.enabled && worker.location === 'local').flatMap(worker => worker.deviceIds) || [];
   const changed = selected.length !== new Set(assigned).size || selected.some(id => !assigned.includes(id));
+  useEffect(() => { if (settings && !changed) selectionEdited.current = false; }, [settings, changed]);
   const ready = runtime?.phase === 'ready' && !changed;
   const connected = ready || !!settings?.workers.some(worker => worker.enabled);
 
   async function refreshHardware() {
-    setChecking(true); setError('');
-    try { setHardware(await api<Hardware>('/hardware')); }
-    catch (error) { setError(errorMessage(error)); }
-    finally { setChecking(false); }
+    setChecking(true); setError(''); errorSource.current = 'action';
+    try { const next = await api<Hardware>('/hardware', { signal: AbortSignal.timeout(15_000) }); if (mounted.current) { setHardware(next); errorSource.current = null; } }
+    catch (error) { if (mounted.current) setError(errorMessage(error)); }
+    finally { if (mounted.current) setChecking(false); }
   }
   async function start() {
-    if (advancedDirty) return;
-    setStarting(true); setError('');
+    if (advancedDirty || write.current) return;
+    read.current?.abort(); read.current = null;
+    const controller = new AbortController(); write.current = controller;
+    setStarting(true); setError(''); errorSource.current = 'action';
     try {
-      const next = await api<RuntimeSetupStatus>('/runtime', { method: 'POST', body: JSON.stringify({ gpuIds: selected }) });
+      const next = await api<RuntimeSetupStatus>('/runtime', { method: 'POST', body: JSON.stringify({ gpuIds: selected }), signal: controller.signal });
+      if (controller.signal.aborted || !mounted.current) return;
+      errorSource.current = null;
       setRuntime(next);
-      if (!next.busy && next.phase === 'ready') { await load(); onSavedRef.current(); }
-    } catch (error) { setError(errorMessage(error)); }
-    finally { setStarting(false); }
+      selectionEdited.current = false;
+      if (!next.busy && next.phase === 'ready') { await load(true); if (mounted.current) onSavedRef.current(); }
+    } catch (error) { if (!controller.signal.aborted && mounted.current) setError(errorMessage(error)); }
+    finally { if (write.current === controller) write.current = null; if (!controller.signal.aborted && mounted.current) setStarting(false); }
   }
 
-  function selectSection(next: SettingsSection) {
-    if (next !== 'gpus' && next !== 'integrations' && next !== 'assistant' && next !== 'app') setAdvancedVisited(true);
-    if (next === 'integrations') setIntegrationsVisited(true);
-    setSection(next);
-  }
+  const advancedSection = section !== 'gpus' && section !== 'integrations' && section !== 'assistant' && section !== 'app';
+  useEffect(() => {
+    if (advancedSection) setAdvancedVisited(true);
+    if (section === 'integrations') setIntegrationsVisited(true);
+    if (section === 'assistant') setAssistantVisited(true);
+  }, [section, advancedSection]);
+  const selectSection = onSectionChange;
   return <TabbedWorkspace id="settings" label="Settings sections" sections={sections} selected={section} onSelect={selectSection}>
     <div hidden={section !== 'gpus'} role="tabpanel" id="settings-panel-gpus" aria-labelledby="settings-tab-gpus">
     {error && <div className="error-notice mb-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
@@ -112,7 +156,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
       {loading ? <p role="status" className="py-5 text-sm text-ink-2">Detecting your hardware…</p> : hardware?.gpus.length ? <fieldset disabled={busy} className="divide-y divide-line border-y border-line"><legend className="sr-only">GPUs available for generation</legend>{hardware.gpus.map((gpu, index) => {
         const supported = gpu.vendor === 'amd' || gpu.vendor === 'nvidia';
         return <label key={gpu.id} className={`flex cursor-pointer items-start gap-4 py-5 ${!supported ? 'opacity-55' : ''}`}>
-          <input type="checkbox" name="runtime-gpu" value={gpu.id} checked={selected.includes(gpu.id)} disabled={!supported} onChange={event => setSelected(current => event.target.checked ? [...current, gpu.id] : current.filter(id => id !== gpu.id))} className="mt-1 size-[18px] shrink-0 accent-volt" />
+          <input type="checkbox" name="runtime-gpu" value={gpu.id} checked={selected.includes(gpu.id)} disabled={!supported} onChange={event => { selectionEdited.current = true; setSelected(current => event.target.checked ? [...current, gpu.id] : current.filter(id => id !== gpu.id)); }} className="mt-1 size-[18px] shrink-0 accent-volt" />
           <span className="min-w-0 flex-1"><span className="block text-sm font-medium">GPU {index + 1} · {gpu.name}</span><span className="mt-1.5 block text-xs leading-relaxed text-ink-2">{bytes(gpu.memory.totalBytes)} VRAM{gpu.pciAddress ? ` · PCI ${gpu.pciAddress}` : ''}{!supported ? ' · Automatic setup is not available' : ''}</span></span>
         </label>;
       })}</fieldset> : <p className="border-y border-line py-5 text-sm leading-relaxed text-ink-2">No GPUs were detected. Refresh after making your GPUs available, or connect an existing ComfyUI installation in Connections.</p>}
@@ -128,9 +172,9 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     </section>
     {onboarding && <div className="mt-9 flex flex-wrap items-center gap-4 border-t border-line pt-6"><button type="button" onClick={onFinished} className={`inline-flex min-h-11 items-center gap-2 rounded-chip px-5 text-sm font-medium ${connected ? 'bg-chip hover:bg-chip-hi' : 'text-ink-2 hover:text-ink'}`}>{connected ? 'Start creating' : 'I’ll set this up later'}<ArrowRight size={16} /></button></div>}
     </div>
-    {integrationsVisited && <div hidden={section !== 'integrations'} role="tabpanel" id="settings-panel-integrations" aria-labelledby="settings-tab-integrations" tabIndex={0}><IntegrationsSettings active={section === 'integrations'} /></div>}
-    {section === 'assistant' && <div role="tabpanel" id="settings-panel-assistant" aria-labelledby="settings-tab-assistant" tabIndex={0}><LanguageModels assistant onConfigure={() => selectSection('integrations')} /></div>}
+    {(integrationsVisited || section === 'integrations') && <div hidden={section !== 'integrations'} role="tabpanel" id="settings-panel-integrations" aria-labelledby="settings-tab-integrations" tabIndex={0}><IntegrationsSettings active={active && section === 'integrations'} /></div>}
+    {(assistantVisited || section === 'assistant') && <div hidden={section !== 'assistant'} role="tabpanel" id="settings-panel-assistant" aria-labelledby="settings-tab-assistant" tabIndex={0}><LanguageModels active={active && section === 'assistant'} assistant onConfigure={() => selectSection('integrations')} /></div>}
     {section === 'app' && <div role="tabpanel" id="settings-panel-app" aria-labelledby="settings-tab-app" tabIndex={0}><AppSettings busy={activeWork || busy || advancedDirty} /></div>}
-    {advancedVisited && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && section !== 'gpus' && section !== 'integrations' && section !== 'assistant' && section !== 'app' && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { void load(); onSavedRef.current(); }} /></fieldset>}
+    {(advancedVisited || advancedSection) && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && advancedSection && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); if (current.current.active) document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={() => { if (mounted.current) { void load(); onSavedRef.current(); } }} /></fieldset>}
   </TabbedWorkspace>;
 }

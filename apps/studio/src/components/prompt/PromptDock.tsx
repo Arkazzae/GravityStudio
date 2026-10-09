@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction, type RefObject } from 'react';
 import { GenerateButton } from '@/components/ui/GenerateButton';
 import { ModelMenu } from './ModelMenu';
 import { ReferencePicker } from './ReferencePicker';
@@ -14,7 +14,7 @@ export interface Draft { aspect?: ImageAspectRatio | 'custom'; modelId: string; 
 export const initialDraft: Draft = { aspect: 'auto', modelId: '', prompt: '', negativePrompt: '', width: 1024, height: 1024, steps: 30, cfg: 7, seed: '', denoise: .75, images: [] };
 export function modelDraft(draft: Draft, model: StudioModel): Draft { return { ...draft, modelId: model.id, aspect: 'auto', ...model.defaults, negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75 }; }
 
-export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError, sessionIdentity = '', onOpenAssistantSettings, onBusyChange }: { jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string; sessionIdentity?: string; onOpenAssistantSettings?: () => void; onBusyChange?: (busy: boolean) => void }) {
+export function PromptDock({ browsing, onBrowse, onCloseAssets, assetsTriggerRef, models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError, sessionIdentity = '', onOpenAssistantSettings, onBusyChange }: { browsing: boolean; onBrowse: () => void; onCloseAssets: () => void; assetsTriggerRef: RefObject<HTMLButtonElement | null>; jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string; sessionIdentity?: string; onOpenAssistantSettings?: () => void; onBusyChange?: (busy: boolean) => void }) {
   const dock = useRef<HTMLDivElement>(null);
   const prompt = useRef<HTMLTextAreaElement>(null);
   const lastAttempt = useRef<{ body: string; key: string } | null>(null);
@@ -23,7 +23,8 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
   const [uploading, setUploading] = useState(false);
   useEffect(() => { onBusyChange?.(busy || assistantBusy || uploading); }, [busy, assistantBusy, uploading, onBusyChange]);
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
-  const [browsing, setBrowsing] = useState(false);
+  const [assetsVisited, setAssetsVisited] = useState(false);
+  useEffect(() => { if (browsing) setAssetsVisited(true); }, [browsing]);
   const [error, setError] = useState('');
   const model = models.find(model => model.id === draft.modelId);
   const maxImages = model?.capabilities?.maxImages ?? model?.limits?.maxImages ?? 0;
@@ -80,7 +81,7 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
     <div ref={dock} data-workspace-scroll="dock" className="animate-dock-in pointer-events-auto flex max-h-[70dvh] w-full max-w-[1120px] flex-col gap-3 overflow-y-auto rounded-dock border border-white/[0.07] bg-raise p-3 shadow-dock transition-colors duration-200 focus-within:border-white/[0.14] sm:flex-row">
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
         <div className={`flex items-start gap-3 pl-1 pt-0.5 ${draft.images.length > 1 ? "flex-col" : ""}`} onDragOver={event => { if (maxImages) event.preventDefault(); }} onDrop={event => { event.preventDefault(); if (maxImages) void upload(Array.from(event.dataTransfer.files)); }}>
-          <ImageReferenceInput images={draft.images} maxImages={maxImages} uploading={uploading} onUpload={files => { void upload(files); }} onRemove={id => update({ images: draft.images.filter(image => image.id !== id) })} onClear={() => update({ images: [] })} onBrowse={() => setBrowsing(true)} />
+          <ImageReferenceInput images={draft.images} maxImages={maxImages} uploading={uploading} onUpload={files => { void upload(files); }} onRemove={id => update({ images: draft.images.filter(image => image.id !== id) })} onClear={() => update({ images: [] })} onBrowse={onBrowse} />
           <label htmlFor="image-prompt" className="sr-only">{draft.images.length ? 'Edit instructions' : 'Image prompt'}</label><textarea ref={prompt} id="image-prompt" value={draft.prompt} maxLength={16000} onChange={event => update({ prompt: event.target.value })} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} onPaste={event => { if (maxImages && event.clipboardData.files.length) { event.preventDefault(); void upload(Array.from(event.clipboardData.files)); } }} rows={1} placeholder={draft.images.length > 1 ? 'Describe how to use these references. Refer to them by number.' : draft.images.length ? 'Describe what you want to change in this image.' : 'Describe the shot you want.'} className="max-h-40 min-h-10 min-w-0 w-full resize-none bg-transparent py-2 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-2" />
         </div>
         <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1.5 max-sm:[&>div:first-child]:min-w-0 max-sm:[&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
@@ -94,6 +95,6 @@ export function PromptDock({ models, draft, setDraft, onSubmitted, onHeight, con
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
-    {browsing && <ReferencePicker jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={() => setBrowsing(false)} />}
+    {(browsing || assetsVisited) && <ReferencePicker open={browsing} triggerRef={assetsTriggerRef} jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={onCloseAssets} unavailableReason={maxImages < 1 ? 'Choose a model that supports reference images to use these assets.' : undefined} />}
   </div>;
 }
