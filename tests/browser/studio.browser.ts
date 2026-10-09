@@ -502,12 +502,13 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('#image-prompt')", `${label} entry dialog closes to Image`);
   }
 
-  // Read-only UI fixture: expose three real catalog manifests as selectable without
+  // Read-only UI fixture: expose real catalog manifests as selectable without
   // installing their weights. No generation is submitted while readiness is overridden.
   const geometryModels = [
     { id: 'wai-illustrious-v17', name: 'WAI Illustrious v17', short: 'wai' },
     { id: 'flux-2-klein-4b', name: 'FLUX.2 Klein 4B', short: 'klein' },
     { id: 'krea-2-turbo', name: 'Krea 2 Turbo', short: 'krea' },
+    { id: 'qwen-image-2.1', name: 'Qwen Image 2.1', short: 'qwen' },
   ];
   const draftKey = `gravity:image-draft:${store.owner()!.id}`;
   const savedDraft = await browser.evaluate<string | null>(`localStorage.getItem(${JSON.stringify(draftKey)})`);
@@ -575,6 +576,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         for (const selector of [dockSelectors.add, dockSelectors.browse, 'input[aria-label="Upload reference images"]']) {
           assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), noReferences, `${model.name} advertises its reference capability`);
         }
+        if (model.short === 'qwen') {
+          assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Upload reference images\"]').multiple"), true, 'Qwen supports selecting multiple references');
+          assert.equal(await browser.evaluate("fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === 'qwen-image-2.1').capabilities.maxImages)"), 10, 'Qwen advertises ten reference images to the composer');
+        }
         if (noReferences) assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(dockSelectors.add)}).title`), /not supported/i);
         assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, 'Switching models does not overflow the page');
         await browser.screenshot(join(output, `toolbar-${model.short}-${viewport.name}.png`));
@@ -584,7 +589,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         const advanced = await geometry({ panel: '[aria-label="Advanced settings"]:popover-open', seed: '[popover]:popover-open input[aria-label="Seed"]', width: '[popover]:popover-open input[aria-label="Width value"]', guidance: '[popover]:popover-open input[aria-label="Guidance value"]' });
         if (advancedBaseline) sameGeometry(advanced, advancedBaseline, `${viewport.name} ${model.name} Advanced`);
         else advancedBaseline = advanced;
-        assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open textarea[aria-label=\"Negative prompt\"]')"), model.short === 'wai', 'Only models advertising negative prompts expose the field');
+        assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open textarea[aria-label=\"Negative prompt\"]')"), ['wai', 'qwen'].includes(model.short), 'Only models advertising negative prompts expose the field');
         await screenshotPopover(`advanced-${model.short}-${viewport.name}.png`);
         await browser.key('Escape');
       }

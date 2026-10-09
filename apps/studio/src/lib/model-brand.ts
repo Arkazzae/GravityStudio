@@ -12,6 +12,7 @@ const catalogBrands: Record<string, { family: string; file?: string }> = {
   'flux-2-klein-4b': { family: 'FLUX', file: 'flux.svg' },
   'flux-2-klein-9b': { family: 'FLUX', file: 'flux.svg' },
   'krea-2-turbo': { family: 'Krea', file: 'krea.svg' },
+  'qwen-image-2.1': { family: 'Qwen', file: 'qwen.svg' },
 };
 
 /** Known publishers use their own marks; imported checkpoints keep their own initial. */

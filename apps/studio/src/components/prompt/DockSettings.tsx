@@ -10,7 +10,7 @@ const parameterHelp = {
   Width: 'Output width in pixels. Larger images use more memory and can take longer.',
   Height: 'Output height in pixels. Larger images use more memory and can take longer.',
   Steps: 'Denoising passes used to create the image. More steps take longer and do not always improve quality.',
-  Guidance: 'How strongly the model follows your prompt. Higher values can reduce variety or introduce artifacts.',
+  Guidance: 'How strongly the model follows your prompt. At 1, the negative prompt has no effect. Higher values can reduce variety or introduce artifacts.',
   Seed: 'Controls the starting noise. Reuse it with the same model and settings for similar results, or leave it empty for a random seed.',
   'Image strength': 'How much to change the reference image. Lower values preserve more of the original; higher values redraw more.',
   'Negative prompt': 'Things you want the model to avoid, such as blur or unwanted details.',
