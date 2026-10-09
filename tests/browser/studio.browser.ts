@@ -86,13 +86,22 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await comfy.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ } if (child.exitCode !== null) throw new Error(`Next could not start: ${logs}`); if (attempt === 99) throw new Error(`Next startup timed out: ${logs}`); await delay(100); }
   const browser = await openBrowser(t);
+  async function clickDialogText(id: string, label: string) {
+    const element = `Array.from(document.querySelectorAll('#${id} button, #${id} a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`;
+    await browser.until(`!!(${element})`, `${label} in ${id}`);
+    const point = await browser.evaluate<{ x: number; y: number }>(`(() => { const element = (${element}); element.scrollIntoView({block: 'nearest'}); const rect = element.getBoundingClientRect(); return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}; })()`);
+    await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+    await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+  }
   await browser.navigate(`${origin}/image`);
   await browser.until("document.body.innerText.includes('Make this studio yours.')", 'Owner setup');
   await browser.fill('input[autocomplete="off"]', 'browser-integration-setup-key');
   await browser.fill('input[name="username"]', 'browser-owner');
   await browser.fill('input[name="password"]', 'test-password-strong-123');
   await browser.clickText('Create studio');
-  await browser.until("document.body.innerText.includes('Set up your studio.') && document.querySelectorAll('input[name=runtime-gpu]').length === 2", 'GPU onboarding');
+  await browser.until("document.querySelector('#settings-dialog[open]')?.innerText.includes('Set up your studio') && document.querySelectorAll('input[name=runtime-gpu]').length === 2", 'GPU onboarding dialog');
+  await browser.evaluate("Promise.all(document.querySelector('#settings-dialog').getAnimations().map(animation => animation.finished.catch(() => {})))");
+  assert.equal(await browser.evaluate("document.querySelector('#settings-dialog').matches(':modal') && !!document.querySelector('#image-prompt')"), true, 'Onboarding overlays the mounted Image workspace');
   assert.equal(await browser.evaluate("document.querySelectorAll('input[name=runtime-gpu]:checked').length"), 2, 'Detected GPUs are selected by default');
   assert.equal(await browser.evaluate("document.body.innerText.includes('0000:03:00.0') && document.body.innerText.includes('0000:07:00.0')"), true, 'Identical GPUs have visible PCI identities');
   assert.equal(await browser.evaluate("document.body.innerText.includes('Image models') || document.body.innerText.includes('pnpm runtime') || document.body.innerText.includes('GPU used by this worker')"), false, 'Onboarding exposes no terminal commands, worker mapping or model form');
@@ -103,30 +112,36 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.screenshot(join(output, 'setup-mobile.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
-  await browser.clickText('Set up generation');
+  await clickDialogText('settings-dialog', 'Set up generation');
   await browser.until("document.body.innerText.includes('Setting up…')", 'Automatic generation setup starts');
   await browser.until("document.body.innerText.includes('Generation is ready')", 'Automatic generation setup finishes');
   assert.deepEqual(chosenGpuIds, ['amd:9700b']);
   assert.deepEqual(store.settings().workers[0].deviceIds, ['amd:9700b']);
   assert.equal(store.settings().modelConfigurations.some(item => item.enabled), false, 'Setup does not choose models');
   await browser.clickText('Start creating');
-  await browser.until("!!document.querySelector('#image-prompt')", 'Image composer');
+  await browser.until("!document.querySelector('#settings-dialog[open]') && !!document.querySelector('#image-prompt')", 'Image composer after onboarding closes');
   await browser.clickText('Browse models');
-  await browser.until("document.body.innerText.includes('Add from Hugging Face')", 'Dedicated model library');
+  await browser.until("document.querySelector('#models-dialog[open]')?.innerText.includes('Add from Hugging Face')", 'Model library dialog');
+  assert.equal(await browser.evaluate("document.querySelector('#models-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
   await browser.fill('input[name="checkpoint-url"]', checkpointUrl);
   await browser.fill('input[name="checkpoint-name"]', 'Browser checkpoint');
   await browser.clickText('Download checkpoint');
   await browser.until("document.body.innerText.includes('Browser checkpoint') && !!document.querySelector('progress')", 'Download progress');
-  await browser.until("document.body.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated');
+  await browser.click('button[aria-label="Close models"]');
+  await browser.until("!document.querySelector('#models-dialog[open]')", 'Download continues after closing Models');
+  await browser.until("Array.from(document.querySelectorAll('main button')).some(button => button.textContent.trim() === 'Browser checkpoint')", 'Background download refreshes the Image model selection');
   assert.equal(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.enabled, true);
   assert.deepEqual(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.workerIds, ['browser-comfy']);
-  await browser.evaluate("document.querySelector('main > div').scrollTop = 0");
+  await browser.click('header button[aria-label="Models"]');
+  await browser.until("document.querySelector('#models-dialog[open]')?.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated when Models reopens');
+  await browser.evaluate("document.querySelectorAll('#models-dialog, #models-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
   await browser.screenshot(join(output, 'models-desktop.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true);
   await browser.screenshot(join(output, 'models-mobile.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
-  await browser.clickText('Back to images');
+  await browser.click('button[aria-label="Close models"]');
+  await browser.until("!document.querySelector('#models-dialog[open]')", 'Model library closes after import');
   await browser.until("Array.from(document.querySelectorAll('button')).some(button => button.textContent.trim() === 'Browser checkpoint')", 'Ready model');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
@@ -161,8 +176,61 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('dialog[open]')", 'Output viewer opens');
   await browser.key('Escape');
   await browser.until("!document.querySelector('dialog[open]')", 'Output viewer Escape closes');
+
+  // Keep a genuine scrolled gallery and a live draft beneath both overlays.
+  // DOM identity catches remounts that restoring localStorage alone would conceal.
+  const modalDraft = 'Keep this unfinished prompt while browsing my models and settings';
+  await browser.fill('#image-prompt', modalDraft);
+  await browser.fill('input[aria-label="Image tile size"]', '1');
+  async function checkWorkspaceModal(label: 'Models' | 'Settings', closeWith: 'escape' | 'backdrop', viewport: string) {
+    const id = `${label.toLowerCase()}-dialog`;
+    const trigger = `header button[aria-label="${label}"]`;
+    const findGallery = "(() => { let element = document.querySelector('figure'); while (element && element !== document.body) { if (['auto', 'scroll'].includes(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element; element = element.parentElement; } return null; })()";
+    await browser.until(`!!(${findGallery})`, `${viewport} gallery has actual overflow`);
+    await browser.evaluate(`(() => { const gallery = (${findGallery}); gallery.scrollTop = Math.min(120, gallery.scrollHeight - gallery.clientHeight); window.__gravityModalState = { prompt: document.querySelector('#image-prompt'), value: document.querySelector('#image-prompt').value, gallery, scrollTop: gallery.scrollTop, trigger: document.querySelector(${JSON.stringify(trigger)}), reference: document.querySelector('button[aria-label="Remove reference 1"]') }; })()`);
+    assert.equal(await browser.evaluate('window.__gravityModalState.scrollTop > 0'), true, 'The preservation check uses a nonzero scroll position');
+    const workspaceWidth = await browser.evaluate<number>("document.querySelector('main').getBoundingClientRect().width");
+    assert.equal(await browser.evaluate('document.querySelector("main").getBoundingClientRect().width >= innerWidth - 2'), true, 'Image workspace uses the full viewport width');
+    await browser.click(trigger);
+    await browser.until(`document.querySelector('#${id}[open]')?.matches(':modal')`, `${label} opens as a native modal`);
+    await browser.until(`Array.from(document.querySelectorAll('#${id} h1, #${id} h2')).some(heading => heading.textContent.trim() === ${JSON.stringify(label)})`, `${label} modal heading`);
+    await browser.evaluate(`Promise.all(document.querySelector('#${id}').getAnimations().map(animation => animation.finished.catch(() => {})))`);
+    assert.equal(await browser.evaluate(`(() => { const dialog = document.querySelector('#${id}'); const rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1; })()`), true, `${viewport} ${label} fits the viewport without horizontal overflow`);
+    assert.equal(await browser.evaluate<number>("document.querySelector('main').getBoundingClientRect().width"), workspaceWidth, 'Opening an overlay does not narrow the Image workspace');
+    assert.equal(await browser.evaluate("document.querySelector('#image-prompt') === window.__gravityModalState.prompt && window.__gravityModalState.gallery.isConnected"), true, 'Composer and gallery remain mounted behind the dialog');
+    assert.equal(await browser.evaluate<string>("document.querySelector('#image-prompt').value"), modalDraft);
+    const focusables = `Array.from(document.querySelectorAll('#${id} button, #${id} a[href], #${id} input, #${id} select, #${id} textarea, #${id} summary, #${id} [tabindex]')).filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length && getComputedStyle(element).visibility === 'visible')`;
+    await browser.evaluate(`(${focusables}).at(-1).focus()`);
+    await browser.key('Tab');
+    assert.equal(await browser.evaluate(`document.querySelector('#${id}').contains(document.activeElement)`), true, `Tab stays inside the modal; focused ${await browser.evaluate('document.activeElement?.outerHTML.slice(0, 200)')}`);
+    await browser.evaluate(`(${focusables})[0].focus()`);
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 1 });
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 1 });
+    assert.equal(await browser.evaluate(`document.querySelector('#${id}').contains(document.activeElement)`), true, 'Shift+Tab stays inside the modal');
+    await browser.evaluate("document.querySelector('#image-prompt').focus()");
+    assert.equal(await browser.evaluate(`document.querySelector('#${id}').contains(document.activeElement)`), true, 'The underlying composer is inert while the dialog is open');
+    await browser.screenshot(join(output, `${label.toLowerCase()}-modal-${viewport}.png`));
+    if (closeWith === 'escape') await browser.key('Escape');
+    else {
+      const point = await browser.evaluate<{ x: number; y: number } | null>(`(() => { const rect = document.querySelector('#${id}').getBoundingClientRect(); return [{x: 2, y: 2}, {x: innerWidth - 2, y: 2}, {x: 2, y: innerHeight - 2}, {x: innerWidth - 2, y: innerHeight - 2}].find(point => point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) || null; })()`);
+      assert.ok(point, 'The modal leaves a clickable backdrop');
+      await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+      await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+    }
+    await browser.until(`!document.querySelector('#${id}[open]')`, `${label} closes by ${closeWith}`);
+    assert.equal(await browser.evaluate('document.activeElement === window.__gravityModalState.trigger'), true, 'Focus returns to the opener');
+    assert.equal(await browser.evaluate("document.querySelector('#image-prompt') === window.__gravityModalState.prompt && document.querySelector('#image-prompt').value === window.__gravityModalState.value"), true, 'The same composer retains the unfinished draft');
+    assert.equal(await browser.evaluate('window.__gravityModalState.gallery.isConnected && window.__gravityModalState.gallery.scrollTop === window.__gravityModalState.scrollTop'), true, 'The same gallery retains its scroll position');
+    assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityModalState.reference"), true, 'Selected reference remains mounted');
+    assert.equal(await browser.evaluate('location.pathname'), '/image', 'Opening and closing dialogs does not navigate away');
+  }
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 700, deviceScaleFactor: 1, mobile: false });
+  await checkWorkspaceModal('Models', 'escape', 'desktop');
+  await checkWorkspaceModal('Settings', 'backdrop', 'desktop');
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await browser.until('document.documentElement.clientWidth === 390', 'Mobile viewport');
+  await checkWorkspaceModal('Models', 'backdrop', 'mobile');
+  await checkWorkspaceModal('Settings', 'escape', 'mobile');
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, 'Mobile page must not overflow horizontally');
   assert.equal(await browser.evaluate("(() => { const button = Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === 'Generate'); const rect = button.getBoundingClientRect(); return rect.width >= 44 && rect.height >= 44 && rect.bottom <= innerHeight; })()"), true, 'Generate remains reachable on mobile');
   await browser.until("(() => { const input = document.querySelector('#image-prompt'); return input.scrollHeight <= input.clientHeight + 2; })()", 'Mobile prompt fits its wrapped text');
@@ -182,8 +250,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.body.innerText.includes('Closed by owner')", 'Owner closes the absent generation');
   assert.equal(store.job(unknown.id).status, 'failed');
   assert.equal(comfy.state.submissions.filter(item => item.prompt_id === unknown.id).length, 1, 'Closing does not resubmit');
-  await browser.click('a[aria-label="Settings"]');
-  await browser.until("document.body.innerText.includes('GPUs to use')", 'Mobile settings');
+  await browser.click('header button[aria-label="Settings"]');
+  await browser.until("document.querySelector('#settings-dialog[open]')?.innerText.includes('GPUs to use')", 'Mobile settings dialog');
   await browser.screenshot(join(output, 'settings-mobile.png'));
   await browser.click('summary');
   await browser.clickText('API access');
@@ -205,13 +273,21 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('[aria-label="Revoke Browser test MCP"]');
   await browser.until("document.body.innerText.includes('No access tokens yet.')", 'Token revoked');
   assert.equal((await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes before account controls are used');
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');
   await browser.until("document.body.innerText.includes('Welcome back.')", 'Signed out');
   await browser.fill('input[name="username"]', 'browser-owner');
   await browser.fill('input[name="password"]', 'test-password-strong-123');
   await browser.clickText('Sign in');
-  await browser.until("document.querySelector('h1')?.textContent === 'Settings'", 'Owner signs back in');
+  await browser.until("!!document.querySelector('#image-prompt') && !document.querySelector('dialog[open]')", 'Owner signs back into the Image workspace');
+  for (const label of ['Models', 'Settings']) {
+    await browser.navigate(`${origin}/${label.toLowerCase()}`);
+    await browser.until(`!!document.querySelector('#${label.toLowerCase()}-dialog[open]') && !!document.querySelector('#image-prompt')`, `${label} entry URL opens its dialog over Image`);
+    await browser.click(`button[aria-label="Close ${label.toLowerCase()}"]`);
+    await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('#image-prompt')", `${label} entry dialog closes to Image`);
+  }
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });
