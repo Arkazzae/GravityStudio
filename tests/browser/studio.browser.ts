@@ -143,6 +143,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.key('Enter');
     await browser.until(`(${button})?.getAttribute('aria-current') === 'page'`, `${label} asset category selected`);
   }
+  async function galleryFilter(label: 'All images' | 'Favorites') {
+    await clickScopedText('[aria-label="Image filter"]', label);
+    await browser.until(`Array.from(document.querySelectorAll('[aria-label="Image filter"] button')).find(button => button.textContent.trim() === ${JSON.stringify(label)})?.getAttribute('aria-pressed') === 'true'`, `${label} gallery filter selected`);
+  }
   async function assetPickerFrame(mobile: boolean) {
     await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#reference-picker-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
     assert.equal(await browser.evaluate(`(() => {
@@ -386,8 +390,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length === 2", 'Picker loads the generated output and previous import');
   assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav[aria-label=\"Asset categories\"] button[aria-current=page]').textContent"), /^Image/);
   assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog').textContent.includes('Imported images')"), true, 'Undated inputs have an Imported images group');
-  const generatedAsset = '#reference-picker-dialog article[data-source="generated"] button[aria-pressed]';
-  const importedAsset = '#reference-picker-dialog article[data-source="import"] button[aria-pressed]';
+  const generatedAsset = '#reference-picker-dialog article[data-source="generated"] button[aria-pressed]:not([data-favorite-action])';
+  const importedAsset = '#reference-picker-dialog article[data-source="import"] button[aria-pressed]:not([data-favorite-action])';
   await browser.click(generatedAsset);
   await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'no-assets-match-this-query');
   await browser.until("!document.querySelector('#reference-picker-dialog article[data-asset-id]') && document.querySelector('#reference-picker-dialog').innerText.includes('No matching assets')", 'Search shows an explicit empty state');
@@ -399,7 +403,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog article[data-source=import]').length === 1 && !document.querySelector('#reference-picker-dialog article[data-source=generated]')"), true, 'Imports filters out generated images');
   await browser.click(importedAsset);
   await assetCategory('All Assets');
-  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 1, 'A single-reference model replaces the previous selection');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 1, 'A single-reference model replaces the previous selection');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(importedAsset)}).getAttribute('aria-pressed')`), 'true');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generatedAsset)}).getAttribute('aria-pressed')`), 'false');
   await browser.click(generatedAsset);
@@ -413,9 +417,66 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Reference generation completes');
   assert.equal(store.jobs(store.owner()!.id)[0].input.operation, 'image-to-image');
   assert.ok(comfy.state.uploadBody.includes('filename='));
-  await browser.send('Page.reload');
-  await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Durable gallery after reload');
+  const firstFigure = `figure:has(img[alt=${JSON.stringify(prompt)}])`;
+  await browser.evaluate(`(() => {
+    window.__gravityFavoriteFetch = window.fetch;
+    window.__gravityFavoriteFailure = true;
+    window.fetch = (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (window.__gravityFavoriteFailure && url.origin === location.origin && url.pathname.endsWith('/favorite') && method === 'PUT') {
+        window.__gravityFavoriteFailure = false;
+        return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Favorite update interrupted.' } }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return window.__gravityFavoriteFetch.call(window, input, options);
+    };
+  })()`);
+  try {
+    await browser.click(`${firstFigure} button[aria-label="Add to favorites"]`);
+    await browser.until("Array.from(document.querySelectorAll('main [role=alert]')).some(alert => alert.textContent.includes('Favorite update interrupted.'))", 'Favorite failure has a visible explanation');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Add to favorites"]`)})?.getAttribute('aria-pressed')`), 'false', 'An unsuccessful update does not mark the output');
+    assert.equal(await browser.evaluate("!!document.querySelector('#output-viewer[open]')"), false, 'The tile heart does not open the viewer');
+    await browser.click(`${firstFigure} button[aria-label="Add to favorites"]`);
+    await browser.until(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed') === 'true'`, 'Retry saves the favorite');
+    await browser.until("!Array.from(document.querySelectorAll('main [role=alert]')).some(alert => alert.textContent.includes('Favorite update interrupted.'))", 'A successful retry clears the favorite error');
+  } finally {
+    await browser.evaluate('window.fetch = window.__gravityFavoriteFetch; delete window.__gravityFavoriteFetch; delete window.__gravityFavoriteFailure;');
+  }
+  const slowFavoritesScript = await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__gravitySlowFavoriteRead = { started: 0, aborted: 0, finished: false };
+    window.__gravityBeforeSlowFavorites = window.fetch;
+    window.fetch = async (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.origin === location.origin && url.pathname === '/api/favorites' && method === 'GET') {
+        const stats = window.__gravitySlowFavoriteRead;
+        if (++stats.started === 1) {
+          const signal = options?.signal || (input instanceof Request ? input.signal : undefined);
+          await new Promise((resolve, reject) => {
+            const abort = () => { clearTimeout(timer); stats.aborted++; stats.finished = true; reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
+            const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); stats.finished = true; resolve(); }, 4200);
+            if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+          });
+        }
+      }
+      return window.__gravityBeforeSlowFavorites.call(window, input, options);
+    };
+  ` }) as unknown as { identifier: string };
+  try {
+    await browser.send('Page.reload');
+    await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Durable gallery after reload');
+    await galleryFilter('Favorites');
+    await browser.until('window.__gravitySlowFavoriteRead?.finished === true', 'Slow Favorites request finishes across a polling interval', 6000);
+    assert.deepEqual(await browser.evaluate('window.__gravitySlowFavoriteRead'), { started: 1, aborted: 0, finished: true }, 'Polling keeps the pending favorite read instead of aborting or overlapping it');
+    await browser.until(`document.querySelectorAll('main figure').length === 1 && !!document.querySelector(${JSON.stringify(firstFigure)})`, 'The slow response resolves Favorites loading with its saved output');
+    await galleryFilter('All images');
+    await browser.until("document.querySelectorAll('main figure').length === 2", 'All images restored after the delayed favorites response');
+  } finally {
+    await browser.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: slowFavoritesScript.identifier });
+    await browser.evaluate('window.fetch = window.__gravityBeforeSlowFavorites; delete window.__gravityBeforeSlowFavorites; delete window.__gravitySlowFavoriteRead;');
+  }
   await browser.until("document.querySelector('#image-prompt')?.value.includes('twilight') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Draft and references persist after reload');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed')`), 'true', 'Favorite state persists after reload');
   await browser.evaluate("void (window.__gravityViewerState = { opener: document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]'), prompt: document.querySelector('#image-prompt').value, reference: document.querySelector('button[aria-label=\"Remove reference 1\"]') })");
   await browser.click('[aria-label="Open Browser checkpoint output"]');
   await browser.until("document.querySelector('dialog[open][aria-label=\"Browser checkpoint output\"]')?.matches(':modal') && document.querySelector('[aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Output viewer opens with the image loaded');
@@ -442,6 +503,18 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('dialog[open]')", 'Output viewer Escape closes');
   assert.equal(await browser.evaluate('document.activeElement === window.__gravityViewerState.opener'), true, 'Closing the viewer restores focus to the opened gallery output');
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value === window.__gravityViewerState.prompt && document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityViewerState.reference"), true, 'Browsing and zooming preserve the unfinished prompt and reference');
+  await galleryFilter('Favorites');
+  await browser.until(`document.querySelectorAll('main figure').length === 1 && !!document.querySelector(${JSON.stringify(firstFigure)})`, 'Favorites contains only the marked output');
+  await browser.screenshot(join(output, 'favorites-desktop.png'));
+  await browser.click(`${firstFigure} button[aria-label="Open Browser checkpoint output"]`);
+  await browser.until("document.querySelector('#output-viewer[open] button[aria-label=\"Remove from favorites\"]')?.getAttribute('aria-pressed') === 'true'", 'The viewer shares the saved favorite state');
+  await browser.click('#output-viewer button[aria-label="Remove from favorites"]');
+  await browser.until("!document.querySelector('#output-viewer[open]') && !document.querySelector('main figure') && document.querySelector('main').innerText.includes('No favorites yet.')", 'Removing the last favorite closes its viewer and shows the empty state');
+  assert.equal(await browser.evaluate("document.activeElement instanceof HTMLElement && document.activeElement !== document.body && document.activeElement.isConnected && document.activeElement.getClientRects().length > 0 && !document.activeElement.closest('dialog:not([open])')"), true, 'Removing the viewed favorite restores focus to a visible control');
+  await galleryFilter('All images');
+  await browser.until("document.querySelectorAll('main figure').length === 2", 'All images remains complete after unfavoriting');
+  await browser.click(`${firstFigure} button[aria-label="Add to favorites"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed') === 'true'`, 'Favorite restored for reference browsing');
 
   // Keep a genuine scrolled gallery and a live draft beneath both overlays.
   // DOM identity catches remounts that restoring localStorage alone would conceal.
@@ -513,6 +586,19 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const importsBeforeCancel = store.inputs(store.owner()!.id).length;
   await browser.click('button[aria-label="Browse saved images"]');
   await browser.until("!!document.querySelector('#reference-picker-dialog[open] article[data-source=import]')", 'Mobile asset picker loads saved imports');
+  await assetCategory('Favorites');
+  await browser.until(`document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length === 1 && !!document.querySelector('#reference-picker-dialog article[data-asset-id="${first.outputs[0].id}"]')`, 'Reference Favorites contains only the saved output');
+  assert.equal(await browser.evaluate("!!document.querySelector('#reference-picker-dialog article[data-source=import]')"), false, 'Imported images do not appear in Favorites');
+  await browser.click(generatedAsset);
+  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'no-favorite-matches-this-query');
+  await browser.until("!document.querySelector('#reference-picker-dialog article[data-asset-id]') && document.querySelector('#reference-picker-dialog').innerText.includes('No matching assets')", 'Favorites supports search');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#reference-picker-dialog button')).find(button => button.textContent.trim() === 'Use selected').disabled"), false, 'Filtering preserves the selected favorite');
+  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', '');
+  await assetCategory('Imports');
+  await assetCategory('Favorites');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generatedAsset)})?.getAttribute('aria-pressed')`), 'true', 'Favorite selection survives category changes');
+  await browser.screenshot(join(output, 'assets-favorites-mobile.png'));
+  await assetCategory('Image');
   await browser.click(generatedAsset);
   await assetPickerFrame(true);
   await browser.screenshot(join(output, 'assets-picker-mobile.png'));
@@ -520,6 +606,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('#reference-picker-dialog[open]') && document.activeElement?.getAttribute('aria-label') === 'Browse saved images'", 'Cancel returns focus to Browse saved images');
   assert.equal(store.inputs(store.owner()!.id).length, importsBeforeCancel, 'Cancel does not upload a selected asset');
   assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')"), false, 'Cancel leaves the composer references unchanged');
+  await browser.click(`${firstFigure} button[aria-label="Remove from favorites"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Add to favorites"]`)})?.getAttribute('aria-pressed') === 'false'`, 'Favorite state restored before the remaining checks');
+  assert.deepEqual(await browser.evaluate("fetch('/api/favorites').then(response => response.json()).then(body => body.jobs)"), [], 'The test leaves no saved favorites');
   await uploadReference();
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), modalDraft, 'Mobile upload preserves the unfinished prompt');
   await browser.click('button[aria-label^="Aspect ratio:"]');
@@ -813,9 +902,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.click('button[aria-label="Browse saved images"]');
     await browser.until("document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length >= 4", 'Multi-reference picker loads more assets than its remaining capacity');
     const choices = await browser.evaluate<string[]>("Array.from(document.querySelectorAll('#reference-picker-dialog article[data-asset-id]')).slice(0, 4).map(article => article.dataset.assetId)");
-    const choice = (id: string) => `#reference-picker-dialog article[data-asset-id="${id}"] button[aria-pressed]`;
+    const choice = (id: string) => `#reference-picker-dialog article[data-asset-id="${id}"] button[aria-pressed]:not([data-favorite-action])`;
     for (const id of choices.slice(0, 3)) await browser.click(choice(id));
-    assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 3, 'Klein allows three more selections beside its existing reference');
+    assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 3, 'Klein allows three more selections beside its existing reference');
     assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(choice(choices[3]))}).disabled`), true, 'The remaining asset is blocked when the model capacity is full');
     await browser.click(choice(choices[0]));
     assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(choice(choices[3]))}).disabled`), false, 'Deselecting frees one slot');
@@ -834,7 +923,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       await clickScopedText('#reference-picker-dialog', 'Use selected');
       await browser.until("document.querySelector('#reference-picker-dialog[open] [role=alert]')?.textContent.includes('Reference upload interrupted.')", 'A failed batch keeps the picker open with its upload error');
       assert.equal(await browser.evaluate("document.querySelectorAll('button[aria-label^=\"Remove reference \"]').length"), 1, 'A failed second upload does not partially update the composer');
-      assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 3, 'A failed upload keeps all selected assets for retry');
+      assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 3, 'A failed upload keeps all selected assets for retry');
       await browser.screenshot(join(output, 'assets-picker-error-mobile.png'));
     } finally { await browser.evaluate('window.fetch = window.__gravityPickerFetch; delete window.__gravityPickerFetch'); }
     await clickScopedText('#reference-picker-dialog', 'Use selected');
