@@ -509,7 +509,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         if (dockBaseline) sameGeometry(bounds, dockBaseline, `${viewport.name} ${model.name}`);
         else dockBaseline = bounds;
         assert.ok(Math.abs(bounds.model.width - (viewport.mobile ? 160 : 184)) < .1);
-        assert.ok(Math.abs(bounds.aspect.width - 80) < .1);
+        assert.ok(bounds.aspect.width > 44 && bounds.aspect.width < 80, 'The aspect chip fits its icon and label without a fixed width');
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
         for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
         assert.equal(await browser.evaluate(`document.querySelector('#image-prompt') === window.__gravityGeometryPrompt && document.querySelector('#image-prompt').value === ${JSON.stringify(geometryPrompt)}`), true, 'Model changes preserve the same prompt element and text');
