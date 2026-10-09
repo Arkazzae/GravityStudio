@@ -69,11 +69,21 @@ function lowercase(input: Record<string, unknown>): Record<string, unknown> { re
 function memoryBytes(input: unknown): number | null {
   // amd-smi static VRAM_SIZE is reported with an explicit unit. Do not guess
   // whether an unlabelled number means bytes or MiB across utility versions.
-  const match = typeof input === "string" ? input.match(/^([\d.]+)\s*(B|KB|KiB|MB|MiB|GB|GiB)$/i) : null;
+  const quantity = lowercase(object(input) ?? {});
+  const labelled = typeof input === "string" ? input :
+    (typeof quantity.value === "number" || typeof quantity.value === "string") && typeof quantity.unit === "string" ? `${quantity.value} ${quantity.unit}` : null;
+  const match = labelled?.trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|KiB|MB|MiB|GB|GiB)$/i);
   if (!match) return null;
   const scale = { b: 1, kb: 1024, kib: 1024, mb: MIB, mib: MIB, gb: 1024 ** 3, gib: 1024 ** 3 }[match[2].toLowerCase()];
   const bytes = Number(match[1]) * scale!;
   return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : null;
+}
+
+function amdRuntimeUuid(input: unknown): string | null {
+  const uuid = value(input)?.replace(/^(?:0x|GPU-)/i, "");
+  // Older AMD-SMI versions expose a dashed UUID unrelated to ROCr's 64-bit
+  // physical identifier. It must not become a ROCR_VISIBLE_DEVICES selector.
+  return uuid && /^[a-f\d]{1,16}$/i.test(uuid) && !/^0+$/.test(uuid) ? uuid.toLowerCase() : null;
 }
 
 /** Accept the documented nested static JSON fields without depending on GPU
@@ -92,7 +102,7 @@ export function parseAmdSmi(source: string): AmdStaticDevice[] {
       const driver = lowercase(object(entry.driver) ?? {}), vram = lowercase(object(entry.vram) ?? {});
       const architecture = value(asic.target_graphics_version);
       result.push({ pciAddress: address, name: value(asic.market_name), architecture: architecture && /^gfx[a-f\d]+$/i.test(architecture) ? architecture.toLowerCase() : null,
-        uuid: value(entry.uuid), driverVersion: value(driver.version), totalBytes: memoryBytes(vram.size ?? vram.vram_size) });
+        uuid: amdRuntimeUuid(entry.uuid), driverVersion: value(driver.version), totalBytes: memoryBytes(vram.size ?? vram.vram_size) });
       return;
     }
     Object.values(raw).forEach((item) => visit(item, depth + 1));
@@ -140,7 +150,7 @@ async function amd(probe: HardwareProbe, diagnostics: Diagnostic[]): Promise<Gpu
       diagnostics.push({ code: "amd-device-incomplete", severity: "warning", source: entry, message: "An AMD device was found, but its PCI identity or VRAM capacity could not be read." });
       continue;
     }
-    const uuid = unique && /^(?:0x)?[a-f\d]+$/i.test(unique) && !/^(?:0x)?0+$/i.test(unique) ? unique.toLowerCase().replace(/^0x/, "") : null;
+    const uuid = amdRuntimeUuid(unique);
     devices.push({ id: uuid ? `amd:${uuid}` : `amd:pci:${address}`, vendor: "amd", name: name || `AMD ${device || address}`,
       architecture: null, pciAddress: address, uuid, memory: { totalBytes: Number(total), usedBytes: used !== null && Number.isSafeInteger(Number(used)) && Number(used) >= 0 && Number(used) <= Number(total) ? Number(used) : null }, driverVersion: null });
   }

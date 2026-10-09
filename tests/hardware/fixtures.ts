@@ -14,6 +14,15 @@ export const dualR9700 = () => inventory([gpu("amd:9700a", "amd", 32, "gfx1201")
 export const triple3090 = () => inventory([1, 2, 3].map((index) => gpu(`nvidia:GPU-3090-${index}`, "nvidia", 24, "sm_86")));
 export const singleB100 = () => inventory([gpu("nvidia:GPU-b100", "nvidia", 192, "sm_100")], 512);
 
+// Reduced AMD-SMI shape from a dual R9700 host; hardware identifiers are synthetic.
+export const amdStaticR9700 = JSON.stringify({ gpu_data: [0, 1].map((index) => ({
+  gpu: index,
+  asic: { market_name: "AMD Radeon AI PRO R9700", target_graphics_version: "gfx1201", asic_serial: `0xabcdef000000000${index + 1}` },
+  bus: { bdf: index === 0 ? "0000:03:00.0" : "0000:07:00.0" },
+  driver: { name: "amdgpu", version: "6.19.14.31400100", os_kernel_version: "6.8.0-142-generic" },
+  vram: { type: "GDDR6", size: { value: 32624, unit: "MB" } },
+})) });
+
 export function fakeProbe(options: { files?: Record<string, string>; directories?: Record<string, string[]>; paths?: Record<string, string>; commands?: Record<string, string>; platform?: string } = {}) {
   const calls: { file: string; args: string[]; timeoutMs: number; maxOutputBytes: number }[] = [];
   const missing = () => Object.assign(new Error("Fixture not available"), { code: "ENOENT" });
