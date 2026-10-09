@@ -293,9 +293,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('button[aria-label="Remove reference 1"]');
   await browser.until("document.querySelector('button[aria-label=\"Browse saved images\"]')?.disabled === false", 'Removing a reference makes upload and saved-image selection available');
   await browser.click('[aria-label="Browse saved images"]');
-  await browser.until("!!document.querySelector('dialog[open]')", 'Reference picker opens');
-  await browser.click('dialog button[aria-label^="Use reference:"]');
-  await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Reference is uploaded');
+  await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'Reference picker opens');
+  await browser.click('#reference-picker-dialog button[aria-label^="Use reference:"]');
+  await browser.until("!document.querySelector('#reference-picker-dialog[open]') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Reference is uploaded');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
   await browser.clickText('Generate');
   await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Reference generation completes');
@@ -304,10 +304,32 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.send('Page.reload');
   await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Durable gallery after reload');
   await browser.until("document.querySelector('#image-prompt')?.value.includes('twilight') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Draft and references persist after reload');
+  await browser.evaluate("void (window.__gravityViewerState = { opener: document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]'), prompt: document.querySelector('#image-prompt').value, reference: document.querySelector('button[aria-label=\"Remove reference 1\"]') })");
   await browser.click('[aria-label="Open Browser checkpoint output"]');
-  await browser.until("!!document.querySelector('dialog[open]')", 'Output viewer opens');
+  await browser.until("document.querySelector('dialog[open][aria-label=\"Browser checkpoint output\"]')?.matches(':modal') && document.querySelector('[aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Output viewer opens with the image loaded');
+  assert.equal(await browser.evaluate("document.activeElement === document.querySelector('dialog[open]')"), true, 'The viewer initially focuses its frame instead of an action');
+  const viewedSource = await browser.evaluate<string>("document.querySelector('[aria-label=\"Image zoom and pan\"] img').src");
+  assert.equal(await browser.evaluate("document.querySelector('dialog[open] aside').innerText.includes('1 of 2')"), true, 'The viewer follows the gallery order');
+  await browser.screenshot(join(output, 'output-viewer-desktop.png'));
+  await browser.key('ArrowRight');
+  await browser.until(`document.querySelector('[aria-label="Image zoom and pan"] img')?.src !== ${JSON.stringify(viewedSource)} && document.querySelector('dialog[open] aside').innerText.includes('2 of 2')`, 'ArrowRight moves to the next output');
+  assert.equal(await browser.evaluate(`document.querySelector('dialog[open] aside').innerText.includes(${JSON.stringify(prompt)})`), true, 'The details follow the selected output prompt');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('dialog[open] dt')).find(label => label.textContent === 'Seed')?.nextElementSibling.textContent"), '1234', 'The viewer displays the selected generation seed');
+  await browser.click('dialog[open] button[aria-label="Previous output"]');
+  await browser.until(`document.querySelector('[aria-label="Image zoom and pan"] img')?.src === ${JSON.stringify(viewedSource)} && document.querySelector('button[aria-label="Zoom in"]')?.disabled === false`, 'Previous returns to the original image');
+  await browser.click('button[aria-label="Zoom in"]');
+  await browser.until("document.querySelector('[aria-label=\"Zoom level\"]')?.textContent === '150%' && document.querySelector('[aria-label=\"Image zoom and pan\"]')?.dataset.zoomed === 'true'", 'Zoom enlarges the image');
+  await browser.evaluate("document.querySelector('[aria-label=\"Image zoom and pan\"]').focus()");
+  const panTop = await browser.evaluate<number>("document.querySelector('[aria-label=\"Image zoom and pan\"]').scrollTop");
+  await browser.key('ArrowDown');
+  await browser.until(`document.querySelector('[aria-label="Image zoom and pan"]').scrollTop > ${panTop}`, 'ArrowDown pans the enlarged image');
+  assert.equal(await browser.evaluate<string>("document.querySelector('[aria-label=\"Image zoom and pan\"] img').src"), viewedSource, 'Panning does not navigate to a different output');
+  await browser.key('Escape');
+  await browser.until("!!document.querySelector('dialog[open]') && document.querySelector('[aria-label=\"Zoom level\"]')?.textContent === 'Fit'", 'First Escape restores fit without closing the enlarged image');
   await browser.key('Escape');
   await browser.until("!document.querySelector('dialog[open]')", 'Output viewer Escape closes');
+  assert.equal(await browser.evaluate('document.activeElement === window.__gravityViewerState.opener'), true, 'Closing the viewer restores focus to the opened gallery output');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value === window.__gravityViewerState.prompt && document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityViewerState.reference"), true, 'Browsing and zooming preserve the unfinished prompt and reference');
 
   // Keep a genuine scrolled gallery and a live draft beneath both overlays.
   // DOM identity catches remounts that restoring localStorage alone would conceal.
@@ -361,6 +383,14 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await checkWorkspaceModal('Settings', 'backdrop', 'desktop');
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await browser.until('document.documentElement.clientWidth === 390', 'Mobile viewport');
+  await browser.click('[aria-label="Open Browser checkpoint output"]');
+  await browser.until("document.querySelector('dialog[open] aside')?.innerText.includes('1 of 2')", 'Mobile output viewer opens');
+  await browser.click('dialog[open] button[aria-label="Next output"]');
+  await browser.until("document.querySelector('dialog[open] aside')?.innerText.includes('2 of 2') && document.querySelector('[aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Mobile next action changes the output');
+  await browser.screenshot(join(output, 'output-viewer-mobile.png'));
+  await browser.click('dialog[open] button[aria-label="Close preview"]');
+  await browser.until("!document.querySelector('dialog[open]')", 'Mobile preview closes from its visible action');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), modalDraft, 'Mobile viewing preserves the unfinished draft');
   await checkWorkspaceModal('Models', 'backdrop', 'mobile');
   await checkWorkspaceModal('Settings', 'escape', 'mobile');
   await browser.click('button[aria-label="Remove reference 1"]');
@@ -539,6 +569,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Real catalog and saved draft restored after the geometry fixture');
   }
   assert.equal(await browser.evaluate(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.filter(model => ${JSON.stringify(geometryModels.map(model => model.id))}.includes(model.id)).every(model => !model.ready))`), true, 'Real readiness is restored after the UI-only fixture');
+  await browser.click('[aria-label="Open Browser checkpoint output"]');
+  await browser.until("!!document.querySelector('#output-viewer[open]')", 'Reopen an output to reuse its settings');
+  await clickScopedText('#output-viewer', 'Use these settings');
+  await browser.until("!document.querySelector('#output-viewer[open]') && document.activeElement === document.querySelector('#image-prompt')", 'Reusing settings closes the viewer and focuses the composer');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), store.jobs(store.owner()!.id).find(job => job.outputs.length)!.prompt, 'Reuse restores the selected output prompt');
   assert.deepEqual(browser.errors, []);
   t.diagnostic(`Screenshots: ${output}`);
 });
