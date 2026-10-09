@@ -249,8 +249,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       await browser.until("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Device reference upload finishes');
     } finally { await browser.send('Page.setInterceptFileChooserDialog', { enabled: false }); }
   }
-  async function assetCategory(label: string) {
-    const button = `Array.from(document.querySelectorAll('#reference-picker-dialog nav[aria-label="Asset categories"] button')).find(button => button.textContent.trim().startsWith(${JSON.stringify(label)}))`;
+  async function assetCategory(label: string, id = 'reference-picker-dialog') {
+    const button = `Array.from(document.querySelectorAll('#${id} nav[aria-label="Asset categories"] button')).find(button => button.textContent.trim().startsWith(${JSON.stringify(label)}))`;
     await browser.until(`!!(${button})`, `Asset category ${label}`);
     await browser.evaluate(`(${button}).focus()`);
     await browser.key('Enter');
@@ -266,6 +266,28 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       const dialog = document.querySelector('#reference-picker-dialog'), rect = dialog.getBoundingClientRect();
       return dialog.matches(':modal') && Math.abs(rect.width - ${mobile ? 374 : 1040}) <= 1 && Math.abs(rect.height - 820) <= 1 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth;
     })()`), true, 'The asset picker fits its shared modal frame without horizontal overflow');
+  }
+  async function uploadAsset() {
+    const file = join(directory, 'asset-management-upload.png');
+    await writeFile(file, comfy.state.outputBytes);
+    await browser.send('Page.setInterceptFileChooserDialog', { enabled: true });
+    try {
+      await browser.click('#assets-browser-dialog button[aria-label="Upload images"]');
+      const document = await browser.send('DOM.getDocument') as unknown as { root: { nodeId: number } };
+      const input = await browser.send('DOM.querySelector', { nodeId: document.root.nodeId, selector: '#assets-browser-dialog input[aria-label="Upload images"]' }) as unknown as { nodeId: number };
+      assert.ok(input.nodeId, 'The asset library uploads through its own native file input');
+      await browser.send('DOM.setFileInputFiles', { nodeId: input.nodeId, files: [file] });
+      await browser.until("!!document.querySelector('#assets-browser-dialog article[data-source=import] button[aria-label=\"Open asset-management-upload.png\"]')", 'The uploaded image appears in the asset library');
+    } finally { await browser.send('Page.setInterceptFileChooserDialog', { enabled: false }); }
+  }
+  async function assetPreviewFrame(id: 'assets-output-viewer' | 'assets-input-viewer') {
+    for (const mobile of [false, true]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+      await browser.evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))');
+      assert.equal(await browser.evaluate(`(() => { const dialog = document.querySelector('#${id}'), rect = dialog.getBoundingClientRect(); return dialog.matches(':modal') && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight && dialog.scrollWidth <= dialog.clientWidth; })()`), true, 'Asset previews fit desktop and mobile viewports');
+      await browser.screenshot(join(output, `${id}-${mobile ? 'mobile' : 'desktop'}.png`));
+    }
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   }
   async function checkParameterHelp(label: string, meaning: RegExp, interaction: 'hover' | 'keyboard' | 'tap') {
     const selector = `button[aria-label="Help: ${label}"]`;
@@ -554,11 +576,81 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityResetReference"), true, 'Recovery from invalid dimensions keeps the reference');
   await browser.click('button[aria-label="Remove reference 1"]');
   await browser.until("document.querySelector('button[aria-label=\"Browse saved images\"]')?.disabled === false", 'Removing a reference makes upload and saved-image selection available');
+  const assetBrowserDraft = await browser.evaluate<string>("document.querySelector('#image-prompt').value");
+  const inputsBeforeBrowserUpload = store.inputs(store.owner()!.id).length;
   await browser.click('header button[aria-label="Assets"]');
-  await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'The topbar Assets action opens the reference library');
-  await browser.evaluate("void (window.__gravitySharedPicker = document.querySelector('#reference-picker-dialog'))");
+  await browser.until("document.querySelector('#assets-browser-dialog[open]')?.matches(':modal') && document.querySelectorAll('#assets-browser-dialog article[data-asset-id]').length === 2", 'The topbar opens a browser for generated and imported images');
+  assert.match(await browser.evaluate<string>("document.querySelector('#assets-browser-dialog nav button[aria-current=page]').textContent"), /^All Assets/, 'The asset browser starts with all image sources');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#assets-browser-dialog button[aria-pressed]:not([data-favorite-action]), #assets-browser-dialog input[type=checkbox]').length"), 0, 'Asset thumbnails have no reference-selection state');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#assets-browser-dialog button')).some(button => ['Use selected', 'Clear selection'].includes(button.textContent.trim()))"), false, 'Browsing Assets has no reference-confirmation footer');
+  const browserGenerated = `#assets-browser-dialog article[data-asset-id="${first.outputs[0].id}"]`;
+  await browser.click(`${browserGenerated} button[aria-label="Add to favorites"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(`${browserGenerated} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed') === 'true'`, 'A generated image can be favorited directly in Assets');
+  assert.equal(await browser.evaluate("!!document.querySelector('#assets-output-viewer[open]')"), false, 'Favoriting an asset does not open its preview');
+  await assetCategory('Favorites', 'assets-browser-dialog');
+  await browser.until(`document.querySelectorAll('#assets-browser-dialog article[data-asset-id]').length === 1 && !!document.querySelector(${JSON.stringify(browserGenerated)})`, 'Assets Favorites contains the newly saved image');
+  await browser.click(`${browserGenerated} button[aria-label=${JSON.stringify(`Open ${prompt}`)}]`);
+  await browser.until("document.querySelector('#assets-output-viewer[open] button[aria-label=\"Remove from favorites\"]')?.getAttribute('aria-pressed') === 'true'", 'The sole browser favorite opens in its preview');
+  await browser.click('#assets-output-viewer button[aria-label="Remove from favorites"]');
+  await browser.until("!document.querySelector('#assets-output-viewer[open]') && !!document.querySelector('#assets-browser-dialog[open]') && !document.querySelector('#assets-browser-dialog article[data-asset-id]')", 'Removing the sole favorite closes its preview and leaves the empty asset browser open');
+  assert.equal(await browser.evaluate("(() => { const browser = document.querySelector('#assets-browser-dialog'), focused = document.activeElement; return browser.contains(focused) && focused instanceof HTMLElement && focused.getClientRects().length > 0 && !focused.closest('dialog:not([open])'); })()"), true, 'When its image disappears, the preview restores focus inside the underlying asset browser');
+  await assetCategory('All Assets', 'assets-browser-dialog');
+  const assetDownload = await browser.evaluate<{ href: string; downloadable: boolean }>(`(() => { const link = document.querySelector(${JSON.stringify(`${browserGenerated} a[aria-label="Download image"]`)}); return {href: link?.getAttribute('href'), downloadable: link?.hasAttribute('download')}; })()`);
+  assert.equal(assetDownload.downloadable, true, 'Assets exposes the saved image as a download');
+  assert.equal(await browser.evaluate(`fetch(${JSON.stringify(assetDownload.href)}).then(response => response.status)`), 200, 'The asset download resolves to an available image');
+  await browser.click(`${browserGenerated} button[aria-label=${JSON.stringify(`Open ${prompt}`)}]`);
+  await browser.until("document.querySelector('#assets-output-viewer[open] [aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Clicking a generated asset opens its image preview');
+  assert.equal(await browser.evaluate("!!document.querySelector('#reference-picker-dialog[open]') || !!document.querySelector('button[aria-label=\"Remove reference 1\"]')"), false, 'Opening an asset preview neither opens the picker nor attaches a reference');
+  await assetPreviewFrame('assets-output-viewer');
+  await browser.click('#assets-output-viewer button[aria-label="Close preview"]');
+  await browser.until("!document.querySelector('#assets-output-viewer[open]') && !!document.querySelector('#assets-browser-dialog[open]')", 'Closing a generated preview returns to Assets');
+  await uploadAsset();
+  const uploadedAsset = store.inputs(store.owner()!.id).find(input => input.name === 'asset-management-upload.png')!;
+  assert.ok(uploadedAsset, 'The library upload is saved through the real input API');
+  assert.equal(store.inputs(store.owner()!.id).length, inputsBeforeBrowserUpload + 1);
+  const browserImported = `#assets-browser-dialog article[data-asset-id="${uploadedAsset.id}"]`;
+  await browser.click(`${browserImported} button[aria-label="Open asset-management-upload.png"]`);
+  await browser.until("document.querySelector('#assets-input-viewer[open] img')?.naturalWidth > 0", 'Clicking an imported asset opens its image preview');
+  assert.equal(await browser.evaluate("document.querySelector('#assets-input-viewer').innerText.includes('Imported image') && !Array.from(document.querySelectorAll('#assets-input-viewer dt')).some(label => label.textContent === 'Model')"), true, 'Imported previews identify the file without inventing generation metadata');
+  await assetPreviewFrame('assets-input-viewer');
+  await browser.click('#assets-input-viewer button[aria-label="Close preview"]');
+  await browser.until("!document.querySelector('#assets-input-viewer[open]')", 'The imported preview closes');
+  await browser.click(`${browserImported} button[aria-label="Delete image"]`);
+  assert.equal(store.inputs(store.owner()!.id).some(input => input.id === uploadedAsset.id), true, 'The first imported-image delete click only arms the action');
+  await browser.click(`${browserImported} button[aria-label="Confirm image deletion"]`);
+  await browser.until(`!document.querySelector(${JSON.stringify(browserImported)})`, 'The second click removes the uploaded image from Assets');
+  assert.equal(store.inputs(store.owner()!.id).some(input => input.id === uploadedAsset.id), false, 'Asset deletion removes the saved import');
+  assert.equal(await browser.evaluate(`fetch(${JSON.stringify(uploadedAsset.url)}).then(response => response.status)`), 404, 'The deleted import file is no longer available');
+  const disposableAssetJob = await browser.evaluate<{ id: string }>(`fetch('/api/jobs', {method:'POST', headers:{'Content-Type':'application/json','Idempotency-Key':'browser-disposable-asset'}, body:JSON.stringify({modelId:${JSON.stringify(modelId)},prompt:'Disposable asset browser output'})}).then(async response => { const body = await response.json(); if (!response.ok) throw new Error(JSON.stringify(body)); return body.job; })`);
+  await browser.until("!!document.querySelector('#assets-browser-dialog article[data-source=generated] button[aria-label=\"Open Disposable asset browser output\"]')", 'New generated images appear in the open asset browser');
+  const disposableOutput = store.job(disposableAssetJob.id).outputs[0];
+  const disposableCard = `#assets-browser-dialog article[data-asset-id="${disposableOutput.id}"]`;
+  await browser.click(`${disposableCard} button[aria-label="Delete image"]`);
+  assert.equal(store.job(disposableAssetJob.id).outputs.length, 1, 'The first generated-image delete click only arms the action');
+  await browser.click(`${disposableCard} button[aria-label="Confirm image deletion"]`);
+  await browser.until(`!document.querySelector(${JSON.stringify(disposableCard)})`, 'The second click removes only the disposable generated image');
+  assert.equal(store.job(disposableAssetJob.id).outputs.length, 0, 'Assets deletes generated output through the real owner API');
+  assert.equal(store.job(first.id).outputs.length, 1, 'Deleting one asset preserves the earlier image');
+  for (const mobile of [false, true]) {
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
+    await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    assert.equal(await browser.evaluate("(() => { const dialog = document.querySelector('#assets-browser-dialog'), rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && dialog.scrollWidth <= dialog.clientWidth; })()"), true, 'The asset browser fits desktop and mobile without horizontal overflow');
+    await browser.screenshot(join(output, `assets-browser-${mobile ? 'mobile' : 'desktop'}.png`));
+  }
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await assetCategory('Generated', 'assets-browser-dialog');
+  await browser.fill('#assets-browser-dialog input[aria-label="Search assets"]', 'forest');
+  await browser.evaluate("void (window.__gravityRetainedAssetBrowser = document.querySelector('#assets-browser-dialog'))");
+  await dismissBackdrop('assets-browser-dialog');
+  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Assets', 'The asset browser returns focus to its topbar entry');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), assetBrowserDraft, 'Browsing, uploading and managing Assets preserves the unfinished prompt');
+  assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')"), false, 'Library uploads never attach themselves to the composer');
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'The dock opens its reference picker');
+  await browser.evaluate("void (window.__gravityRetainedPicker = document.querySelector('#reference-picker-dialog'))");
   await browser.until("document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length === 2", 'Picker loads the generated output and previous import');
   assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav[aria-label=\"Asset categories\"] button[aria-current=page]').textContent"), /^Image/);
+  assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog input[aria-label=\"Search assets\"]').value"), '', 'The dock picker starts independently of the asset browser search');
   assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog').textContent.includes('Imported images')"), true, 'Undated inputs have an Imported images group');
   const generatedAsset = '#reference-picker-dialog article[data-source="generated"] button[aria-pressed]:not([data-favorite-action])';
   const importedAsset = '#reference-picker-dialog article[data-source="import"] button[aria-pressed]:not([data-favorite-action])';
@@ -579,18 +671,31 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click(importedAsset);
   await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'reference-upload');
   await dismissBackdrop('reference-picker-dialog');
-  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Assets', 'Backdrop dismissal returns focus to the topbar entry');
+  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Browse saved images', 'Backdrop dismissal returns focus to the reference picker entry');
+  await browser.click('header button[aria-label="Assets"]');
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open]')", 'Assets reopens after using the independent reference picker');
+  assert.equal(await browser.evaluate("document.querySelector('#assets-browser-dialog') === window.__gravityRetainedAssetBrowser"), true, 'Assets keeps its own retained modal tree');
+  assert.match(await browser.evaluate<string>("document.querySelector('#assets-browser-dialog nav button[aria-current=page]').textContent"), /^Generated/, 'Reference categories do not change the browser category');
+  assert.equal(await browser.evaluate("document.querySelector('#assets-browser-dialog input[aria-label=\"Search assets\"]').value"), 'forest', 'Reference searches do not replace the browser query');
+  assert.equal(await browser.evaluate("!!document.querySelector('#reference-picker-dialog[open]')"), false, 'Opening Assets leaves the reference picker closed');
+  await browser.key('Escape');
+  await browser.until("!document.querySelector('#assets-browser-dialog[open]')", 'Escape dismisses the asset browser');
+  await browser.click('header button[aria-label="Assets"]');
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open]')", 'The asset browser reopens after Escape');
+  assert.equal(await browser.evaluate("document.querySelector('#assets-browser-dialog input[aria-label=\"Search assets\"]').value"), 'forest', 'Escape retains the browser search');
+  await browser.key('Escape');
+  await browser.until("!document.querySelector('#assets-browser-dialog[open]')", 'The asset browser closes before resuming a reference selection');
   await browser.click('button[aria-label="Browse saved images"]');
-  await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'The dock reopens the shared asset library');
-  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog').length === 1 && document.querySelector('#reference-picker-dialog') === window.__gravitySharedPicker"), true, 'Topbar and dock use the same retained picker');
+  await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'The dock reopens its retained reference picker');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog').length === 1 && document.querySelector('#reference-picker-dialog') === window.__gravityRetainedPicker"), true, 'The reference picker retains its modal tree');
   assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav button[aria-current=page]').textContent"), /^Imports/, 'Backdrop dismissal preserves the asset category');
-  assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog input[aria-label=\"Search assets\"]').value"), 'reference-upload', 'The dock restores the search started from Assets');
+  assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog input[aria-label=\"Search assets\"]').value"), 'reference-upload', 'The dock restores the unfinished reference search');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(importedAsset)})?.getAttribute('aria-pressed')`), 'true', 'A picked import survives backdrop dismissal');
   await browser.key('Escape');
   await browser.until("!document.querySelector('#reference-picker-dialog[open]')", 'Escape dismisses the retained picker');
   assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Browse saved images', 'Escape returns focus to the current entry');
-  await browser.click('header button[aria-label="Assets"]');
-  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'Assets reopens the picker dismissed from the dock');
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'The dock reopens its picker after Escape');
   assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog input[aria-label=\"Search assets\"]').value"), 'reference-upload', 'Escape preserves the asset query');
   assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav button[aria-current=page]').textContent"), /^Imports/, 'Escape preserves the asset category');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(importedAsset)})?.getAttribute('aria-pressed')`), 'true', 'Escape preserves the selected import');
@@ -825,8 +930,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('#reference-picker-dialog[open]') && document.activeElement?.getAttribute('aria-label') === 'Browse saved images'", 'Cancel returns focus to Browse saved images');
   assert.equal(store.inputs(store.owner()!.id).length, importsBeforeCancel, 'Cancel does not upload a selected asset');
   assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')"), false, 'Cancel leaves the composer references unchanged');
-  await browser.click('header button[aria-label="Assets"]');
-  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'The topbar reopens a cancelled reference selection');
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'The dock reopens a cancelled reference selection');
   assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('#reference-picker-dialog article[data-asset-id]:has(button[aria-pressed=true]:not([data-favorite-action]))')).map(article => article.dataset.assetId)"), pickedBeforeCancel, 'Cancel keeps the selection available for a later visit');
   await clickScopedText('#reference-picker-dialog', 'Cancel');
   await browser.click(`${firstFigure} button[aria-label="Remove from favorites"]`);
@@ -1325,22 +1430,34 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.fill('input[name="checkpoint-name"]', 'Private unsaved checkpoint');
   await browser.key('Escape');
   await browser.until("!document.querySelector('#models-dialog[open]')", 'Models closes with an unsaved checkpoint');
-  await browser.click('header button[aria-label="Assets"]');
-  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'Assets opens before session cleanup');
+  await browser.click('button[aria-label="Remove reference 1"]');
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open] article[data-source=import]')", 'The reference picker opens before session cleanup');
   await assetCategory('Imports');
-  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'private-unsaved-query');
+  await browser.click(importedAsset);
+  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'private-reference-query');
+  await clickScopedText('#reference-picker-dialog', 'Cancel');
+  await browser.click('header button[aria-label="Assets"]');
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open] article[data-source=generated]')", 'Assets opens before session cleanup');
+  await browser.click('#assets-browser-dialog article[data-source=generated] button[aria-label^="Open "]');
+  await browser.until("!!document.querySelector('#assets-output-viewer[open]')", 'An asset preview is retained before signing out');
+  await browser.click('#assets-output-viewer button[aria-label="Close preview"]');
+  await browser.until("!document.querySelector('#assets-output-viewer[open]')", 'The asset preview closes before signing out');
+  await assetCategory('Generated', 'assets-browser-dialog');
+  await browser.fill('#assets-browser-dialog input[aria-label="Search assets"]', 'twilight');
   await browser.key('Escape');
-  await browser.until("!document.querySelector('#reference-picker-dialog[open]')", 'Assets closes with an unfinished search');
+  await browser.until("!document.querySelector('#assets-browser-dialog[open]')", 'Assets closes with an unfinished search');
   await browser.click('button[aria-label="Open Browser checkpoint output"]');
   await browser.until("!!document.querySelector('#output-viewer[open]')", 'An image preview is retained before signing out');
   await browser.click('#output-viewer button[aria-label="Close preview"]');
   await browser.until("!document.querySelector('#output-viewer[open]')", 'The preview is closed before signing out');
-  await browser.evaluate("void (window.__gravityPrivateModals = Array.from(document.querySelectorAll('#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer')))");
-  assert.equal(await browser.evaluate('window.__gravityPrivateModals.length'), 4, 'Each private modal is retained while the owner is signed in');
+  const privateModalSelector = '#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer, #assets-browser-dialog, #assets-output-viewer, #assets-input-viewer';
+  await browser.evaluate(`void (window.__gravityPrivateModals = Array.from(document.querySelectorAll(${JSON.stringify(privateModalSelector)})))`);
+  assert.equal(await browser.evaluate('window.__gravityPrivateModals.length'), 6, 'Each visited private modal is retained while the owner is signed in');
   await browser.click('[aria-label="Account"]');
   await browser.clickText('Sign out');
   await browser.until("document.body.innerText.includes('Welcome back.')", 'Signed out');
-  assert.equal(await browser.evaluate("document.querySelectorAll('#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer').length"), 0, 'Signing out removes every private modal from the DOM');
+  assert.equal(await browser.evaluate(`document.querySelectorAll(${JSON.stringify(privateModalSelector)}).length`), 0, 'Signing out removes every private modal from the DOM');
   assert.equal(await browser.evaluate('window.__gravityPrivateModals.every(dialog => !dialog.isConnected)'), true, 'Signing out unmounts retained modal trees');
   assert.equal(await browser.evaluate(`JSON.stringify({...localStorage, ...sessionStorage}).includes(${JSON.stringify(privateKeyDraft)})`), false, 'Signing out leaves no unsaved provider key in browser storage');
   await browser.fill('input[name="username"]', 'browser-owner');
@@ -1360,7 +1477,13 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), '', 'Signing in clears the previous checkpoint name draft');
   await browser.click('button[aria-label="Close models"]');
   await browser.click('header button[aria-label="Assets"]');
-  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'Fresh session Assets opens');
+  await browser.until("!!document.querySelector('#assets-browser-dialog[open]')", 'Fresh session Assets opens');
+  assert.match(await browser.evaluate<string>("document.querySelector('#assets-browser-dialog nav button[aria-current=page]').textContent"), /^All Assets/, 'Signing in resets the asset browser category');
+  assert.equal(await browser.evaluate("document.querySelector('#assets-browser-dialog input[aria-label=\"Search assets\"]').value"), '', 'Signing in clears the previous browser search');
+  await browser.key('Escape');
+  await browser.until("!document.querySelector('#assets-browser-dialog[open]')", 'Fresh Assets closes before checking the separate picker');
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'The reference picker opens fresh after signing in');
   assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav button[aria-current=page]').textContent"), /^Image/, 'Signing in resets the previous asset category');
   assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog input[aria-label=\"Search assets\"]').value"), '', 'Signing in clears the previous asset search');
   assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 0, 'A new session begins without picked assets');
@@ -1552,12 +1675,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     const assetScroll = await browser.evaluate<number>("(() => { const gallery = document.querySelector('#reference-picker-dialog [aria-label=\"Asset gallery\"]'); gallery.scrollTop = Math.min(120, gallery.scrollHeight - gallery.clientHeight); return gallery.scrollTop; })()");
     assert.ok(assetScroll > 0, 'Asset scroll preservation uses a nonzero position');
     await dismissBackdrop('reference-picker-dialog');
-    await browser.click('header button[aria-label="Assets"]');
-    await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'Assets resumes a scrolled selection started from the dock');
+    await browser.click('button[aria-label="Browse saved images"]');
+    await browser.until("!!document.querySelector('#reference-picker-dialog[open]')", 'The dock resumes its scrolled reference selection');
     await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
     assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog [aria-label=\"Asset gallery\"]').scrollTop"), assetScroll, 'Backdrop dismissal preserves the gallery scroll position');
     assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav button[aria-current=page]').textContent"), /^All Assets/, 'Reopening a scrolled picker keeps its category');
-    assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 3, 'All chosen references survive reopening from the other entry');
+    assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 3, 'All chosen references survive reopening the picker');
     await browser.key('Escape');
     await browser.until("!document.querySelector('#reference-picker-dialog[open]')", 'Escape dismisses the scrolled asset picker');
     await browser.click('button[aria-label="Browse saved images"]');
