@@ -24,7 +24,7 @@ export function ModelMenu({ models, value, onChange, referenceCount, onManage, d
   });
 
   return <Popover label="Choose a model" width={360} flush initialFocus='input, [role="menuitem"]:not(:disabled), [data-manage-models]'
-    trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={disabled} active={open} chevron="right" className="w-40 pr-2.5 sm:w-[184px]" title={selected?.name || 'Choose a model'}
+    trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={disabled} active={open} chevron="right" className="max-w-[min(20rem,100cqw)] pr-2.5" title={selected?.name || 'Choose a model'}
       aria-label={`Model: ${selected?.name || 'Choose a model'}`}
       icon={selected ? <BrandMark brand={modelBrand(selected)} className="size-[18px]" /> : <Layers2 />}>
       {selected?.name || 'Choose a model'}
