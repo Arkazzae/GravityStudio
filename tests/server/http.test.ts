@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import { Store } from "../../apps/server/store.ts";
 import { Engine } from "../../apps/server/engine.ts";
 import { createStudioServer } from "../../apps/server/http.ts";
+import { saveOutput } from "../../apps/server/media.ts";
 import { PNG } from "../inference/fake-comfy.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
 import type { StudioSettings } from "../../packages/contracts/index.ts";
@@ -193,6 +194,57 @@ test("reference uploads validate image bytes and require ownership to read", asy
   assert.ok((await downloaded.arrayBuffer()).byteLength > 0);
   assert.equal((await fetch(`${api.url}${image.url}`)).status, 401);
   assert.equal((await fetch(`${api.url}/api/inputs`, { method: "POST", headers, body: "not an image" })).status, 400);
+});
+
+test("favorite routes validate mutations and expose only the owner's selected generated images", async t => {
+  const api = await fixture(t);
+  assert.equal((await api.request("/favorites")).status, 401);
+  await api.setup();
+  const owner = api.store.owner()!;
+  const job = api.store.createJob(owner.id, { modelId: "sdxl-base", prompt: "A cup" }, { immutable: true }, [], "SDXL", {}, "favorite-output", "favorite-output");
+  const outputs = [await saveOutput(api.store, job.id, 0, PNG), await saveOutput(api.store, job.id, 1, PNG)];
+  api.store.patchJob(job.id, { status: "preparing" });
+  api.store.patchJob(job.id, { status: "succeeded", outputs });
+  const path = `/jobs/${job.id}/outputs/${outputs[0].id}/favorite`;
+  const original = api.store.job(job.id);
+  assert.deepEqual(await (await api.request("/favorites")).json(), { jobs: [] });
+  assert.equal((await fetch(`${api.url}/api${path}`, { method: "PUT", headers: { Cookie: api.cookie(), "Content-Type": "application/json" }, body: '{"favorite":true}' })).status, 403);
+  assert.equal((await api.request(path, "PUT", { favorite: true }, { Origin: "https://attacker.example" })).status, 403);
+  for (const body of [{}, { favorite: "true" }, { favorite: 1 }, { favorite: true, userId: "another-owner" }]) {
+    const response = await api.request(path, "PUT", body);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "INVALID_FAVORITE");
+  }
+  assert.equal((await api.request(`/jobs/${job.id}/outputs/${"0".repeat(32)}/favorite`, "PUT", { favorite: true })).status, 404);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await api.request(path, "PUT", { favorite: true });
+    assert.equal(response.status, 200);
+    const saved = (await response.json()).job;
+    assert.deepEqual(saved.outputs.map((output: { favorite: boolean }) => output.favorite), [true, false]);
+    assert.equal(saved.updatedAt, original.updatedAt);
+    assert.equal("snapshot" in saved, false);
+    assert.equal("path" in saved.outputs[0], false);
+  }
+  for (const endpoint of ["/jobs", "/state"]) {
+    const response = await (await api.request(endpoint)).json();
+    assert.deepEqual(response.jobs[0].outputs.map((output: { favorite: boolean }) => output.favorite), [true, false]);
+  }
+  const favorites = await (await api.request("/favorites")).json();
+  assert.equal(favorites.jobs.length, 1);
+  assert.deepEqual(favorites.jobs[0].outputs.map((output: { id: string }) => output.id), [outputs[0].id]);
+
+  api.store.db.prepare("INSERT INTO users VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  const foreign = api.store.createJob("foreign-owner", { modelId: "sdxl-base", prompt: "Private image" }, {}, [], "SDXL", {}, "foreign-job", "foreign-job");
+  const privateOutput = await saveOutput(api.store, foreign.id, 0, PNG);
+  api.store.patchJob(foreign.id, { status: "preparing" });
+  api.store.patchJob(foreign.id, { status: "succeeded", outputs: [privateOutput] });
+  api.store.setOutputFavorite(foreign.id, privateOutput.id, "foreign-owner", true);
+  assert.equal((await api.request(`/jobs/${foreign.id}/outputs/${privateOutput.id}/favorite`, "PUT", { favorite: false })).status, 404);
+  assert.equal((await api.request(`/jobs/${job.id}/outputs/${privateOutput.id}/favorite`, "PUT", { favorite: true })).status, 404);
+  assert.deepEqual((await (await api.request("/favorites")).json()).jobs.map((item: { id: string }) => item.id), [job.id]);
+  assert.equal((await api.request(path, "PUT", { favorite: false })).status, 200);
+  assert.deepEqual(await (await api.request("/favorites")).json(), { jobs: [] });
+  assert.equal(api.store.favorites("foreign-owner").length, 1);
 });
 
 test("generation requires an idempotency key and logout invalidates the session", async t => {

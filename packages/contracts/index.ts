@@ -51,6 +51,7 @@ export interface SavedOutput {
   bytes: number;
   sha256: string;
 }
+export interface PublicOutput extends SavedOutput { favorite: boolean }
 export interface PublicJob {
   id: string;
   modelId: string;
@@ -64,7 +65,7 @@ export interface PublicJob {
   createdAt: string;
   updatedAt: string;
   workerId: string | null;
-  outputs: SavedOutput[];
+  outputs: PublicOutput[];
   error: string | null;
 }
 export interface PublicInput { id: string; url: string; name: string; width: number; height: number; mimeType: string }

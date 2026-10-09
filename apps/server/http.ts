@@ -160,6 +160,7 @@ export async function createStudioServer(options: ServerOptions) {
       }
       if (path === "/api/catalog" && method === "GET") return json(response, await engine.catalog());
       if (path === "/api/state" && method === "GET") return json(response, await engine.state(user.id));
+      if (path === "/api/favorites" && method === "GET") return json(response, { jobs: store.favorites(user.id).map(publicJob) });
       if (path === "/api/jobs") {
         if (method === "GET") return json(response, { jobs: store.jobs(user.id).map(publicJob) });
         if (method === "POST") {
@@ -194,6 +195,12 @@ export async function createStudioServer(options: ServerOptions) {
         const input = store.input(inputRoute[1], user.id);
         response.writeHead(200, { ...safeHeaders, "Content-Type": input.mimeType, "Content-Length": input.bytes });
         await pipeline(createReadStream(input.path), response); return;
+      }
+      const favoriteRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})\/favorite$/);
+      if (favoriteRoute && method === "PUT") {
+        const body = await readJson(request, 1024);
+        if (typeof body.favorite !== "boolean" || Object.keys(body).some(key => key !== "favorite")) throw new ApiError(400, "INVALID_FAVORITE", "Set whether this image is a favorite with { favorite: true } or { favorite: false }.");
+        return json(response, { job: publicJob(store.setOutputFavorite(favoriteRoute[1], favoriteRoute[2], user.id, body.favorite)) });
       }
       const outputRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})$/);
       if (outputRoute && method === "GET") {

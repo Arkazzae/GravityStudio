@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { ApiError, type GenerationInput, type JobStatus, type Owner, type PublicInput, type PublicJob, type SavedOutput, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
 
 export interface PlacementSnapshot { worker: WorkerSettings; memory: { ramBytes: number; vramBytes: number } }
-export interface StoredJob extends PublicJob {
+export interface StoredJob extends Omit<PublicJob, "outputs"> {
+  outputs: Array<SavedOutput & { favorite?: boolean }>;
   userId: string;
   snapshot: unknown;
   placements: PlacementSnapshot[];
@@ -16,6 +17,15 @@ export interface StoredInput extends PublicInput { path: string; userId: string;
 export interface StoredOutput extends SavedOutput { path: string }
 const now = () => new Date().toISOString();
 const json = (value: unknown) => JSON.stringify(value);
+const jobColumns = `jobs.body, (SELECT json_group_array(favorites.output_id) FROM output_favorites AS favorites JOIN outputs ON outputs.id=favorites.output_id WHERE favorites.user_id=jobs.user_id AND outputs.job_id=jobs.id) AS favorite_ids`;
+function storedJob(row: { body: string; favorite_ids: string }): StoredJob {
+  const job = JSON.parse(row.body) as StoredJob;
+  const favorites = new Set<string>(JSON.parse(row.favorite_ids));
+  return { ...job, outputs: job.outputs.map(output => ({ ...output, favorite: favorites.has(output.id) })) };
+}
+function jobBody(job: StoredJob): string {
+  return json({ ...job, outputs: job.outputs.map(({ favorite: _favorite, ...output }) => output) });
+}
 export const DEFAULT_SETTINGS: StudioSettings = {
   revision: 0, workers: [], modelConfigurations: [],
   policy: { ramReserveBytes: 4 * 1024 ** 3, vramReserveBytes: 1024 ** 3, maxConcurrentJobs: 1, idleUnloadSeconds: 0 },
@@ -50,6 +60,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS idempotency (user_id TEXT NOT NULL REFERENCES users(id), key TEXT NOT NULL, request_hash TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES jobs(id), PRIMARY KEY(user_id,key));
       CREATE TABLE IF NOT EXISTS inputs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS outputs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS outputs_job ON outputs(job_id);
+      CREATE TABLE IF NOT EXISTS output_favorites (user_id TEXT NOT NULL REFERENCES users(id), output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY(user_id,output_id));
     `);
   }
   close() { this.db.close(); }
@@ -123,9 +135,9 @@ export class Store {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   job(id: string, userId?: string): StoredJob {
-    const row = (userId ? this.db.prepare("SELECT body FROM jobs WHERE id=? AND user_id=?").get(id, userId) : this.db.prepare("SELECT body FROM jobs WHERE id=?").get(id)) as { body: string } | undefined;
+    const row = (userId ? this.db.prepare(`SELECT ${jobColumns} FROM jobs WHERE id=? AND user_id=?`).get(id, userId) : this.db.prepare(`SELECT ${jobColumns} FROM jobs WHERE id=?`).get(id)) as { body: string; favorite_ids: string } | undefined;
     if (!row) throw new ApiError(404, "JOB_NOT_FOUND", "This job does not exist.");
-    return JSON.parse(row.body) as StoredJob;
+    return storedJob(row);
   }
   idempotentJob(userId: string, key: string, requestHash: string): StoredJob | undefined {
     const row = this.db.prepare("SELECT job_id,request_hash FROM idempotency WHERE user_id=? AND key=?").get(userId, key) as { job_id: string; request_hash: string } | undefined;
@@ -136,11 +148,15 @@ export class Store {
   saveExecution(id: string, snapshot: unknown) {
     const job = this.job(id);
     if (job.submissionStarted || job.status !== "preparing") throw new Error("An execution snapshot is immutable after submission begins.");
-    this.db.prepare("UPDATE jobs SET body=? WHERE id=?").run(json({ ...job, snapshot }), id);
+    this.db.prepare("UPDATE jobs SET body=? WHERE id=?").run(jobBody({ ...job, snapshot }), id);
   }
   jobs(userId?: string, limit = 100): StoredJob[] {
-    const rows = (userId ? this.db.prepare("SELECT body FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT ?").all(userId, limit) : this.db.prepare("SELECT body FROM jobs ORDER BY created_at ASC").all()) as { body: string }[];
-    return rows.map(row => JSON.parse(row.body) as StoredJob);
+    const rows = (userId ? this.db.prepare(`SELECT ${jobColumns} FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT ?`).all(userId, limit) : this.db.prepare(`SELECT ${jobColumns} FROM jobs ORDER BY created_at ASC`).all()) as { body: string; favorite_ids: string }[];
+    return rows.map(storedJob);
+  }
+  favorites(userId: string): StoredJob[] {
+    const rows = this.db.prepare(`SELECT ${jobColumns} FROM jobs WHERE user_id=? AND EXISTS (SELECT 1 FROM output_favorites AS favorites JOIN outputs ON outputs.id=favorites.output_id WHERE favorites.user_id=jobs.user_id AND outputs.job_id=jobs.id) ORDER BY created_at DESC`).all(userId) as { body: string; favorite_ids: string }[];
+    return rows.map(storedJob).map(job => ({ ...job, outputs: job.outputs.filter(output => output.favorite) })).filter(job => job.outputs.length > 0);
   }
   activeJobs(): StoredJob[] {
     return (this.db.prepare("SELECT body FROM jobs WHERE status IN ('queued','preparing','running','interrupted') ORDER BY created_at ASC").all() as { body: string }[]).map(row => JSON.parse(row.body));
@@ -149,8 +165,8 @@ export class Store {
     const job = this.job(id);
     if (patch.status && patch.status !== job.status && !allowedTransitions[job.status].includes(patch.status)) throw new Error(`Invalid job transition ${job.status} → ${patch.status}`);
     const updated = { ...job, ...patch, updatedAt: now() };
-    this.db.prepare("UPDATE jobs SET status=?,body=?,updated_at=? WHERE id=?").run(updated.status, json(updated), updated.updatedAt, id);
-    return updated;
+    this.db.prepare("UPDATE jobs SET status=?,body=?,updated_at=? WHERE id=?").run(updated.status, jobBody(updated), updated.updatedAt, id);
+    return this.job(id);
   }
   saveInput(input: StoredInput) { this.db.prepare("INSERT INTO inputs VALUES(?,?,?)").run(input.id, input.userId, json(input)); }
   input(id: string, userId: string): StoredInput {
@@ -168,8 +184,14 @@ export class Store {
     if (!row) throw new ApiError(404, "OUTPUT_NOT_FOUND", "This image does not exist.");
     return JSON.parse(row.body);
   }
+  setOutputFavorite(jobId: string, id: string, userId: string, favorite: boolean): StoredJob {
+    this.output(jobId, id, userId);
+    if (favorite) this.db.prepare("INSERT INTO output_favorites(user_id,output_id,created_at) VALUES(?,?,?) ON CONFLICT(user_id,output_id) DO NOTHING").run(userId, id, now());
+    else this.db.prepare("DELETE FROM output_favorites WHERE user_id=? AND output_id=?").run(userId, id);
+    return this.job(jobId, userId);
+  }
 }
 export function publicJob(job: StoredJob): PublicJob {
   const { userId: _user, snapshot: _snapshot, placements: _placements, promptId: _prompt, submissionStarted: _submitted, ...result } = job;
-  return result;
+  return { ...result, outputs: result.outputs.map(output => ({ ...output, favorite: output.favorite === true })) };
 }
