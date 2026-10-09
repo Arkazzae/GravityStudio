@@ -136,6 +136,20 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       await browser.until("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Device reference upload finishes');
     } finally { await browser.send('Page.setInterceptFileChooserDialog', { enabled: false }); }
   }
+  async function assetCategory(label: string) {
+    const button = `Array.from(document.querySelectorAll('#reference-picker-dialog nav[aria-label="Asset categories"] button')).find(button => button.textContent.trim().startsWith(${JSON.stringify(label)}))`;
+    await browser.until(`!!(${button})`, `Asset category ${label}`);
+    await browser.evaluate(`(${button}).focus()`);
+    await browser.key('Enter');
+    await browser.until(`(${button})?.getAttribute('aria-current') === 'page'`, `${label} asset category selected`);
+  }
+  async function assetPickerFrame(mobile: boolean) {
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#reference-picker-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+    assert.equal(await browser.evaluate(`(() => {
+      const dialog = document.querySelector('#reference-picker-dialog'), rect = dialog.getBoundingClientRect();
+      return dialog.matches(':modal') && Math.abs(rect.width - ${mobile ? 374 : 1040}) <= 1 && Math.abs(rect.height - 820) <= 1 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth;
+    })()`), true, 'The asset picker fits its shared modal frame without horizontal overflow');
+  }
   async function checkParameterHelp(label: string, meaning: RegExp, interaction: 'hover' | 'keyboard' | 'tap') {
     const selector = `button[aria-label="Help: ${label}"]`;
     const tooltip = `document.getElementById(document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-describedby'))`;
@@ -275,7 +289,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('button[aria-label="Model: Browser checkpoint"]');
   await browser.until("!!document.querySelector('[popover]:popover-open [role=menuitem][aria-current=true]')", 'Selected model row');
   assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open input[aria-label=\"Search models\"]')"), false, 'A short model list needs no search field');
-  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).find(row => row.textContent.includes('SDXL Base 1.0'))?.disabled"), true, 'A model without installed files cannot be selected');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).some(row => row.textContent.includes('SDXL Base 1.0'))"), false, 'A model without installed files is absent from the composer menu');
   await browser.click('button[aria-label="Manage image models"]');
   await browser.until("!!document.querySelector('#models-dialog[open]') && !document.querySelector('[popover]:popover-open')", 'Model menu opens its management modal');
   await browser.click('button[aria-label="Close models"]');
@@ -369,7 +383,30 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.querySelector('button[aria-label=\"Browse saved images\"]')?.disabled === false", 'Removing a reference makes upload and saved-image selection available');
   await browser.click('[aria-label="Browse saved images"]');
   await browser.until("document.querySelector('#reference-picker-dialog[open]')?.matches(':modal')", 'Reference picker opens');
-  await browser.click('#reference-picker-dialog button[aria-label^="Use reference:"]');
+  await browser.until("document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length === 2", 'Picker loads the generated output and previous import');
+  assert.match(await browser.evaluate<string>("document.querySelector('#reference-picker-dialog nav[aria-label=\"Asset categories\"] button[aria-current=page]').textContent"), /^Image/);
+  assert.equal(await browser.evaluate("document.querySelector('#reference-picker-dialog').textContent.includes('Imported images')"), true, 'Undated inputs have an Imported images group');
+  const generatedAsset = '#reference-picker-dialog article[data-source="generated"] button[aria-pressed]';
+  const importedAsset = '#reference-picker-dialog article[data-source="import"] button[aria-pressed]';
+  await browser.click(generatedAsset);
+  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', 'no-assets-match-this-query');
+  await browser.until("!document.querySelector('#reference-picker-dialog article[data-asset-id]') && document.querySelector('#reference-picker-dialog').innerText.includes('No matching assets')", 'Search shows an explicit empty state');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#reference-picker-dialog button')).find(button => button.textContent.trim() === 'Use selected').disabled"), false, 'A selection survives being hidden by search');
+  await browser.screenshot(join(output, 'assets-picker-empty-desktop.png'));
+  await browser.fill('#reference-picker-dialog input[aria-label="Search assets"]', '');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generatedAsset)}).getAttribute('aria-pressed')`), 'true', 'Clearing search restores the selected output');
+  await assetCategory('Imports');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog article[data-source=import]').length === 1 && !document.querySelector('#reference-picker-dialog article[data-source=generated]')"), true, 'Imports filters out generated images');
+  await browser.click(importedAsset);
+  await assetCategory('All Assets');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 1, 'A single-reference model replaces the previous selection');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(importedAsset)}).getAttribute('aria-pressed')`), 'true');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generatedAsset)}).getAttribute('aria-pressed')`), 'false');
+  await browser.click(generatedAsset);
+  await assetCategory('Image');
+  await assetPickerFrame(false);
+  await browser.screenshot(join(output, 'assets-picker-desktop.png'));
+  await clickScopedText('#reference-picker-dialog', 'Use selected');
   await browser.until("!document.querySelector('#reference-picker-dialog[open]') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Reference is uploaded');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
   await browser.clickText('Generate');
@@ -473,6 +510,16 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   for (const label of ['Add reference image', 'Browse saved images']) {
     assert.equal(await browser.evaluate(`(() => { const rect = document.querySelector('button[aria-label=${JSON.stringify(label)}]').getBoundingClientRect(); return rect.width >= 40 && rect.height >= 40 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; })()`), true, `${label} remains reachable on mobile`);
   }
+  const importsBeforeCancel = store.inputs(store.owner()!.id).length;
+  await browser.click('button[aria-label="Browse saved images"]');
+  await browser.until("!!document.querySelector('#reference-picker-dialog[open] article[data-source=import]')", 'Mobile asset picker loads saved imports');
+  await browser.click(generatedAsset);
+  await assetPickerFrame(true);
+  await browser.screenshot(join(output, 'assets-picker-mobile.png'));
+  await clickScopedText('#reference-picker-dialog', 'Cancel');
+  await browser.until("!document.querySelector('#reference-picker-dialog[open]') && document.activeElement?.getAttribute('aria-label') === 'Browse saved images'", 'Cancel returns focus to Browse saved images');
+  assert.equal(store.inputs(store.owner()!.id).length, importsBeforeCancel, 'Cancel does not upload a selected asset');
+  assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')"), false, 'Cancel leaves the composer references unchanged');
   await uploadReference();
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), modalDraft, 'Mobile upload preserves the unfinished prompt');
   await browser.click('button[aria-label^="Aspect ratio:"]');
@@ -692,16 +739,22 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.evaluate(`(() => {
       const fixtures = new Map(${JSON.stringify(geometryModels.map(model => [model.id, model.name]))});
       window.__gravityOriginalFetch = window.fetch;
+      window.__gravityUnavailableModel = 'wai-illustrious-v17';
       window.fetch = async (input, options) => {
         const response = await window.__gravityOriginalFetch.call(window, input, options);
         const url = new URL(input instanceof Request ? input.url : String(input), location.href);
         if (url.origin !== location.origin || url.pathname !== '/api/catalog' || (options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET' || !response.ok) return response;
         const catalog = await response.json();
-        catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), ready: true, capabilities: { ...model.capabilities, ready: true }, missingReasons: [], unavailableReason: '' } : model);
+        catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), installed: true, ready: model.id !== window.__gravityUnavailableModel, capabilities: { ...model.capabilities, ready: model.id !== window.__gravityUnavailableModel }, missingReasons: model.id === window.__gravityUnavailableModel ? ['Worker is offline'] : [], unavailableReason: model.id === window.__gravityUnavailableModel ? 'Worker is offline' : '' } : model);
         return new Response(JSON.stringify(catalog), { status: response.status, headers: { 'Content-Type': 'application/json' } });
       };
       document.dispatchEvent(new Event('visibilitychange'));
     })()`);
+    await browser.click('button[aria-label^="Model:"]');
+    await browser.until("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).find(row => row.textContent.includes('WAI Illustrious v17'))?.disabled === true", 'An installed model remains visible while its worker is offline');
+    assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).some(row => row.textContent.includes('FLUX.2 Klein 9B'))"), false, 'Uninstalled models remain absent alongside installed offline models');
+    await browser.key('Escape');
+    await browser.evaluate("delete window.__gravityUnavailableModel; document.dispatchEvent(new Event('visibilitychange'));");
     for (const viewport of [{ name: 'desktop', width: 1440, height: 960, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
       await browser.send('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile });
       let dockBaseline: Geometry | undefined;
@@ -755,10 +808,44 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       const chromeWidth = intrinsicWidths[0].width - intrinsicWidths[0].textWidth;
       for (const measured of intrinsicWidths) assert.ok(Math.abs(measured.width - measured.textWidth - chromeWidth) <= 2, 'Chip width follows its model label while retaining consistent icon spacing');
     }
+    await selectGeometryModel('FLUX.2 Klein 4B');
+    await uploadReference();
+    await browser.click('button[aria-label="Browse saved images"]');
+    await browser.until("document.querySelectorAll('#reference-picker-dialog article[data-asset-id]').length >= 4", 'Multi-reference picker loads more assets than its remaining capacity');
+    const choices = await browser.evaluate<string[]>("Array.from(document.querySelectorAll('#reference-picker-dialog article[data-asset-id]')).slice(0, 4).map(article => article.dataset.assetId)");
+    const choice = (id: string) => `#reference-picker-dialog article[data-asset-id="${id}"] button[aria-pressed]`;
+    for (const id of choices.slice(0, 3)) await browser.click(choice(id));
+    assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 3, 'Klein allows three more selections beside its existing reference');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(choice(choices[3]))}).disabled`), true, 'The remaining asset is blocked when the model capacity is full');
+    await browser.click(choice(choices[0]));
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(choice(choices[3]))}).disabled`), false, 'Deselecting frees one slot');
+    await browser.click(choice(choices[0]));
+    await browser.evaluate(`(() => {
+      window.__gravityPickerFetch = window.fetch;
+      let uploads = 0;
+      window.fetch = (input, options = {}) => {
+        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+        const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (url.origin === location.origin && url.pathname === '/api/inputs' && method === 'POST' && ++uploads === 2) return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Reference upload interrupted.' } }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+        return window.__gravityPickerFetch.call(window, input, options);
+      };
+    })()`);
+    try {
+      await clickScopedText('#reference-picker-dialog', 'Use selected');
+      await browser.until("document.querySelector('#reference-picker-dialog[open] [role=alert]')?.textContent.includes('Reference upload interrupted.')", 'A failed batch keeps the picker open with its upload error');
+      assert.equal(await browser.evaluate("document.querySelectorAll('button[aria-label^=\"Remove reference \"]').length"), 1, 'A failed second upload does not partially update the composer');
+      assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]').length"), 3, 'A failed upload keeps all selected assets for retry');
+      await browser.screenshot(join(output, 'assets-picker-error-mobile.png'));
+    } finally { await browser.evaluate('window.fetch = window.__gravityPickerFetch; delete window.__gravityPickerFetch'); }
+    await clickScopedText('#reference-picker-dialog', 'Use selected');
+    await browser.until("!document.querySelector('#reference-picker-dialog[open]') && document.querySelectorAll('button[aria-label^=\"Remove reference \"]').length === 4", 'Retry adds the entire selected batch and closes the picker');
+    assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Browse saved images\"]').disabled"), true, 'A full model cannot open another reference selection');
+    assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), geometryPrompt, 'Adding several references preserves the prompt');
+    await browser.clickText('Remove all');
     assert.equal(store.jobs(store.owner()!.id).length, jobCount, 'The geometry fixture creates no generation jobs');
     assert.equal(comfy.state.submissions.length, submissionCount, 'The geometry fixture submits no ComfyUI prompts');
   } finally {
-    await browser.evaluate(`(() => { if (window.__gravityOriginalFetch) { window.fetch = window.__gravityOriginalFetch; delete window.__gravityOriginalFetch; } delete window.__gravityGeometryPrompt; ${savedDraft === null ? `localStorage.removeItem(${JSON.stringify(draftKey)});` : `localStorage.setItem(${JSON.stringify(draftKey)}, ${JSON.stringify(savedDraft)});`} })()`);
+    await browser.evaluate(`(() => { if (window.__gravityOriginalFetch) { window.fetch = window.__gravityOriginalFetch; delete window.__gravityOriginalFetch; } delete window.__gravityGeometryPrompt; delete window.__gravityUnavailableModel; ${savedDraft === null ? `localStorage.removeItem(${JSON.stringify(draftKey)});` : `localStorage.setItem(${JSON.stringify(draftKey)}, ${JSON.stringify(savedDraft)});`} })()`);
     await browser.send('Page.reload');
     await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Real catalog and saved draft restored after the geometry fixture');
   }
