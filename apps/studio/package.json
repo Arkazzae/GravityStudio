@@ -7,7 +7,7 @@
     "dev": "next dev --webpack --hostname 127.0.0.1 --port 4321",
     "build": "next build --webpack",
     "start": "next start --hostname 0.0.0.0 --port 4321",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen --webpack && tsc --noEmit"
   },
   "dependencies": {
     "next": "16.3.4",
