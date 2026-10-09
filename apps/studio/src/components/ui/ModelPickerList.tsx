@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Layers2, Search, X } from "lucide-react";
+import { Layers2, Search, X } from "@/components/ui/icons";
 import type { Brand } from "@/lib/model-brand";
 import { BrandMark } from "./BrandMark";
 import { MenuLabel, MenuNote, MenuOption } from "./Dropdown";

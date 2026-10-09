@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Download, LoaderCircle } from 'lucide-react';
+import { Check, Download, LoaderCircle } from '@/components/ui/icons';
 import { api, errorMessage, type LibraryModel, type ModelDownload, type ModelLibraryState } from '@/lib/api';
 
 const downloadBusy = (download?: ModelDownload | null) => !!download && !['succeeded', 'failed'].includes(download.status);

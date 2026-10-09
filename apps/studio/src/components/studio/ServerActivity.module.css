@@ -1,0 +1,38 @@
+.meter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 20px;
+  height: 20px;
+  color: var(--color-ink-3);
+}
+
+.meter > span {
+  width: 2px;
+  height: 4px;
+  border-radius: 2px;
+  background: currentColor;
+  transition: background-color 150ms;
+}
+
+.meter[data-state='running'],
+.meter[data-state='queued'] { color: var(--color-volt); }
+.meter[data-state='attention'],
+.meter[data-state='offline'] { color: #ffc3aa; }
+
+.meter[data-moving='true'] > span { height: 16px; animation: activity 1.2s ease-in-out infinite; }
+.meter[data-moving='true'] > span:nth-child(2) { animation-delay: -.6s; }
+.meter[data-moving='true'] > span:nth-child(3) { animation-delay: -.9s; }
+.meter[data-moving='true'] > span:nth-child(4) { animation-delay: -.3s; }
+.meter[data-state='queued'] > span { animation-duration: 2s; }
+
+@keyframes activity {
+  0%, 100% { transform: scaleY(.25); }
+  50% { transform: scaleY(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meter[data-moving='true'] > span { animation: none; }
+  .meter[data-moving='true'] > span:nth-child(2n) { height: 8px; }
+}

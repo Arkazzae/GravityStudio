@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { LoaderCircle, X } from 'lucide-react';
+import { LoaderCircle, X } from '@/components/ui/icons';
 import { errorMessage, type Job } from '@/lib/api';
 
 export function ReferencePicker({ jobs, onPick, onClose }: { jobs: Job[]; onPick: (files: File[]) => Promise<boolean>; onClose: () => void }) {

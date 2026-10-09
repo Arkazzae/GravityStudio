@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Check, LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { Check, LoaderCircle, Plus, Trash2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { ApiAccess } from './ApiAccess';
 import { api, errorMessage, type Catalog, type Hardware, type Settings, type WorkerProbe, type ModelConfiguration } from '@/lib/api';

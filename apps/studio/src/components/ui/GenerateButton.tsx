@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle } from "@/components/ui/icons";
 import { cn } from "@/lib/utils";
 
 type GenerateButtonProps = Omit<ComponentProps<"button">, "children"> & {

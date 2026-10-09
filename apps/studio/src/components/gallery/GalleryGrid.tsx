@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock3, Download, ImageIcon, LoaderCircle, Repeat2, TriangleAlert, X } from 'lucide-react';
+import { Clock3, Download, ImageIcon, LoaderCircle, Repeat2, TriangleAlert, X } from '@/components/ui/icons';
 import { api, errorMessage, type Job, type StudioModel } from '@/lib/api';
 import { ResolveJobButton } from '@/components/studio/ResolveJobButton';
 

@@ -1,4 +1,4 @@
-import { Cpu, RefreshCw } from 'lucide-react';
+import { Cpu, RefreshCw } from '@/components/ui/icons';
 import { bytes, type Hardware } from '@/lib/api';
 import { Chip } from '@/components/ui/Chip';
 

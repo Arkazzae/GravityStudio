@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
-import { Library, LoaderCircle, Plus, X } from 'lucide-react';
+import { Library, LoaderCircle, Plus, X } from '@/components/ui/icons';
 import type { InputImage } from '@/lib/api';
 
 export function ImageReferenceInput({ images, maxImages, uploading, onUpload, onRemove, onClear, onBrowse }: {

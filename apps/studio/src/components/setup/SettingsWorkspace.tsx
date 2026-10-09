@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Check, LoaderCircle, RefreshCw } from 'lucide-react';
+import { ArrowRight, Check, LoaderCircle, RefreshCw } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { AdvancedSettings } from './AdvancedSettings';
 import { api, bytes, errorMessage, type Hardware, type RuntimeSetupStatus, type Settings } from '@/lib/api';

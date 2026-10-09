@@ -1,5 +1,5 @@
 'use client';
-import { Scan } from 'lucide-react';
+import { Scan } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { Dropdown, MenuLabel, MenuOption } from '@/components/ui/Dropdown';
 import { IMAGE_ASPECT_RATIOS, imageAspectRatio, imageSizeForRatio, type ImageAspectRatio } from '@/lib/image-settings';
@@ -15,7 +15,7 @@ function RatioIcon({ ratio }: { ratio: number | null }) {
 export function ImageAspectRatioMenu({ model, draft, onChange }: { model?: StudioModel; draft: Draft; onChange: (size: { width: number; height: number; aspect: ImageAspectRatio }) => void }) {
   const selected = draft.aspect === 'auto' && draft.width === model?.defaults.width && draft.height === model?.defaults.height ? 'auto' : imageAspectRatio(draft.width, draft.height);
   const label = selected === 'auto' ? 'Auto' : selected === 'custom' ? `${draft.width} × ${draft.height}` : selected;
-  return <Dropdown width={240} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model} active={open} className="w-20 sm:w-32" title={`Aspect ratio: ${label}`} aria-label={`Aspect ratio: ${label}`} icon={<RatioIcon ratio={selected === 'auto' ? null : draft.width / draft.height} />}>{label}</Chip>}>
+  return <Dropdown width={240} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model} active={open} className="w-20" title={`Aspect ratio: ${label}`} aria-label={`Aspect ratio: ${label}`} icon={<RatioIcon ratio={selected === 'auto' ? null : draft.width / draft.height} />}>{label}</Chip>}>
     {close => <><MenuLabel>Aspect ratio</MenuLabel>{IMAGE_ASPECT_RATIOS.map(aspect => {
       const size = model ? imageSizeForRatio(model, aspect) : null;
       const [x, y] = aspect === 'auto' ? [0, 0] : aspect.split(':').map(Number);

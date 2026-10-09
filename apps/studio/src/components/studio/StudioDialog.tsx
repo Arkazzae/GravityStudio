@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { X } from 'lucide-react';
+import { X } from '@/components/ui/icons';
 import styles from './StudioDialog.module.css';
 
 export function StudioDialog({ panel, title, description, icon, onClose, triggerRef, children }: {

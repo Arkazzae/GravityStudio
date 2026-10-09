@@ -1,17 +1,17 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Activity, Boxes, Cpu, HardDrive, LayoutGrid, LoaderCircle, LogOut, Rows3, Settings, UserRound } from 'lucide-react';
+import { Boxes, HardDrive, LayoutGrid, LoaderCircle, LogOut, Rows3, Settings, UserRound } from '@/components/ui/icons';
 import { Logo } from '@/components/layout/Logo';
 import { Popover } from '@/components/ui/Popover';
-import { Chip, IconChip } from '@/components/ui/Chip';
+import { IconChip } from '@/components/ui/Chip';
 import { AuthPanel } from '@/components/setup/AuthPanel';
 import { SettingsWorkspace } from '@/components/setup/SettingsWorkspace';
 import { ModelLibrary } from '@/components/setup/ModelLibrary';
 import { GalleryGrid } from '@/components/gallery/GalleryGrid';
 import { PromptDock, initialDraft, modelDraft, type Draft } from '@/components/prompt/PromptDock';
-import { api, bytes, errorMessage, type Bootstrap, type Catalog, type Job, type StudioState } from '@/lib/api';
-import { ResolveJobButton } from './ResolveJobButton';
+import { api, errorMessage, type Bootstrap, type Catalog, type Job, type StudioState } from '@/lib/api';
+import { ServerActivity } from './ServerActivity';
 import { StudioDialog } from './StudioDialog';
 
 export function Studio({ settings: settingsPage = false, models: modelsPage = false }: { settings?: boolean; models?: boolean }) {
@@ -97,9 +97,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     <header className="titlebar sticky top-0 z-40 flex h-[52px] shrink-0 items-center gap-1 bg-void pl-4 pr-3">
       <Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-label="Gravity Studio" className="mr-3 shrink-0 text-ink transition-colors hover:text-volt"><Logo className="size-6" /></Link>
       <nav aria-label="Studio" className="flex min-w-0 flex-1 items-center gap-1"><Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-current="page" className="rounded-lg px-2 py-2 text-[14px] font-medium text-volt">Image</Link></nav>
-      <Popover label="Server activity" title="Activity" width={350} side="bottom" align="end" trigger={({ open, triggerProps }) => <Chip {...triggerProps} active={open} icon={<Activity />} aria-label={`Activity: ${pending.length} active jobs`} className="bg-transparent! text-[12px]"><span className="hidden sm:inline">Activity</span>{pending.length ? <span className="ml-1 tabular-nums">{pending.length}</span> : null}</Chip>}>
-        {close => <div className="px-2 pb-2 text-sm"><p className="mb-4 text-ink-2">{connected ? `${pending.length} job${pending.length === 1 ? '' : 's'} in progress` : 'Server disconnected'}</p>{pending.filter(job => job.status === 'interrupted').map(job => <div key={job.id} className="border-t border-line py-3"><p className="line-clamp-2 text-xs leading-relaxed">{job.prompt}</p><p className="mt-1 text-xs text-ink-2">Connection uncertain</p><ResolveJobButton job={job} onChange={() => void refresh()} /></div>)}{state?.hardware && <><div className="flex justify-between gap-3 border-t border-line py-3 text-xs"><span className="text-ink-2">Available RAM</span><span className="tabular-nums">{bytes(state.hardware.host.memory.availableBytes)} / {bytes(state.hardware.host.memory.totalBytes)}</span></div>{state.hardware.gpus.map(gpu => <div key={gpu.id} className="flex items-center gap-3 border-t border-line py-3"><Cpu className="size-4 shrink-0 text-ink-2" /><span className="min-w-0 flex-1 truncate text-xs">{gpu.name}</span><span className="text-xs tabular-nums text-ink-2">{bytes(gpu.memory?.totalBytes)}</span></div>)}</>}{!state?.hardware && <p className="text-xs text-ink-2">Hardware information is unavailable.</p>}<button type="button" onClick={() => { close(); setPanel('settings'); }} className="mt-3 inline-flex items-center gap-2 text-xs text-ink-2 hover:text-ink"><Settings size={14} />Settings</button></div>}
-      </Popover>
+      <ServerActivity state={state} connected={connected} onRefresh={() => void refresh()} onSettings={() => setPanel('settings')} />
       <IconChip ref={modelsTrigger} onClick={() => setPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>
       <IconChip ref={settingsTrigger} onClick={() => setPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>
       <Popover label="Account" side="bottom" align="end" width={220} trigger={({ open, triggerProps }) => <IconChip {...triggerProps} active={open} aria-label="Account"><UserRound /></IconChip>}>{() => <button disabled={signingOut} onClick={() => void signOut()} className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm hover:bg-chip disabled:opacity-50">{signingOut ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut size={16} />}{signingOut ? 'Signing out…' : 'Sign out'}</button>}</Popover>

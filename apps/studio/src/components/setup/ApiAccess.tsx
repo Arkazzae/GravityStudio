@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Check, Copy, LoaderCircle, Trash2 } from 'lucide-react';
+import { Check, Copy, LoaderCircle, Trash2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { api, errorMessage } from '@/lib/api';
 

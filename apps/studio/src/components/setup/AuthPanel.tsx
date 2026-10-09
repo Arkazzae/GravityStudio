@@ -1,6 +1,6 @@
 'use client';
 import { useState, type FormEvent } from 'react';
-import { Eye, EyeOff, LoaderCircle } from 'lucide-react';
+import { Eye, EyeOff, LoaderCircle } from '@/components/ui/icons';
 import { Logo } from '@/components/layout/Logo';
 import { api, errorMessage } from '@/lib/api';
 

@@ -1,5 +1,5 @@
 'use client';
-import { Layers2, SlidersHorizontal } from 'lucide-react';
+import { Layers2, SlidersHorizontal } from '@/components/ui/icons';
 import { BrandMark } from '@/components/ui/BrandMark';
 import { Chip } from '@/components/ui/Chip';
 import { ModelPickerList, type ModelPickerRow } from '@/components/ui/ModelPickerList';
