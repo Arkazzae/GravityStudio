@@ -17,7 +17,8 @@
     "test:browser": "node --test --test-isolation=none tests/browser/studio.browser.ts",
     "check": "pnpm typecheck && pnpm test",
     "doctor": "node scripts/doctor.ts",
-    "runtime": "node scripts/runtime.ts"
+    "runtime": "node scripts/runtime.ts",
+    "storage": "node scripts/storage.ts"
   },
   "devDependencies": {
     "@types/node": "26.5.0",
