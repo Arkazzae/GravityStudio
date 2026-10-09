@@ -88,7 +88,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     finally { setSigningOut(false); }
   }
   function reuse(job: Job) {
-    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
+    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
     document.getElementById('image-prompt')?.focus();
   }
   if (!bootstrap) return <main className="flex min-h-dvh items-center justify-center px-5"><div className="max-w-md text-center"><Logo className="mx-auto mb-6 size-9 text-volt" />{error ? <><p role="alert" className="error-notice">{error}</p><button onClick={() => void checkSession()} className="mt-5 rounded-chip bg-chip px-5 py-3 text-sm">Try again</button></> : <p role="status" className="text-sm text-ink-2">Opening your studio…</p>}</div></main>;
