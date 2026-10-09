@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Boxes, Download, FolderClosed, Heart, ImageIcon, LoaderCircle, Plus, Search, X } from '@/components/ui/icons';
 import { FavoriteButton } from '@/components/ui/FavoriteButton';
+import { FileDropOverlay } from '@/components/ui/FileDropOverlay';
 import { api, errorMessage, type InputImage, type Job, type StudioModel } from '@/lib/api';
+import { imageFileProblem } from '@/lib/image-files';
+import { useFileIntake } from '@/lib/use-file-intake';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { DeleteImageButton } from './DeleteImageButton';
 import { InputViewer } from './InputViewer';
@@ -100,8 +103,8 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
 
   async function upload(files: File[]) {
     if (!files.length || writing.current) return;
-    const invalid = files.find(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 20 * 1024 * 1024);
-    if (invalid) { setError('Choose PNG, JPEG or WebP images up to 20 MB each.'); return; }
+    const problem = imageFileProblem(files);
+    if (problem) { setError(problem); return; }
     reading.current?.abort();
     const controller = new AbortController(); writing.current = controller;
     setInputBusy(true); setUploading(true); setError(''); setNotice('');
@@ -142,6 +145,7 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
   }
   const closeViewer = () => setViewer(current => current ? { ...current, open: false } : null);
   const selectViewer = (id: string) => setViewer(current => current ? { ...current, id } : null);
+  const { dragging } = useFileIntake({ onFiles: files => { void upload(files); }, enabled: open, dialogRef: dialog });
   return <>
     <dialog ref={dialog} id="assets-browser-dialog" aria-labelledby="assets-browser-title" className={`${dialogStyles.dialog} ${dialogStyles.centered} ${libraryStyles.picker}`} {...events}>
       <div className={styles.layout}>
@@ -170,11 +174,11 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
               <h3 className={libraryStyles.groupHeader}>{dayLabel(day)}</h3>
               <div className={libraryStyles.grid}>{group.map(asset => <article key={asset.id} data-asset-id={asset.id} data-source={asset.source} className={`${libraryStyles.card} ${styles.card}`}>
                 <button type="button" className={libraryStyles.openCard} aria-label={`Open ${asset.label}`} title={asset.label} onClick={() => setViewer({ id: asset.id, source: asset.source, open: true })}>
-                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" className={libraryStyles.media} /><span className={libraryStyles.cardOverlay} /><span className={libraryStyles.caption}>{asset.label}</span>
+                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={libraryStyles.media} /><span className={libraryStyles.cardOverlay} /><span className={libraryStyles.caption}>{asset.label}</span>
                 </button>
                 <div className={styles.cardActions}>
                   {asset.source === 'generated' && <FavoriteButton favorite={!!asset.entry.output.favorite} busy={imageBusy.has(`${asset.entry.job.id}:${asset.id}`)} onClick={() => onFavorite(asset.entry.job, asset.entry.output)} />}
-                  <a href={asset.url} download={asset.source === 'import' ? `${asset.input.name.replace(/\.(png|jpe?g|webp)$/i, '')}.png` : true} aria-label="Download image" title="Download image" className={styles.download}><Download size={16} /></a>
+                  <a href={asset.url} download={asset.source === 'import' ? `${asset.input.name.replace(/\.(png|jpe?g|webp)$/i, '')}.png` : true} draggable={false} aria-label="Download image" title="Download image" className={styles.download}><Download size={16} /></a>
                   {(asset.source === 'import' || ['succeeded', 'failed', 'cancelled'].includes(asset.entry.job.status)) && <DeleteImageButton disabled={asset.source === 'import' ? inputBusy : imageBusy.has(`${asset.entry.job.id}:${asset.id}`)} onError={setError} onDelete={() => asset.source === 'import' ? removeInput(asset.input) : removeOutput(asset.entry.job, asset.entry.output)} />}
                 </div>
               </article>)}</div>
@@ -182,6 +186,7 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
             {!visible.length && !loading && !loadError && !(folder === 'favorites' && favoriteError) && <div className={libraryStyles.empty}><FolderClosed strokeWidth={1.5} /><h3>{query.trim() ? 'No matching assets' : folder === 'favorites' ? 'No favorites yet.' : 'No assets here'}</h3><p>{query.trim() ? 'Try a different search.' : folder === 'favorites' ? 'Use the heart on a generated image to save it here.' : 'Upload images or generate something in Studio.'}</p></div>}
           </div>
         </div>
+        {dragging && <FileDropOverlay target="assets" title="Add images to your library" detail={uploading ? 'Wait for the current upload to finish.' : 'Drop PNG, JPEG or WebP images up to 20 MiB each.'} />}
       </div>
     </dialog>
     {viewer?.source === 'generated' && <OutputViewer dialogId="assets-output-viewer" items={outputs} open={open && viewer.open} openId={viewer.id} models={models} onClose={closeViewer} onSelect={selectViewer} onReuse={job => { onReuse(job); onClose(); }} onFavorite={onFavorite} favoriteBusy={imageBusy} favoriteError={favoriteError} onDelete={removeOutput} />}

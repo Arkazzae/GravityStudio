@@ -5,7 +5,7 @@
   background: #151819;
 }
 .picker::backdrop { background: #000c; }
-.layout { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 0; }
+.layout { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 0; }
 
 .header { display: flex; align-items: center; gap: 16px; border-bottom: 1px solid var(--asset-line); padding: 16px 20px; }
 .header h2 { min-width: 0; flex-shrink: 0; font-size: 17px; font-weight: 600; }

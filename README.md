@@ -7,6 +7,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 ## What is included
 
 - The Image workspace: model and aspect ratio selection, advanced sampling settings, reference images, generation queue and persistent gallery.
+- Drop or paste PNG, JPEG and WebP files anywhere in Image to add references, or in Assets to import them into the library. Each file can be up to 20 MiB; reference counts follow the selected model.
 - Family recipes for SDXL / Illustrious, FLUX.2 Klein and Krea 2. The initial catalog includes SDXL Base, WAI Illustrious v17, Klein 4B and Krea 2 Turbo.
 - AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
 - A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.

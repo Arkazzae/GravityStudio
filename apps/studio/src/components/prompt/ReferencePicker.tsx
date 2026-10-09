@@ -1,7 +1,10 @@
 'use client';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { Boxes, Check, FolderClosed, Heart, ImageIcon, LoaderCircle, Search, X } from '@/components/ui/icons';
+import { FileDropOverlay } from '@/components/ui/FileDropOverlay';
 import { api, errorMessage, type InputImage, type Job } from '@/lib/api';
+import { imageFileProblem } from '@/lib/image-files';
+import { useFileIntake } from '@/lib/use-file-intake';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import dialogStyles from '@/components/studio/StudioDialog.module.css';
 import styles from './ReferencePicker.module.css';
@@ -70,6 +73,10 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
 
   useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
   useEffect(() => {
+    if (open) return;
+    request.current?.abort(); request.current = null; setBusy(false);
+  }, [open]);
+  useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     setLoading(!importsLoaded.current); setLoadError('');
@@ -88,6 +95,24 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
     setPicked(current => current.includes(id) ? current.filter(entry => entry !== id)
       : limit === 1 ? [id] : current.length >= limit ? current : [...current, id]);
   }
+  async function pickFiles(files: File[], controller: AbortController) {
+    const result = await onPick(files, controller.signal);
+    if (controller.signal.aborted || request.current !== controller) return;
+    if (result.ok) { setPicked([]); selectedAssets.current.clear(); onClose(); }
+    else setError(result.error || 'The references could not be added. Try again.');
+  }
+  async function intake(files: File[]) {
+    if (!files.length || request.current) return;
+    const problem = imageFileProblem(files);
+    if (problem) { setError(problem); return; }
+    if (unavailableReason || !limit) { setError(unavailableReason || 'Reference limit reached.'); return; }
+    if (files.length > limit) { setError(`Choose up to ${limit} reference images for this model.`); return; }
+    const controller = new AbortController();
+    request.current = controller; setBusy(true); setError('');
+    try { await pickFiles(files, controller); }
+    catch (failure) { if (!controller.signal.aborted) setError(errorMessage(failure)); }
+    finally { if (request.current === controller) { request.current = null; setBusy(false); } }
+  }
   async function confirm() {
     if (!picked.length || request.current || busy) return;
     if (chosen.length !== picked.length) { setPicked(chosen.map(asset => asset.id)); setError('An asset is no longer available. Review your selection.'); return; }
@@ -105,10 +130,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
         const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType === 'image/webp' ? 'webp' : 'png';
         files.push(new File([blob], asset.source === 'import' ? asset.label : `reference-${asset.id}.${extension}`, { type: asset.mimeType }));
       }
-      const result = await onPick(files, controller.signal);
-      if (controller.signal.aborted) return;
-      if (result.ok) { setPicked([]); selectedAssets.current.clear(); onClose(); }
-      else setError(result.error || 'The references could not be added. Try again.');
+      await pickFiles(files, controller);
     } catch (failure) {
       if (!controller.signal.aborted) setError(errorMessage(failure));
     } finally {
@@ -125,6 +147,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
   }
 
   const full = picked.length >= limit;
+  const { dragging } = useFileIntake({ onFiles: files => { void intake(files); }, enabled: open, dialogRef: dialog });
   return <dialog ref={dialog} id="reference-picker-dialog" aria-labelledby="reference-picker-title" className={`pointer-events-auto ${dialogStyles.dialog} ${dialogStyles.centered} ${styles.picker}`}
     onKeyDown={keepFocus} {...dialogEvents}>
     <div className={styles.layout}>
@@ -152,7 +175,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
               const selected = picked.includes(asset.id), blocked = !selected && full && limit !== 1;
               return <article key={asset.id} data-asset-id={asset.id} data-source={asset.source} className={styles.card} data-selected={selected} data-disabled={blocked}>
                 <button type="button" className={styles.openCard} disabled={blocked || busy} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${asset.label}`} title={blocked ? `Choose up to ${limit}.` : asset.label} onClick={() => toggle(asset.id)}>
-                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" className={styles.media} />
+                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={styles.media} />
                   <span className={styles.cardOverlay} /><span className={styles.caption}>{asset.label}</span>
                 </button><span className={styles.mark} aria-hidden="true"><Check strokeWidth={3} /></span>
               </article>;
@@ -170,6 +193,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
           {busy && <LoaderCircle className="animate-spin motion-reduce:animate-none" />}{busy ? 'Adding…' : 'Use selected'}
         </button></div>
       </footer>
+      {dragging && <FileDropOverlay target="references" title="Add reference images" detail={busy ? 'Wait for the current upload to finish.' : unavailableReason || (!limit ? 'Reference limit reached. Remove an image to add another.' : `Drop PNG, JPEG or WebP images up to 20 MiB each. Choose up to ${limit}.`)} />}
     </div>
   </dialog>;
 }
