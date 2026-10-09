@@ -129,7 +129,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     <header className="titlebar sticky top-0 z-40 flex h-[52px] shrink-0 items-center gap-1 bg-void pl-4 pr-3">
       <Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-label="Gravity Studio" className="mr-3 shrink-0 text-ink transition-colors hover:text-volt"><Logo className="size-6" /></Link>
       <nav aria-label="Studio" className="flex min-w-0 flex-1 items-center gap-1"><Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-current="page" className="rounded-lg px-2 py-2 text-[14px] font-medium text-volt">Image</Link></nav>
-      <ServerActivity state={state} connected={connected} onRefresh={refresh} onSettings={() => setPanel('settings')} />
+      <ServerActivity state={state} connected={connected} onRefresh={refresh} />
       <NotificationsPopover connected={connected} {...notifications} />
       <IconChip ref={modelsTrigger} onClick={() => setPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>
       <IconChip ref={settingsTrigger} onClick={() => setPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>

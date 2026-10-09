@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Cpu, LoaderCircle, RefreshCw, Settings, X } from '@/components/ui/icons';
+import { Cpu, LoaderCircle, RefreshCw, X } from '@/components/ui/icons';
 import { IconChip } from '@/components/ui/Chip';
 import { api, bytes, errorMessage, type Hardware, type Job, type StudioState } from '@/lib/api';
 import type { LocalTextStatus } from '@/lib/text-api';
@@ -15,7 +15,7 @@ const known = (value: number | null | undefined): value is number => value != nu
 const residentPhases = new Set(['loaded', 'loading', 'running', 'stopping', 'failed']);
 type ActivityWorker = StudioState['workers'][number];
 
-export function ServerActivity({ state, connected, onRefresh, onSettings }: { state: StudioState | null; connected: boolean; onRefresh: () => void | Promise<void>; onSettings: () => void }) {
+export function ServerActivity({ state, connected, onRefresh }: { state: StudioState | null; connected: boolean; onRefresh: () => void | Promise<void> }) {
   const { open, close, triggerProps, popoverProps } = useAnchoredPopover({ width: 368, side: 'bottom', align: 'end' });
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -150,7 +150,6 @@ export function ServerActivity({ state, connected, onRefresh, onSettings }: { st
           <button type="button" disabled={refreshing} onClick={() => void refresh()} className={styles.retry}>{refreshing ? 'Connecting…' : 'Try again'}</button>
         </>}
         {actionError && <p role="alert" className={styles.warning}>{actionError}</p>}
-        <button type="button" onClick={() => { close(); onSettings(); }} className={styles.settings}><Settings size={14} />Settings</button>
       </div>
     </div>
   </>;
