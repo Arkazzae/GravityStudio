@@ -2,10 +2,10 @@
 
 import { forwardRef, type CSSProperties, type SVGProps } from 'react';
 import {
-  Activity as ActivityIcon, Add, ArrowDown2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft,
+  Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
-  Gallery, Grid3, Import, InfoCircle as InfoCircleIcon, Layer, Logout, MessageQuestion,
-  Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, Setting2, Setting4,
+  ExportSquare, Gallery, Grid3, Import, InfoCircle as InfoCircleIcon, Layer, Logout, MessageQuestion,
+  Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
   Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
 import { cn } from '@/lib/utils';
@@ -34,6 +34,7 @@ export const ArrowRight = /* @__PURE__ */ icon(ArrowRightIcon, 'ArrowRight');
 export const Boxes = /* @__PURE__ */ icon(Box, 'Boxes');
 export const Check = /* @__PURE__ */ icon(TickCircle, 'Check');
 export const ChevronDown = /* @__PURE__ */ icon(ArrowDown2, 'ChevronDown');
+export const ChevronLeft = /* @__PURE__ */ icon(ArrowLeft2, 'ChevronLeft');
 export const ChevronRight = /* @__PURE__ */ icon(ArrowRight2, 'ChevronRight');
 export const CircleHelp = /* @__PURE__ */ icon(MessageQuestion, 'CircleHelp');
 export const Clock3 = /* @__PURE__ */ icon(Clock, 'Clock3');
@@ -42,6 +43,7 @@ export const Cpu = /* @__PURE__ */ icon(CpuIcon, 'Cpu');
 export const Download = /* @__PURE__ */ icon(Import, 'Download');
 export const Eye = /* @__PURE__ */ icon(EyeIcon, 'Eye');
 export const EyeOff = /* @__PURE__ */ icon(EyeSlash, 'EyeOff');
+export const ExternalLink = /* @__PURE__ */ icon(ExportSquare, 'ExternalLink');
 export const HardDrive = /* @__PURE__ */ icon(Driver2, 'HardDrive');
 export const ImageIcon = /* @__PURE__ */ icon(Gallery, 'ImageIcon');
 export const InfoCircle = /* @__PURE__ */ icon(InfoCircleIcon, 'InfoCircle');
@@ -64,3 +66,5 @@ export const Trash2 = /* @__PURE__ */ icon(Trash, 'Trash2');
 export const TriangleAlert = /* @__PURE__ */ icon(Warning2, 'TriangleAlert');
 export const UserRound = /* @__PURE__ */ icon(User, 'UserRound');
 export const X = /* @__PURE__ */ icon(Add, 'X', 45);
+export const ZoomIn = /* @__PURE__ */ icon(SearchZoomIn1, 'ZoomIn');
+export const ZoomOut = /* @__PURE__ */ icon(SearchZoomOut1, 'ZoomOut');
