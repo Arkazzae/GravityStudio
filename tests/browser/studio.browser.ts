@@ -93,6 +93,27 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
     await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
   }
+  async function openAdvanced() {
+    await browser.click('button[aria-label="Advanced settings"]');
+    await browser.until("(() => { const panel = document.querySelector('[aria-label=\"Advanced settings\"]:popover-open'); return panel && getComputedStyle(panel).visibility === 'visible'; })()", 'Advanced settings opens');
+  }
+  async function screenshotPopover(name: string) {
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+    await browser.screenshot(join(output, name));
+  }
+  async function uploadReference() {
+    const file = join(directory, 'reference-upload.png');
+    await writeFile(file, comfy.state.outputBytes);
+    await browser.send('Page.setInterceptFileChooserDialog', { enabled: true });
+    try {
+      await browser.click('button[aria-label="Add reference image"]');
+      const document = await browser.send('DOM.getDocument') as unknown as { root: { nodeId: number } };
+      const input = await browser.send('DOM.querySelector', { nodeId: document.root.nodeId, selector: 'input[aria-label="Upload reference images"]' }) as unknown as { nodeId: number };
+      assert.ok(input.nodeId, 'Reference upload uses a native file input');
+      await browser.send('DOM.setFileInputFiles', { nodeId: input.nodeId, files: [file] });
+      await browser.until("!!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Device reference upload finishes');
+    } finally { await browser.send('Page.setInterceptFileChooserDialog', { enabled: false }); }
+  }
   await browser.navigate(`${origin}/image`);
   await browser.until("document.body.innerText.includes('Make this studio yours.')", 'Owner setup');
   await browser.fill('input[autocomplete="off"]', 'browser-integration-setup-key');
@@ -129,7 +150,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("document.body.innerText.includes('Browser checkpoint') && !!document.querySelector('progress')", 'Download progress');
   await browser.click('button[aria-label="Close models"]');
   await browser.until("!document.querySelector('#models-dialog[open]')", 'Download continues after closing Models');
-  await browser.until("Array.from(document.querySelectorAll('main button')).some(button => button.textContent.trim() === 'Browser checkpoint')", 'Background download refreshes the Image model selection');
+  await browser.until("!!document.querySelector('main button[aria-label=\"Model: Browser checkpoint\"]')", 'Background download refreshes the Image model selection');
   assert.equal(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.enabled, true);
   assert.deepEqual(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.workerIds, ['browser-comfy']);
   await browser.click('header button[aria-label="Models"]');
@@ -142,12 +163,60 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await browser.click('button[aria-label="Close models"]');
   await browser.until("!document.querySelector('#models-dialog[open]')", 'Model library closes after import');
-  await browser.until("Array.from(document.querySelectorAll('button')).some(button => button.textContent.trim() === 'Browser checkpoint')", 'Ready model');
+  await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Ready model');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
-  await browser.click('[aria-label="Advanced settings"]');
-  await browser.until("!!document.querySelector('[aria-label=\"Advanced settings\"]:popover-open')", 'Advanced settings');
-  await browser.evaluate("(() => { const field = Array.from(document.querySelectorAll('[popover]:popover-open label')).find(label => label.textContent.startsWith('Seed')).querySelector('input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, '1234'); field.dispatchEvent(new Event('input', {bubbles:true})); })()");
+  const advertised = await browser.evaluate<{ defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { multiple: number; min: number; max: number; maxPixels: number }; capabilities: { negativePrompt: boolean } }>(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === ${JSON.stringify(modelId)}))`);
+  assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Reset settings to defaults\"]').disabled"), true, 'Reset is disabled when generation settings match the selected model');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('main button')).some(button => /^\\d+ steps$/.test(button.textContent.trim()))"), false, 'Sampling steps live in Advanced rather than a separate toolbar chip');
+  await browser.click('button[aria-label="Model: Browser checkpoint"]');
+  await browser.until("!!document.querySelector('[popover]:popover-open [role=menuitem][aria-current=true]')", 'Selected model row');
+  assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open input[aria-label=\"Search models\"]')"), false, 'A short model list needs no search field');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).find(row => row.textContent.includes('SDXL Base 1.0'))?.disabled"), true, 'A model without installed files cannot be selected');
+  await browser.click('button[aria-label="Manage image models"]');
+  await browser.until("!!document.querySelector('#models-dialog[open]') && !document.querySelector('[popover]:popover-open')", 'Model menu opens its management modal');
+  await browser.click('button[aria-label="Close models"]');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), prompt, 'Managing models preserves the prompt');
+  await browser.click('button[aria-label^="Aspect ratio:"]');
+  await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Aspect ratio 16:9\"]')", 'Aspect ratio menu');
+  await screenshotPopover('ratios-desktop.png');
+  await browser.click('[popover]:popover-open [aria-label="Aspect ratio 16:9"]');
+  await browser.until("!!document.querySelector('button[aria-label=\"Aspect ratio: 16:9\"]') && !document.querySelector('[popover]:popover-open')", 'Pointer chooses a widescreen aspect');
+  await openAdvanced();
+  const widescreen = await browser.evaluate<{ width: number; height: number }>("({width: Number(document.querySelector('input[aria-label=\"Width value\"]').value), height: Number(document.querySelector('input[aria-label=\"Height value\"]').value)})");
+  assert.ok(widescreen.width > widescreen.height && Math.abs(widescreen.width / widescreen.height - 16 / 9) < .06, 'Widescreen dimensions approximate the requested ratio');
+  for (const side of [widescreen.width, widescreen.height]) assert.ok(side >= advertised.dimensions.min && side <= advertised.dimensions.max && side % advertised.dimensions.multiple === 0);
+  assert.ok(widescreen.width * widescreen.height <= advertised.dimensions.maxPixels, 'Aspect choices stay within the advertised pixel budget');
+  assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open input[aria-label=\"Image strength value\"]')"), false, 'Text-to-image has no image-strength control');
+  await browser.key('Escape');
+  await browser.click('button[aria-label^="Aspect ratio:"]');
+  await browser.until("document.activeElement?.getAttribute('role') === 'menuitem' && !!document.activeElement.closest('[popover]:popover-open')", 'Aspect menu receives keyboard focus');
+  await browser.key('Home');
+  assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), 'Aspect ratio Auto', 'Home focuses the first aspect choice');
+  await browser.key('Enter');
+  await browser.until("!!document.querySelector('button[aria-label=\"Aspect ratio: Auto\"]') && !document.querySelector('[popover]:popover-open')", 'Keyboard chooses the default aspect');
+  await openAdvanced();
+  assert.deepEqual(await browser.evaluate("({width: Number(document.querySelector('input[aria-label=\"Width value\"]').value), height: Number(document.querySelector('input[aria-label=\"Height value\"]').value)})"), { width: advertised.defaults.width, height: advertised.defaults.height });
+  await browser.fill('input[aria-label="Steps value"]', '24');
+  assert.equal(await browser.evaluate("document.querySelector('input[type=range][aria-label=Steps]').value"), '24', 'Steps number field updates its slider');
+  await browser.fill('input[type="range"][aria-label="Guidance"]', '6.5');
+  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Guidance value\"]').value"), '6.5', 'Guidance slider updates its number field');
+  await browser.evaluate("document.querySelector('input[type=range][aria-label=Width]').focus()");
+  assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), 'Width', 'Width slider receives keyboard focus');
+  await browser.key('ArrowRight');
+  const generationWidth = advertised.defaults.width + advertised.dimensions.multiple;
+  assert.equal(await browser.evaluate("Number(document.querySelector('input[aria-label=\"Width value\"]').value)"), generationWidth, 'Keyboard slider changes width by the model grid');
+  await browser.fill('input[aria-label="Height value"]', '768');
+  assert.equal(await browser.evaluate("document.querySelector('input[type=range][aria-label=Height]').value"), '768', 'Height number field updates its slider');
+  await browser.fill('input[aria-label="Seed"]', '1234');
+  await browser.click('button[aria-label="Randomise seed"]');
+  const randomized = await browser.evaluate<string>("document.querySelector('input[aria-label=Seed]').value");
+  assert.ok(/^\d+$/.test(randomized) && Number(randomized) >= 0 && Number(randomized) <= 0xffffffff && randomized !== '1234', 'Shuffle sets a fresh valid seed');
+  await browser.fill('input[aria-label="Seed"]', '1234');
+  assert.equal(advertised.capabilities.negativePrompt, true);
+  await browser.fill('[popover]:popover-open textarea', 'text, watermark');
+  await browser.evaluate("document.querySelectorAll('[popover]:popover-open *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
+  await screenshotPopover('advanced-desktop.png');
   await browser.key('Escape');
   await browser.until("!document.querySelector('[popover]:popover-open')", 'Escape dismisses advanced');
   assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), 'Advanced settings');
@@ -155,11 +224,38 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]')", 'Generated output in gallery');
   const first = store.jobs(store.owner()!.id)[0];
   assert.equal(first.status, 'succeeded'); assert.equal(first.parameters.seed, 1234); assert.equal(comfy.state.submissions.length, 1);
+  assert.deepEqual({ width: first.parameters.width, height: first.parameters.height, steps: first.parameters.steps, cfg: first.parameters.cfg, negativePrompt: first.parameters.negativePrompt }, { width: generationWidth, height: 768, steps: 24, cfg: 6.5, negativePrompt: 'text, watermark' }, 'Generation uses the edited toolbar parameters');
   await browser.until("Array.from(document.querySelectorAll('figure img')).every(image => image.complete && image.naturalWidth > 0)", 'Output image pixels loaded');
   await browser.screenshot(join(output, 'image-desktop.png'));
   await browser.fill('#image-prompt', 'Temporary draft');
   await browser.click('[aria-label="Use these settings"]');
   await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(prompt)}`, 'Restore accepted prompt');
+  await uploadReference();
+  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"Upload reference images\"]').disabled && !document.querySelector('button[aria-label=\"Add reference image\"]')"), true, 'The single-reference model prevents a second upload');
+  await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
+  await openAdvanced();
+  await browser.fill('input[aria-label="Image strength value"]', '.45');
+  assert.equal(await browser.evaluate("document.querySelector('input[type=range][aria-label=\"Image strength\"]').value"), '0.45', 'Image strength stays synchronized with its slider');
+  await browser.key('Escape');
+  await browser.evaluate("void (window.__gravityResetReference = document.querySelector('button[aria-label=\"Remove reference 1\"]'))");
+  await browser.click('button[aria-label="Reset settings to defaults"]');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep the composition and turn morning into twilight', 'Reset preserves the prompt');
+  assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityResetReference"), true, 'Reset preserves the selected reference');
+  assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Reset settings to defaults\"]').disabled"), true, 'Reset becomes disabled after restoring defaults');
+  await openAdvanced();
+  const resetValues = await browser.evaluate("({ width: Number(document.querySelector('input[aria-label=\"Width value\"]').value), height: Number(document.querySelector('input[aria-label=\"Height value\"]').value), steps: Number(document.querySelector('input[aria-label=\"Steps value\"]').value), cfg: Number(document.querySelector('input[aria-label=\"Guidance value\"]').value), seed: document.querySelector('input[aria-label=Seed]').value, negativePrompt: document.querySelector('[popover]:popover-open textarea').value, denoise: Number(document.querySelector('input[aria-label=\"Image strength value\"]').value) })");
+  assert.deepEqual(resetValues, { width: advertised.defaults.width, height: advertised.defaults.height, steps: advertised.defaults.steps, cfg: advertised.defaults.cfg, seed: '', negativePrompt: '', denoise: .75 });
+  await browser.fill('input[aria-label="Width value"]', '2048');
+  assert.ok(await browser.evaluate<number>("Number(document.querySelector('input[type=range][aria-label=Height]').max)") * 2048 <= advertised.dimensions.maxPixels, 'Slider maximum respects the shared pixel budget');
+  await browser.fill('input[aria-label="Height value"]', '2048');
+  await browser.until("document.querySelector('main [role=alert]')?.textContent.includes('pixels')", 'An oversized typed image receives a visible explanation');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === 'Generate').disabled"), true, 'Generation is blocked for a manually entered size above the pixel budget');
+  await browser.key('Escape');
+  await browser.click('button[aria-label="Reset settings to defaults"]');
+  await browser.until("!document.querySelector('main [role=alert]') && !Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === 'Generate').disabled", 'Reset restores a valid, generatable image size');
+  assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityResetReference"), true, 'Recovery from invalid dimensions keeps the reference');
+  await browser.click('button[aria-label="Remove reference 1"]');
+  await browser.until("!!document.querySelector('button[aria-label=\"Browse saved images\"]')", 'Removing a reference makes upload and saved-image selection available');
   await browser.click('[aria-label="Browse saved images"]');
   await browser.until("!!document.querySelector('dialog[open]')", 'Reference picker opens');
   await browser.click('dialog button[aria-label^="Use reference:"]');
@@ -231,6 +327,25 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until('document.documentElement.clientWidth === 390', 'Mobile viewport');
   await checkWorkspaceModal('Models', 'backdrop', 'mobile');
   await checkWorkspaceModal('Settings', 'escape', 'mobile');
+  await browser.click('button[aria-label="Remove reference 1"]');
+  await browser.until("!!document.querySelector('button[aria-label=\"Add reference image\"]')", 'Mobile upload control is available after removing a reference');
+  for (const label of ['Add reference image', 'Browse saved images']) {
+    assert.equal(await browser.evaluate(`(() => { const rect = document.querySelector('button[aria-label=${JSON.stringify(label)}]').getBoundingClientRect(); return rect.width >= 40 && rect.height >= 40 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; })()`), true, `${label} remains reachable on mobile`);
+  }
+  await uploadReference();
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), modalDraft, 'Mobile upload preserves the unfinished prompt');
+  await browser.click('button[aria-label^="Aspect ratio:"]');
+  await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Aspect ratio 3:4\"]')", 'Mobile aspect menu');
+  assert.equal(await browser.evaluate("(() => { const menu = document.querySelector('[popover]:popover-open'); const rect = menu.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && menu.scrollWidth <= menu.clientWidth; })()"), true, 'Aspect menu fits the mobile viewport');
+  await screenshotPopover('ratios-mobile.png');
+  await browser.click('[popover]:popover-open [aria-label="Aspect ratio 3:4"]');
+  await openAdvanced();
+  assert.equal(await browser.evaluate("(() => { const menu = document.querySelector('[aria-label=\"Advanced settings\"]:popover-open'); const rect = menu.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && menu.scrollWidth <= menu.clientWidth; })()"), true, 'Advanced controls fit the mobile viewport');
+  assert.equal(await browser.evaluate("Number(document.querySelector('input[aria-label=\"Height value\"]').value) > Number(document.querySelector('input[aria-label=\"Width value\"]').value)"), true, 'Mobile portrait choice updates dimensions');
+  await screenshotPopover('advanced-mobile.png');
+  await browser.key('Escape');
+  await browser.click('button[aria-label="Reset settings to defaults"]');
+  assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Remove reference 1\"]') && document.querySelector('#image-prompt').value === window.__gravityModalState.value"), true, 'Mobile reset keeps the uploaded reference and prompt');
   assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, 'Mobile page must not overflow horizontally');
   assert.equal(await browser.evaluate("(() => { const button = Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === 'Generate'); const rect = button.getBoundingClientRect(); return rect.width >= 44 && rect.height >= 44 && rect.bottom <= innerHeight; })()"), true, 'Generate remains reachable on mobile');
   await browser.until("(() => { const input = document.querySelector('#image-prompt'); return input.scrollHeight <= input.clientHeight + 2; })()", 'Mobile prompt fits its wrapped text');

@@ -79,7 +79,12 @@ export async function openBrowser(t: TestContext) {
       await until(`!!document.querySelector(${JSON.stringify(selector)})`);
       await evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : input instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event(input instanceof HTMLSelectElement ? 'change' : 'input', {bubbles:true})); })()`);
     },
-    key: async (key: string, code = key) => { const windowsVirtualKeyCode = key === 'Escape' ? 27 : key === 'Enter' ? 13 : key === 'Tab' ? 9 : undefined; await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode }); },
+    key: async (key: string, code = key) => {
+      const codes: Record<string, number> = { Escape: 27, Enter: 13, Tab: 9, Home: 36, End: 35, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, ' ': 32 };
+      const windowsVirtualKeyCode = codes[key];
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
+    },
     screenshot: async (path: string) => { const result = await send('Page.captureScreenshot', { format: 'png' }); if (!result.data) throw new Error('No screenshot was returned.'); writeFileSync(path, Buffer.from(result.data, 'base64')); },
   };
 }
