@@ -45,7 +45,7 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
   }
 
   return <dialog ref={dialog} id={`${panel}-dialog`} aria-labelledby={`${panel}-title`} aria-describedby={`${panel}-description`}
-    className={`${styles.dialog} ${panel === 'settings' ? styles.settings : styles.centered}`}
+    className={`${styles.dialog} ${styles.centered}`}
     onKeyDown={keepFocus}
     onClose={event => { if (!event.currentTarget.open) onClose(); }}
     onPointerDown={event => { pressedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
@@ -54,6 +54,6 @@ export function StudioDialog({ panel, title, description, icon, onClose, trigger
       <div className="min-w-0"><h1 id={`${panel}-title`}>{icon}{title}</h1><p id={`${panel}-description`}>{description}</p></div>
       <button ref={closeButton} type="button" className={styles.close} aria-label={`Close ${panel}`} title={`Close ${panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
     </header>
-    <div className={styles.body}>{children}</div>
+    <div className={panel === 'settings' ? styles.settingsBody : styles.body}>{children}</div>
   </dialog>;
 }

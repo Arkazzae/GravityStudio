@@ -24,20 +24,6 @@
 
 .centered::backdrop { background: #000a; }
 
-.settings {
-  inset: 12px 12px 12px auto;
-  width: min(480px, calc(100vw - 24px));
-  height: calc(100dvh - 24px);
-  margin: 0;
-  border: 1px solid #ffffff12;
-  border-radius: 26px;
-  background: #151819;
-  box-shadow: -16px 0 80px #0006;
-  animation: settings-in .22s ease-out both;
-}
-
-.settings::backdrop { background: #0008; }
-
 .header {
   display: flex;
   flex-shrink: 0;
@@ -73,24 +59,11 @@
 
 .close:hover { background: #ffffff0d; color: var(--color-ink); }
 .body { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 24px; }
-.settings .header { padding: 22px 26px; border-color: #ffffff0a; }
-.settings .body { padding: 24px 26px 28px; }
-.settings .close { width: 32px; height: 32px; }
-
-@keyframes settings-in {
-  from { opacity: 0; transform: translateX(16px); }
-  to { opacity: 1; transform: translateX(0); }
-}
+.settingsBody { display: flex; min-height: 0; flex: 1; overflow: hidden; }
 
 @media (max-width: 680px) {
   .centered { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 12px; }
   .centered .header { padding: 18px 16px; }
   .centered .header h1 { font-size: 19px; }
   .centered .body { padding: 20px 16px; }
-}
-
-@media (max-width: 520px) {
-  .settings { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; }
-  .settings .header { padding-inline: 20px; }
-  .settings .body { padding-inline: 20px; }
 }
