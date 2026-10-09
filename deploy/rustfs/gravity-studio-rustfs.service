@@ -1,0 +1,15 @@
+[Unit]
+Description=Gravity Studio private object storage
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/podman start --attach gravity-studio-rustfs
+ExecStop=/usr/bin/podman stop --ignore --time 60 gravity-studio-rustfs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+
+[Install]
+WantedBy=default.target

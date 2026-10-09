@@ -11,6 +11,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
 - A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
+- Private S3 media storage with a provided RustFS container and verified migration of existing images.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
@@ -103,7 +104,11 @@ Refinement requires the owner's browser session. Existing Studio API tokens and 
 
 ## Data and deployment
 
-`storage/` contains the database, owner credentials, session/token hashes, private inputs and outputs, and managed worker state. Model weights live in `storage/models/`. These directories and `.env` are excluded from Git. Back up the entire data directory while the studio is stopped; keep model weights separately if preferred.
+By default, `storage/` contains the database, owner credentials, session/token hashes, private inputs and outputs, and managed worker state. Model weights live in `storage/models/`. These directories and `.env` are excluded from Git.
+
+For primary object storage, use the [provided RustFS service](deploy/rustfs/README.md) or an existing private S3-compatible bucket. New references and generated images are written directly to that bucket; the authenticated gallery URLs stay the same. [Storage configuration and migration](docs/storage.md) covers credential setup, verified migration of existing files, backups and recovery. SQLite, weights and ComfyUI working files remain on the host.
+
+Back up the data directory while Studio is stopped, together with the private bucket when S3 is enabled. Keep the S3 connection credentials and credential encryption key securely; model weights can be backed up separately.
 
 Both application processes bind to localhost by default. For access from other machines, put the web application behind your HTTPS reverse proxy and set `GRAVITY_ALLOWED_ORIGINS` to its exact origin. `GRAVITY_STUDIO_HOST` controls the web bind address. Keep the API and ComfyUI worker ports private. Automatic setup runs the host's container CLI under the studio service account; that account needs engine and GPU access. The application does not install custom nodes from the web interface.
 

@@ -1,0 +1,10 @@
+{
+  "version": "1.0.1",
+  "source": "https://github.com/rustfs/rustfs",
+  "revision": "6de965ae3c965a78ff819fbcd7acd4aa44177d92",
+  "image": "docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c",
+  "platforms": {
+    "linux/amd64": "sha256:7465b31993156ca5cc0eb4b3c59a01ff69651961be62bcfeb6ce569f22034a56",
+    "linux/arm64": "sha256:3bc0a69f7636faf49cbddd38901bb688dc7fe3fa6d2e2f87cc56e71890f66bc8"
+  }
+}
