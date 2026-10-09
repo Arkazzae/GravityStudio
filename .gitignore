@@ -7,6 +7,8 @@ coverage/
 .env.*
 !.env.example
 storage/
+credentials.key
+studio.sqlite*
 /models/
 output/
 .local/

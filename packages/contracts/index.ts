@@ -27,6 +27,16 @@ export interface StudioSettings {
   modelConfigurations: ModelConfiguration[];
   policy: { ramReserveBytes: number; vramReserveBytes: number; maxConcurrentJobs: number; idleUnloadSeconds: number };
 }
+export type IntegrationProviderId = "huggingface" | "civitai" | "gemini" | "openai" | "anthropic" | "nanogpt";
+/** Safe metadata only. Saved credentials never cross the server boundary. */
+export interface IntegrationCredential { suffix: string; updatedAt: string }
+export interface IntegrationStatus {
+  id: IntegrationProviderId;
+  name: string;
+  description: string;
+  credential: IntegrationCredential | null;
+}
+export interface IntegrationTestResult { ok: true; message: string }
 export interface GenerationInput {
   modelId: string;
   operation?: "text-to-image" | "image-to-image" | "reference";
