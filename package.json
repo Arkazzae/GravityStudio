@@ -1,0 +1,23 @@
+{
+  "name": "gravity-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": { "node": ">=24.13.0" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "node --watch apps/server/main.ts",
+    "dev:studio": "pnpm --dir apps/studio dev",
+    "start:server": "node apps/server/main.ts",
+    "build": "pnpm --dir apps/studio build",
+    "typecheck": "tsc --noEmit && pnpm --dir apps/studio typecheck",
+    "test": "node --test tests/**/*.test.ts",
+    "check": "pnpm typecheck && pnpm test",
+    "doctor": "node scripts/doctor.ts"
+  },
+  "devDependencies": {
+    "@types/node": "26.5.0",
+    "typescript": "5.9.3"
+  }
+}
