@@ -64,7 +64,7 @@ export async function createStudioServer(options: ServerOptions) {
   await recoverOutputDeletions(store);
   const credentials = new CredentialVault(store);
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
-  const models = options.models ?? new ModelLibrary(store, engine);
+  const models = options.models ?? new ModelLibrary(store, engine, { huggingFaceToken: () => credentials.get("huggingface") });
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
   const limiter = new LoginLimiter();
   const origins = new Set(options.allowedOrigins.map(origin => new URL(origin).origin));

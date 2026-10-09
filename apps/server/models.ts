@@ -75,6 +75,7 @@ async function validateSafetensors(path: string) {
 type LibraryEngine = Pick<Engine, "invalidateWorkers" | "refreshWorkers" | "availableWorkers">;
 interface LibraryOptions {
   fetch?: typeof fetch;
+  huggingFaceToken?: () => string | undefined;
   modelsDirectory?: string;
   availableBytes?: (directory: string) => Promise<number>;
 }
@@ -83,6 +84,7 @@ export class ModelLibrary {
   private store: Store;
   private engine: LibraryEngine;
   private fetchFile: typeof fetch;
+  private huggingFaceToken: () => string | undefined;
   private availableBytes: (directory: string) => Promise<number>;
   private controller = new AbortController();
   private flight?: Promise<void>;
@@ -93,6 +95,7 @@ export class ModelLibrary {
 
   constructor(store: Store, engine: LibraryEngine, options: LibraryOptions = {}) {
     this.store = store; this.engine = engine; this.fetchFile = options.fetch ?? fetch;
+    this.huggingFaceToken = options.huggingFaceToken ?? (() => undefined);
     this.modelsDirectory = resolve(options.modelsDirectory ?? join(store.directory, "models"));
     this.availableBytes = options.availableBytes ?? (async directory => { const stats = await statfs(directory); return stats.bavail * stats.bsize; });
     this.current = store.metadata<ModelDownload>(stateKey) ?? null;
@@ -165,10 +168,11 @@ export class ModelLibrary {
 
   private async request(source: string, signal: AbortSignal) {
     let url = new URL(huggingFaceFile(source));
+    const token = this.huggingFaceToken() ?? process.env.HF_TOKEN;
     for (let redirects = 0; redirects < 8; redirects++) {
       checkDownloadUrl(url);
       const headers: Record<string, string> = { "Accept-Encoding": "identity" };
-      if (url.hostname === "huggingface.co" && process.env.HF_TOKEN) headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+      if (url.hostname === "huggingface.co" && token) headers.Authorization = `Bearer ${token}`;
       const response = await this.fetchFile(url, { headers, redirect: "manual", signal });
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location"); await response.body?.cancel();
@@ -177,7 +181,7 @@ export class ModelLibrary {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        if ([401, 403].includes(response.status)) throw downloadError("MODEL_ACCESS_REQUIRED", "Hugging Face requires access to this model. Accept its license and configure HF_TOKEN on the studio server, then retry.");
+        if ([401, 403].includes(response.status)) throw downloadError("MODEL_ACCESS_REQUIRED", "Hugging Face requires access to this model. Accept its license and save your token in Settings → Integrations, then retry.");
         throw downloadError("MODEL_DOWNLOAD_HTTP", `Hugging Face returned HTTP ${response.status}. Check the model file link and try again.`, 502);
       }
       return response;

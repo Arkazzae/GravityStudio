@@ -9,6 +9,7 @@ import { ModelLibrary, huggingFaceFile } from "../../apps/server/models.ts";
 import { modelRegistry, saveImportedModel } from "../../apps/server/registry.ts";
 import { configuredModel, settingsView, validateSettings } from "../../apps/server/settings.ts";
 import { Store } from "../../apps/server/store.ts";
+import { CredentialVault } from "../../apps/server/credentials.ts";
 import type { ModelManifest } from "../../packages/inference/index.ts";
 import { getModel } from "../../packages/inference/index.ts";
 import { engineFixture, GiB, inventory } from "./helpers/engine-fixture.ts";
@@ -204,6 +205,43 @@ test("HF credentials are sent only to Hugging Face and never forwarded to its CD
   assert.equal((await library.view()).download?.status, "succeeded");
   assert.deepEqual(calls, [{ host: "huggingface.co", authorization: "Bearer fixture-private-token" }, ...redirects.map(host => ({ host, authorization: null }))]);
   assert(!JSON.stringify(await library.view()).includes("fixture-private-token"));
+});
+
+test("saved Hugging Face credentials override HF_TOKEN and stay off redirected storage hosts", async t => {
+  const previous = process.env.HF_TOKEN; process.env.HF_TOKEN = "fixture-legacy-token";
+  t.after(() => { if (previous === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = previous; });
+  let vault: CredentialVault;
+  const calls: { host: string; authorization: string | null }[] = [];
+  const { store, library } = await fixture(t, {
+    huggingFaceToken: () => vault.get("huggingface"),
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      calls.push({ host: url.hostname, authorization: new Headers(init?.headers).get("Authorization") });
+      return url.hostname === "huggingface.co" ? new Response(null, { status: 302, headers: { location: "https://us.aws.cdn.hf.co/fixture?signature=fixture" } }) : response();
+    },
+  });
+  vault = new CredentialVault(store);
+  vault.set("huggingface", "fixture-saved-private-token");
+  library.start(importRequest); await library.waitForIdle();
+  assert.equal((await library.view()).download?.status, "succeeded");
+  assert.deepEqual(calls, [{ host: "huggingface.co", authorization: "Bearer fixture-saved-private-token" }, { host: "us.aws.cdn.hf.co", authorization: null }]);
+  assert.equal(JSON.stringify(await library.view()).includes("fixture-saved-private-token"), false);
+});
+
+test("an unreadable saved credential stops model downloading without falling back to another token", async t => {
+  const previous = process.env.HF_TOKEN; process.env.HF_TOKEN = "fixture-legacy-token";
+  t.after(() => { if (previous === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = previous; });
+  let vault: CredentialVault;
+  const { store, library } = await fixture(t, { huggingFaceToken: () => vault.get("huggingface"), fetch: async () => assert.fail("Unreadable credentials must not contact the provider") });
+  vault = new CredentialVault(store);
+  vault.set("huggingface", "fixture-saved-private-token");
+  store.db.prepare("UPDATE integration_credentials SET tag=? WHERE provider='huggingface'").run(Buffer.alloc(16));
+  library.start(importRequest); await library.waitForIdle();
+  const view = await library.view();
+  assert.equal(view.download?.status, "failed");
+  assert.match(view.download?.error ?? "", /could not be unlocked/);
+  assert.equal(JSON.stringify(view).includes("fixture-saved-private-token"), false);
+  assert.equal(JSON.stringify(view).includes("fixture-legacy-token"), false);
 });
 
 test("checksum mismatch removes the partial and a retry installs the verified file", async t => {
