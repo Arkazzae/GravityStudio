@@ -19,6 +19,10 @@ export interface Hardware {
 export interface Worker { id: string; name: string; baseUrl: string; deviceIds: string[]; enabled: boolean; location: "local" | "remote"; maxConcurrentJobs: 1 }
 export interface ModelConfiguration { modelId: string; enabled: boolean; artifacts: Record<string, string>; workerIds: string[]; memory: { ramBytes: number; vramBytes: number; source: "estimate" | "measured" } }
 export interface Settings { revision: number; workers: Worker[]; policy: { ramReserveBytes: number; vramReserveBytes: number; maxConcurrentJobs: number; idleUnloadSeconds: number }; modelConfigurations: ModelConfiguration[] }
+export interface RuntimeSetupStatus { phase: 'idle' | 'checking' | 'building' | 'testing' | 'connecting' | 'ready' | 'failed'; busy: boolean; message: string; error: string | null; engine: 'docker' | 'podman' | null; workerCount: number; updatedAt: string | null }
+export interface LibraryModel { id: string; name: string; familyId: string; family: string; description?: string; license?: string; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
+export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; startedAt: string; updatedAt: string }
+export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null }
 export interface InputImage { id: string; url: string; name: string; width: number; height: number }
 export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string }
 export interface Job {

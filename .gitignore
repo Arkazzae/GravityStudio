@@ -7,7 +7,7 @@ coverage/
 .env.*
 !.env.example
 storage/
-models/
+/models/
 output/
 .local/
 .agents/

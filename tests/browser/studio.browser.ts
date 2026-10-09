@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { AddressInfo } from 'node:net';
 import { Store } from '../../apps/server/store.ts';
 import { Engine } from '../../apps/server/engine.ts';
+import { ModelLibrary } from '../../apps/server/models.ts';
+import type { RuntimeSetupStatus } from '../../apps/server/runtime.ts';
 import { createStudioServer } from '../../apps/server/http.ts';
 import { dualR9700 } from '../hardware/fixtures.ts';
 import { completed, fakeComfy } from '../inference/fake-comfy.ts';
@@ -22,11 +25,13 @@ const studio = join(root, 'apps/studio');
 const close = (server: Server) => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
 async function freePort() { const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = (server.address() as AddressInfo).port; await close(server); return port; }
 
-test('first run connects a worker, generates and restores images through the real Studio API', { timeout: 180000 }, async t => {
+test('first run selects GPUs, downloads a checkpoint, generates and restores images through the real Studio API', { timeout: 180000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'gravity-studio-browser-'));
   const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
   const store = new Store(directory);
-  const engine = new Engine(store, { detect: async () => ({ ...dualR9700(), detectedAt: new Date().toISOString() }), pollMs: 100 });
+  const inventory = dualR9700();
+  inventory.gpus = inventory.gpus.map((gpu, index) => ({ ...gpu, name: 'AMD Radeon AI PRO R9700', pciAddress: index ? '0000:07:00.0' : '0000:03:00.0' }));
+  const engine = new Engine(store, { detect: async () => ({ ...inventory, detectedAt: new Date().toISOString() }), pollMs: 100 });
   const comfy = await fakeComfy();
   const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
   const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
@@ -37,13 +42,48 @@ test('first run connects a worker, generates and restores images through the rea
   }, 150);
   const frontendPort = await freePort();
   const origin = `http://127.0.0.1:${frontendPort}`;
-  const server = await createStudioServer({ store, engine, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
+  let runtimeState: RuntimeSetupStatus = { phase: 'idle', busy: false, message: '', error: null, engine: null, workerCount: 0, updatedAt: null };
+  let chosenGpuIds: string[] = [];
+  let runtimeOperation: Promise<void> | undefined;
+  // Only container execution and the Hugging Face response are fixtures; the owner API,
+  // model download, validation, activation, settings and generation use their real code.
+  const runtime = {
+    status: () => structuredClone(runtimeState),
+    start: (body: Record<string, unknown>) => {
+      chosenGpuIds = body.gpuIds as string[];
+      runtimeState = { ...runtimeState, phase: 'building', busy: true, message: 'Preparing the image engine…' };
+      runtimeOperation = delay(750).then(async () => {
+        const settings = store.settings();
+        settings.workers = [{ id: 'browser-comfy', name: 'GPU 2', baseUrl: comfy.url, enabled: true, deviceIds: chosenGpuIds, location: 'local', maxConcurrentJobs: 1 }];
+        store.saveSettings(settings);
+        await mkdir(join(directory, 'runtime'), { recursive: true });
+        await writeFile(join(directory, 'runtime/plan.json'), JSON.stringify({ workers: settings.workers }));
+        runtimeState = { ...runtimeState, phase: 'ready', busy: false, engine: 'podman', workerCount: 1, message: 'Ready', updatedAt: new Date().toISOString() };
+      });
+      return structuredClone(runtimeState);
+    },
+    close: async () => { await runtimeOperation; },
+  };
+  const checkpointUrl = 'https://huggingface.co/gravity-fixtures/browser/blob/main/checkpoint.safetensors';
+  const source = checkpointUrl.replace('/blob/', '/resolve/');
+  const modelId = `hf-${createHash('sha256').update(source).digest('hex').slice(0, 16)}`;
+  const filename = `${modelId}/checkpoint.safetensors`;
+  comfy.state.info.CheckpointLoaderSimple.input!.required!.ckpt_name = [[filename]];
+  comfy.state.responseOverride = path => path === '/models/checkpoints' ? { body: JSON.stringify([filename]) } : undefined;
+  const header = Buffer.from(JSON.stringify({ fixture: { dtype: 'F32', shape: [1], data_offsets: [0, 4] } }));
+  const prefix = Buffer.alloc(8); prefix.writeBigUInt64LE(BigInt(header.length));
+  const fixtureCheckpoint = Buffer.concat([prefix, header, Buffer.alloc(4)]);
+  const models = new ModelLibrary(store, engine, { fetch: async input => {
+    assert.equal(String(input), source); await delay(900);
+    return new Response(fixtureCheckpoint, { headers: { 'Content-Length': String(fixtureCheckpoint.length) } });
+  } });
+  const server = await createStudioServer({ store, engine, runtime, models, allowedOrigins: [origin], setupSecret: 'browser-integration-setup-key' });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   await engine.start();
   const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = ''; child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); }); child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-8000); });
-  t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await engine.stop(); await close(server); await comfy.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { clearInterval(completion); child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await engine.stop(); await close(server); await comfy.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 100; attempt++) { try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ } if (child.exitCode !== null) throw new Error(`Next could not start: ${logs}`); if (attempt === 99) throw new Error(`Next startup timed out: ${logs}`); await delay(100); }
   const browser = await openBrowser(t);
   await browser.navigate(`${origin}/image`);
@@ -52,22 +92,42 @@ test('first run connects a worker, generates and restores images through the rea
   await browser.fill('input[name="username"]', 'browser-owner');
   await browser.fill('input[name="password"]', 'test-password-strong-123');
   await browser.clickText('Create studio');
-  await browser.until("document.body.innerText.includes('Connect your studio.') && document.body.innerText.includes('amd:9700a')", 'Hardware onboarding');
+  await browser.until("document.body.innerText.includes('Set up your studio.') && document.querySelectorAll('input[name=runtime-gpu]').length === 2", 'GPU onboarding');
+  assert.equal(await browser.evaluate("document.querySelectorAll('input[name=runtime-gpu]:checked').length"), 2, 'Detected GPUs are selected by default');
+  assert.equal(await browser.evaluate("document.body.innerText.includes('0000:03:00.0') && document.body.innerText.includes('0000:07:00.0')"), true, 'Identical GPUs have visible PCI identities');
+  assert.equal(await browser.evaluate("document.body.innerText.includes('Image models') || document.body.innerText.includes('pnpm runtime') || document.body.innerText.includes('GPU used by this worker')"), false, 'Onboarding exposes no terminal commands, worker mapping or model form');
   await browser.screenshot(join(output, 'setup-desktop.png'));
-  await browser.clickText('Connect worker');
-  await browser.fill('input[type="url"]', comfy.url);
-  await browser.click('input[name="worker-gpu"]');
-  await browser.clickText('Test connection');
-  await browser.until("document.body.innerText.includes('Connected to ComfyUI')", 'Worker probe');
-  await browser.clickText('Choose models');
-  await browser.click('input[type="checkbox"]');
-  await browser.clickText('Save configuration');
-  await browser.until("document.body.innerText.includes('Configuration saved.')", 'Saved model configuration');
-  assert.equal(store.settings().workers[0].deviceIds[0], 'amd:9700a');
-  assert.equal(store.settings().modelConfigurations.find(item => item.modelId === 'sdxl-base')?.enabled, true);
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await browser.until('document.documentElement.clientWidth === 390', 'Mobile onboarding');
+  assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true);
+  await browser.screenshot(join(output, 'setup-mobile.png'));
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
+  await browser.clickText('Set up generation');
+  await browser.until("document.body.innerText.includes('Setting up…')", 'Automatic generation setup starts');
+  await browser.until("document.body.innerText.includes('Generation is ready')", 'Automatic generation setup finishes');
+  assert.deepEqual(chosenGpuIds, ['amd:9700b']);
+  assert.deepEqual(store.settings().workers[0].deviceIds, ['amd:9700b']);
+  assert.equal(store.settings().modelConfigurations.some(item => item.enabled), false, 'Setup does not choose models');
   await browser.clickText('Start creating');
   await browser.until("!!document.querySelector('#image-prompt')", 'Image composer');
-  await browser.until("Array.from(document.querySelectorAll('button')).some(button => button.textContent.trim() === 'SDXL Base 1.0')", 'Ready model');
+  await browser.clickText('Browse models');
+  await browser.until("document.body.innerText.includes('Add from Hugging Face')", 'Dedicated model library');
+  await browser.fill('input[name="checkpoint-url"]', checkpointUrl);
+  await browser.fill('input[name="checkpoint-name"]', 'Browser checkpoint');
+  await browser.clickText('Download checkpoint');
+  await browser.until("document.body.innerText.includes('Browser checkpoint') && !!document.querySelector('progress')", 'Download progress');
+  await browser.until("document.body.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated');
+  assert.equal(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.enabled, true);
+  assert.deepEqual(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.workerIds, ['browser-comfy']);
+  await browser.evaluate("document.querySelector('main > div').scrollTop = 0");
+  await browser.screenshot(join(output, 'models-desktop.png'));
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true);
+  await browser.screenshot(join(output, 'models-mobile.png'));
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await browser.clickText('Back to images');
+  await browser.until("Array.from(document.querySelectorAll('button')).some(button => button.textContent.trim() === 'Browser checkpoint')", 'Ready model');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
   await browser.click('[aria-label="Advanced settings"]');
@@ -77,7 +137,7 @@ test('first run connects a worker, generates and restores images through the rea
   await browser.until("!document.querySelector('[popover]:popover-open')", 'Escape dismisses advanced');
   assert.equal(await browser.evaluate('document.activeElement?.getAttribute("aria-label")'), 'Advanced settings');
   await browser.clickText('Generate');
-  await browser.until("!!document.querySelector('button[aria-label=\"Open SDXL Base 1.0 output\"]')", 'Generated output in gallery');
+  await browser.until("!!document.querySelector('button[aria-label=\"Open Browser checkpoint output\"]')", 'Generated output in gallery');
   const first = store.jobs(store.owner()!.id)[0];
   assert.equal(first.status, 'succeeded'); assert.equal(first.parameters.seed, 1234); assert.equal(comfy.state.submissions.length, 1);
   await browser.until("Array.from(document.querySelectorAll('figure img')).every(image => image.complete && image.naturalWidth > 0)", 'Output image pixels loaded');
@@ -91,13 +151,13 @@ test('first run connects a worker, generates and restores images through the rea
   await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Reference is uploaded');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
   await browser.clickText('Generate');
-  await browser.until("document.querySelectorAll('button[aria-label=\"Open SDXL Base 1.0 output\"]').length === 2", 'Reference generation completes');
+  await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Reference generation completes');
   assert.equal(store.jobs(store.owner()!.id)[0].input.operation, 'image-to-image');
   assert.ok(comfy.state.uploadBody.includes('filename='));
   await browser.send('Page.reload');
-  await browser.until("document.querySelectorAll('button[aria-label=\"Open SDXL Base 1.0 output\"]').length === 2", 'Durable gallery after reload');
+  await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Durable gallery after reload');
   await browser.until("document.querySelector('#image-prompt')?.value.includes('twilight') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Draft and references persist after reload');
-  await browser.click('[aria-label="Open SDXL Base 1.0 output"]');
+  await browser.click('[aria-label="Open Browser checkpoint output"]');
   await browser.until("!!document.querySelector('dialog[open]')", 'Output viewer opens');
   await browser.key('Escape');
   await browser.until("!document.querySelector('dialog[open]')", 'Output viewer Escape closes');
@@ -123,8 +183,9 @@ test('first run connects a worker, generates and restores images through the rea
   assert.equal(store.job(unknown.id).status, 'failed');
   assert.equal(comfy.state.submissions.filter(item => item.prompt_id === unknown.id).length, 1, 'Closing does not resubmit');
   await browser.click('a[href="/settings"]');
-  await browser.until("document.body.innerText.includes('ComfyUI worker')", 'Mobile settings');
+  await browser.until("document.body.innerText.includes('GPUs to use')", 'Mobile settings');
   await browser.screenshot(join(output, 'settings-mobile.png'));
+  await browser.click('summary');
   await browser.clickText('API access');
   await browser.until("document.body.innerText.includes('API & MCP access')", 'API access settings');
   await browser.fill('input[placeholder="My MCP client"]', 'Browser test MCP');
