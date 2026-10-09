@@ -35,11 +35,15 @@ export async function saveOutput(store: Store, jobId: string, ordinal: number, b
   if (!bytes.length || bytes.length > MAX_OUTPUT_BYTES) throw new ApiError(502, "INVALID_OUTPUT", "The worker returned an image outside the supported size limit.");
   let width: number, height: number, mimeType: string, extension: string;
   try {
-    const info = await sharp(bytes, { limitInputPixels: MAX_PIXELS, animated: false }).metadata();
+    const source = sharp(bytes, { limitInputPixels: MAX_PIXELS, animated: false, failOn: "warning" });
+    const info = await source.metadata();
     const format = info.format;
     if (!info.width || !info.height || !["png", "jpeg", "webp"].includes(format ?? "")) throw new Error("Invalid output");
     width = info.width; height = info.height; extension = format === "jpeg" ? "jpg" : format!;
     mimeType = `image/${format}`;
+    // Headers alone can describe a valid image whose compressed pixel stream is corrupt.
+    // stats decodes the pixels without retaining an additional full raw-image buffer.
+    await source.stats();
   } catch { throw new ApiError(502, "INVALID_OUTPUT", "The worker returned an unreadable image."); }
   const id = createHash("sha256").update(`${jobId}:${ordinal}`).digest("hex").slice(0, 32);
   const directory = join(store.directory, "outputs", jobId);
