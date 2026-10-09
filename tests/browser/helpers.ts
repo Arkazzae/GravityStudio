@@ -35,10 +35,12 @@ export async function openBrowser(t: TestContext) {
   await new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error('CDP connection timed out.')), 10000); socket!.onopen = () => { clearTimeout(timer); resolve(); }; socket!.onerror = () => { clearTimeout(timer); reject(new Error('CDP connection failed.')); }; });
   let serial = 0;
   const errors: string[] = [];
+  let dialogHandler: ((message: string) => void) | undefined;
   socket.onmessage = ({ data }) => {
-    const message = JSON.parse(String(data)) as { id?: number; error?: { message: string }; result: CdpResult; method?: string; params?: { exceptionDetails?: { exception?: { description?: string }; text?: string } } };
+    const message = JSON.parse(String(data)) as { id?: number; error?: { message: string }; result: CdpResult; method?: string; params?: { message?: string; exceptionDetails?: { exception?: { description?: string }; text?: string } } };
     if (message.id) { const pending = requests.get(message.id); if (!pending) return; clearTimeout(pending.timer); requests.delete(message.id); if (message.error) pending.reject(new Error(message.error.message)); else pending.resolve(message.result); }
     if (message.method === 'Runtime.exceptionThrown') errors.push(message.params?.exceptionDetails?.exception?.description || message.params?.exceptionDetails?.text || 'Browser exception');
+    if (message.method === 'Page.javascriptDialogOpening') dialogHandler?.(message.params?.message || '');
   };
   const send = (method: string, params: Record<string, unknown> = {}) => new Promise<CdpResult>((resolve, reject) => {
     const id = ++serial;
@@ -66,6 +68,10 @@ export async function openBrowser(t: TestContext) {
   await send('Page.enable'); await send('Runtime.enable'); await send('Page.bringToFront');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   return { send, evaluate, until, errors,
+    answerNextDialog: (accept: boolean) => new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => { dialogHandler = undefined; reject(new Error('Native confirmation did not appear.')); }, 10000);
+      dialogHandler = message => { clearTimeout(timer); dialogHandler = undefined; void send('Page.handleJavaScriptDialog', { accept }).then(() => resolve(message), reject); };
+    }),
     navigate: (url: string) => send('Page.navigate', { url }),
     click: async (selector: string) => { await until(`!!document.querySelector(${JSON.stringify(selector)})`); await clickExpression(`document.querySelector(${JSON.stringify(selector)})`); },
     clickText: async (label: string) => { const expression = `Array.from(document.querySelectorAll('button,a')).find(element => element.textContent.trim() === ${JSON.stringify(label)})`; await until(`!!(${expression})`, `Control ${label}`); await clickExpression(expression); },

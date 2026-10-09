@@ -133,6 +133,13 @@ export async function createStudioServer(options: ServerOptions) {
       if (jobRoute && method === "GET") return json(response, { job: publicJob(store.job(jobRoute[1], user.id)) });
       const cancelRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/cancel$/);
       if (cancelRoute && method === "POST") { await readJson(request, 1024); return json(response, { job: engine.cancel(user.id, cancelRoute[1]) }); }
+      const resolveRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/resolve$/);
+      if (resolveRoute && method === "POST") {
+        requireSession();
+        const body = await readJson(request, 1024);
+        if (body.acknowledge !== true || Object.keys(body).some(key => key !== "acknowledge")) throw new ApiError(400, "ACKNOWLEDGEMENT_REQUIRED", "Acknowledge closing this unknown generation with { acknowledge: true }.");
+        return json(response, { job: await engine.resolve(user.id, resolveRoute[1]) });
+      }
       if (path === "/api/inputs") {
         if (method === "GET") return json(response, { inputs: store.inputs(user.id) });
         if (method === "POST") {

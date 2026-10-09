@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clock3, Download, ImageIcon, LoaderCircle, Repeat2, TriangleAlert, X } from 'lucide-react';
 import Link from 'next/link';
 import { api, errorMessage, type Job, type StudioModel } from '@/lib/api';
+import { ResolveJobButton } from '@/components/studio/ResolveJobButton';
 
 interface Entry { id: string; job: Job; output?: Job['outputs'][number]; aspect: number }
 interface Row { height: number; cells: Array<{ entry: Entry; width: number }> }
@@ -49,6 +50,7 @@ export function GalleryGrid({ jobs, models, zoom, square, onReuse, onChange, con
       {entry.job.error && <p className="line-clamp-4 text-xs leading-relaxed text-[#ffc3aa]">{entry.job.error}</p>}
       <p className="line-clamp-2 text-[11px] leading-snug text-ink-2">{entry.job.prompt}</p>
       {entry.job.status === 'queued' ? <button disabled={cancelling === entry.job.id} onClick={() => void cancel(entry.job)} className="mt-1 text-xs text-ink-2 underline underline-offset-4 disabled:opacity-50">{cancelling === entry.job.id ? 'Cancelling…' : 'Cancel'}</button> : ['failed', 'interrupted'].includes(entry.job.status) ? <button onClick={() => onReuse(entry.job)} className="mt-1 text-xs text-ink-2 underline underline-offset-4">Use these settings</button> : null}
+      {entry.job.status === 'interrupted' && <ResolveJobButton job={entry.job} onChange={onChange} />}
     </div>)}</div>)}
     {viewing?.output && <OutputViewer entry={viewing} name={modelName(viewing.job)} onClose={() => setViewing(null)} onReuse={() => { onReuse(viewing.job); setViewing(null); }} />}
   </div>;

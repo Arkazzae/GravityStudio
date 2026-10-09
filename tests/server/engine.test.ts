@@ -42,6 +42,40 @@ test("a restarted server observes its saved remote prompt without submitting it 
   assert.equal(fixture.workers[0].state.submissions.length, 1);
 });
 
+test("a corrupt completed image fails and releases its lease instead of retrying forever", async t => {
+  const fixture = await engineFixture({ maxConcurrent: 1 }); t.after(fixture.close);
+  fixture.workers[0].state.outputBytes = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lWQAAAAASUVORK5CYII=", "base64"));
+  const job = await fixture.queue(); await fixture.engine.tick();
+  await until(() => fixture.store.job(job.id).status === "running");
+  fixture.complete(0, job.id);
+  await until(() => fixture.store.job(job.id).status === "failed" && !fixture.engine.flights.has(job.id));
+  assert.equal(fixture.store.job(job.id).stage, "Worker returned an invalid image");
+  assert.deepEqual(fixture.store.job(job.id).outputs, []);
+  assert.equal(fixture.store.activeJobs().length, 0);
+  const reads = fixture.workers[0].state.outputReads;
+  await fixture.engine.reconcile();
+  assert.equal(fixture.workers[0].state.outputReads, reads);
+  const next = await fixture.queue({ prompt: "After the corrupt result" }); await fixture.engine.tick();
+  await until(() => fixture.store.job(next.id).status === "running");
+  assert.equal(fixture.workers[0].state.submissions.length, 2);
+});
+
+test("invalid output downloads fail, while a temporary download failure remains recoverable", async t => {
+  for (const kind of ["unsupported", "oversized", "unavailable"] as const) await t.test(kind, async t => {
+    const fixture = await engineFixture(); t.after(fixture.close);
+    const previous = fixture.workers[0].state.responseOverride;
+    fixture.workers[0].state.responseOverride = path => path !== "/view" ? previous?.(path) : kind === "oversized"
+      ? { headers: { "Content-Length": String(65 * 1024 ** 2) }, body: "" }
+      : { status: kind === "unavailable" ? 503 : 200, body: "Not an image" };
+    const job = await fixture.queue(); await fixture.engine.tick();
+    await until(() => fixture.store.job(job.id).status === "running");
+    fixture.complete(0, job.id);
+    await until(() => fixture.store.job(job.id).status === (kind === "unavailable" ? "interrupted" : "failed") && !fixture.engine.flights.has(job.id));
+    assert.equal(fixture.store.activeJobs().length, kind === "unavailable" ? 1 : 0);
+    assert.equal(fixture.workers[0].state.submissions.length, 1);
+  });
+});
+
 test("uncertain submission keeps its lease, periodically reconciles and never replays POST", async t => {
   const fixture = await engineFixture({ maxConcurrent: 1 }); t.after(fixture.close);
   fixture.workers[0].state.postBehavior = "drop-before-accept";

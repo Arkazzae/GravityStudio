@@ -154,6 +154,36 @@ export class Engine {
     if (job.status !== "queued") throw new ApiError(409, "JOB_ALREADY_STARTED", "Only queued jobs can be cancelled. A running generation will finish and save its result.");
     return publicJob(this.store.patchJob(id, { status: "cancelled", stage: "Cancelled" }));
   }
+  async resolve(userId: string, id: string) {
+    const job = this.store.job(id, userId);
+    if (job.status !== "interrupted") throw new ApiError(409, "JOB_NOT_INTERRUPTED", "Only an interrupted generation can be closed after checking its worker.");
+    const placement = job.placements.find(item => item.worker.id === job.workerId);
+    if (!placement) throw new ApiError(409, "WORKER_UNKNOWN", "The original worker is unknown. Its generation cannot be safely closed.");
+    const client = this.client(placement.worker);
+    const snapshot = job.snapshot as ExecutionSnapshot;
+    // A legacy prompt ID and the durable UUID can identify the same generation.
+    // Both lookups must succeed before absence can release its resource lease.
+    const found = await client.findJob(job.id, snapshot.hash);
+    const known = job.promptId ? await client.inspect(job.promptId, snapshot) : null;
+    const current = this.store.job(id, userId);
+    const reported = known && known.state !== "missing" ? known : found;
+    if (reported) {
+      if (current.status === "interrupted") {
+        this.store.patchJob(id, { promptId: reported.promptId });
+        this.recovery.delete(id);
+        await this.reconcile();
+      }
+      throw new ApiError(409, "JOB_STILL_REPORTED", "The worker still reports this generation. Gravity will recover its status and result; it cannot be closed.");
+    }
+    if (current.status !== "interrupted" || current.updatedAt !== job.updatedAt || current.promptId !== job.promptId) throw new ApiError(409, "JOB_STATE_CHANGED", "The generation changed while its worker was checked. Refresh its status before trying again.");
+    const closed = this.store.patchJob(id, {
+      status: "failed", stage: "Closed by owner", progress: null,
+      error: "The owner acknowledged this unknown generation after its worker reported no matching job in queue or history. Its resource reservation was released; it was not submitted again. Later results will not be recovered automatically.",
+    });
+    this.recovery.delete(id);
+    void this.tick();
+    return publicJob(closed);
+  }
   async state(userId: string) {
     const hardware = await this.hardwareReport();
     return { jobs: this.store.jobs(userId).map(publicJob), hardware, workers: this.store.settings().workers.map(worker => {
@@ -307,9 +337,18 @@ export class Engine {
           this.store.patchJob(job.id, { stage: "Saving images", progress: null });
           const outputs = [];
           for (const [index, reference] of result.outputs.entries()) {
-            const output = await client.fetchOutput(job.promptId!, reference, snapshot);
-            if (terminal.has(this.store.job(job.id).status)) return;
-            outputs.push(await saveOutput(this.store, job.id, index, output.bytes));
+            try {
+              const output = await client.fetchOutput(job.promptId!, reference, snapshot);
+              if (terminal.has(this.store.job(job.id).status)) return;
+              outputs.push(await saveOutput(this.store, job.id, index, output.bytes));
+            }
+            catch (error) {
+              const invalid = error instanceof ApiError && error.code === "INVALID_OUTPUT" || error instanceof InferenceError && ["INVALID_OUTPUT", "RESPONSE_TOO_LARGE"].includes(error.code);
+              if (!invalid) throw error;
+              this.store.patchJob(job.id, { status: "failed", stage: "Worker returned an invalid image", progress: null, error: error.message });
+              this.recovery.delete(job.id);
+              return;
+            }
           }
           if (!outputs.length) throw new Error("The workflow completed without an image output.");
           this.store.patchJob(job.id, { status: "succeeded", stage: "Completed", progress: null, outputs, error: null });
