@@ -75,12 +75,39 @@ export async function inspectRuntimePrerequisites(inventory: HardwareInventory, 
   return { ready: checks.every((check) => check.status !== "failed"), checks, supplementalGroupIds };
 }
 
+export type RuntimePreflight = Awaited<ReturnType<typeof inspectRuntimePrerequisites>>;
+export type ContainerEngineChoice = ContainerEngine | "auto";
+
+/** Probe the complete GPU prerequisites, not just whether an engine binary exists. */
+export async function selectRuntimeEngine(inventory: HardwareInventory, choice: ContainerEngineChoice = "auto", inspect = inspectRuntimePrerequisites): Promise<{ engine: ContainerEngine; preflight: RuntimePreflight }> {
+  if (choice !== "auto") return { engine: choice, preflight: await inspect(inventory, choice) };
+  const candidates = await Promise.all((["podman", "docker"] as const).map(async (engine) => ({ engine, preflight: await inspect(inventory, engine) })));
+  const ready = candidates.find((candidate) => candidate.preflight.ready);
+  if (ready) return ready;
+  const best = candidates.find((candidate) => candidate.preflight.checks.some((check) => check.id === "container-engine" && check.status === "passed")) ?? candidates[0];
+  return { engine: best.engine, preflight: { ready: false, supplementalGroupIds: best.preflight.supplementalGroupIds,
+    checks: [{ id: "automatic-engine", status: "failed", message: "Neither Podman nor Docker is ready for the selected GPUs. Resolve the prerequisites for either engine, or connect an external worker." },
+      ...candidates.flatMap(({ engine, preflight }) => preflight.checks.map((check) => ({ ...check, id: `${engine}:${check.id}`, message: `${engine}: ${check.message}` })))],
+  } };
+}
+
+export function loadRuntimeEnvironment() {
+  try { process.loadEnvFile(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
 async function main() {
+  loadRuntimeEnvironment();
   const args = process.argv.slice(2);
-  const engine = args.includes("--podman") ? "podman" : "docker";
-  if (args.some((arg) => !["--podman", "--json"].includes(arg))) throw new Error("Usage: pnpm doctor [--podman] [--json]");
+  let choice: ContainerEngineChoice = "auto";
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--json") continue;
+    if (args[index] === "--podman") { choice = "podman"; continue; }
+    if (args[index] === "--engine" && ["auto", "docker", "podman"].includes(args[index + 1])) { choice = args[++index] as ContainerEngineChoice; continue; }
+    throw new Error("Usage: pnpm doctor [--engine auto|docker|podman] [--json]");
+  }
   const hardware = await detectHardware();
-  const result = await inspectRuntimePrerequisites(hardware, engine);
+  const { engine, preflight: result } = await selectRuntimeEngine(hardware, choice);
   if (args.includes("--json")) console.log(JSON.stringify({ hardware, engine, ...result }, null, 2));
   else {
     console.log(`Gravity runtime preflight · ${engine}`);
