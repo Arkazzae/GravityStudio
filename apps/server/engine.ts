@@ -251,8 +251,20 @@ export class Engine {
     return { jobs: this.store.jobs(userId).map(publicJob), hardware, workers: this.store.settings().workers.map(worker => {
       const state = this.workers.get(worker.id);
       const active = this.store.activeJobs().find(job => job.workerId === worker.id && job.status !== "queued");
-      return { ...worker, connected: state?.connected ?? false, status: active ? "busy" : state?.connected ? "ready" : "unavailable", error: state?.error, version: state?.version };
+      return { ...worker, connected: state?.connected ?? false, status: active ? "busy" : state?.connected ? "ready" : "unavailable", error: state?.error, version: state?.version, canRelease: this.canReleaseWorker(worker) };
     }) };
+  }
+  /** The worker acknowledges a request; ComfyUI releases its caches asynchronously. */
+  async releaseWorkerMemory(id: string): Promise<{ requested: true }> {
+    const worker = this.store.settings().workers.find(item => item.id === id);
+    if (!worker) throw new ApiError(404, "WORKER_NOT_FOUND", "This worker no longer exists. Refresh activity.");
+    if (this.stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before releasing worker memory.");
+    const state = this.workers.get(worker.id);
+    if (!worker.enabled || !state?.connected || state.identity !== workerIdentity(worker)) throw new ApiError(409, "WORKER_UNAVAILABLE", "The worker must be enabled and connected before releasing its memory.");
+    if (this.releasePending(worker)) throw new ApiError(409, "WORKER_RELEASE_PENDING", "Memory release is already in progress for this worker or GPU.");
+    if (this.workerBusy(worker) || !await this.releaseWorker(worker)) throw new ApiError(409, "WORKER_BUSY", "The worker or its GPU has active or unresolved work. Wait for it to finish before releasing memory.");
+    return { requested: true };
   }
   private leases(worker: WorkerSettings): ResourceLease[] {
     const images = this.store.activeJobs().filter(job => job.status !== "queued" && job.workerId).flatMap(job => {
@@ -336,14 +348,20 @@ export class Engine {
     for (const [endpoint, item] of this.releasingWorkers) if (item.until <= Date.now()) this.releasingWorkers.delete(endpoint);
     return [...this.releasingWorkers.values()].some(item => workersOverlap(item.worker, worker));
   }
+  private workerBusy(worker: WorkerSettings): boolean {
+    return this.store.activeJobs().some(job => job.status !== "queued" && (job.workerId === worker.id || job.placements.some(item => item.worker.id === job.workerId && workersOverlap(item.worker, worker))));
+  }
+  private canReleaseWorker(worker: WorkerSettings): boolean {
+    const state = this.workers.get(worker.id);
+    return !this.stopping && !this.runtimeSetupActive && worker.enabled && !!state?.connected && state.identity === workerIdentity(worker) && !this.releasePending(worker) && !this.workerBusy(worker);
+  }
   private async releaseWorker(worker: WorkerSettings, memoryPressure = false): Promise<boolean> {
     if (this.releasePending(worker)) return false;
     const host = hostKey(worker);
     if (memoryPressure && (this.tickReleasedHosts.has(host) || Date.now() - (this.memoryReleaseAt.get(host) ?? 0) < Math.max(this.pollMs, 1000))) return false;
     const current = this.store.settings().workers.find(item => item.id === worker.id);
     if (!current?.enabled || workerIdentity(current) !== workerIdentity(worker)) return false;
-    const busy = this.store.activeJobs().filter(job => job.status !== "queued").flatMap(job => job.placements.filter(item => item.worker.id === job.workerId));
-    if (busy.some(item => workersOverlap(item.worker, worker))) return false;
+    if (this.workerBusy(worker)) return false;
     this.releasingWorkers.set(worker.baseUrl, { worker, until: Infinity });
     this.releaseAt.set(worker.baseUrl, Date.now());
     this.warmWorkers.delete(worker.id);

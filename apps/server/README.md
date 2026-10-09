@@ -51,11 +51,14 @@ The studio interface uses these administrative endpoints. All require the owner'
 | --- | --- | --- |
 | GET | `/api/runtime` | Setup phase, selected worker count and errors |
 | POST | `/api/runtime` | Start setup with `{ "gpuIds": ["detected-device-id"] }`; returns HTTP 202 |
+| POST | `/api/workers/:id/unload` | Send `{}` to request an idle image worker's cache release; returns `{ "requested": true }` |
 | GET | `/api/models/library` | Catalog, imported checkpoints and current download progress |
 | POST | `/api/models/download` | Download `{ "modelId": "sdxl-base" }`, or import `{ "url": "https://huggingface.co/owner/repository/resolve/main/model.safetensors", "name": "My checkpoint", "familyId": "sdxl" }`; returns HTTP 202 |
 | POST | `/api/models/activate` | Verify and activate installed files with `{ "modelId": "sdxl-base" }` |
 
 Setup detects the available container engine, preserves existing worker assignments and ports, adds newly selected GPUs, tests them and saves the selected workers in studio settings. Generations and configuration changes are blocked while setup is running. Poll `GET /api/runtime` until `busy` is false.
+
+Worker cache release is coordinated with scheduling. Busy workers, interrupted generations that retain a reservation, and overlapping releases are rejected. The request covers that worker's cached models, not a particular checkpoint, and leaves files on disk. Acceptance does not mean unloading has finished: use the measured VRAM in `GET /api/state` to observe memory changes. Its worker entries include `canRelease` for the activity panel; the server checks again when an unload is requested.
 
 Downloads run on the server and continue when the browser page closes. The library accepts Hugging Face safetensors files, checks sizes and file structure, and verifies catalog checksums when available. Imports currently support complete SDXL / Illustrious checkpoints; other families use their catalog's complete artifact set. Imported files receive a recorded SHA-256 digest. Completed downloads are activated when a configured managed worker can see the files; otherwise activate them after setting up generation. For gated models, accept the model license and save a Hugging Face token in **Settings → Integrations**. A saved token takes precedence over the legacy `HF_TOKEN` environment variable. Authorization is sent only to `huggingface.co`, never its redirected storage hosts.
 

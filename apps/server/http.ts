@@ -234,6 +234,20 @@ export async function createStudioServer(options: ServerOptions) {
         const body = await readJson(request, 4096);
         return json(response, await engine.probe(String(body.baseUrl ?? "")));
       }
+      const unloadWorkerRoute = path.match(/^\/api\/workers\/([^/]+)\/unload$/);
+      if (unloadWorkerRoute && method === "POST") {
+        requireSession();
+        if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        requireRuntimeIdle();
+        const body = await readJson(request, 1024);
+        if (Object.keys(body).length) throw new ApiError(400, "INVALID_WORKER_RELEASE", "Release worker memory with an empty object.");
+        let workerId: string;
+        try { workerId = decodeURIComponent(unloadWorkerRoute[1]); }
+        catch { throw new ApiError(400, "INVALID_WORKER_ID", "Choose a configured worker."); }
+        if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        requireRuntimeIdle();
+        return json(response, await engine.releaseWorkerMemory(workerId));
+      }
       if (path === "/api/catalog" && method === "GET") return json(response, await engine.catalog());
       if (path === "/api/state" && method === "GET") return json(response, await engine.state(user.id));
       if (path === "/api/favorites" && method === "GET") return json(response, { jobs: store.favorites(user.id).map(publicJob) });
