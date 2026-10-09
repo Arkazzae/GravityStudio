@@ -234,6 +234,70 @@ test("only local managed workers with live matching capabilities activate a down
   assert.equal((fixture.store.job(job.id).snapshot as { model: ModelManifest }).model.artifacts[0].sha256, sha256);
 });
 
+test("activation and download preserve manual worker choices, including disabled GPUs", async t => {
+  const fixture = await engineFixture({ count: 3, location: "local" }); t.after(fixture.close);
+  const library = new ModelLibrary(fixture.store, fixture.engine, { fetch: async () => response() }); t.after(() => library.close());
+  await mkdir(join(fixture.directory, "runtime"));
+  await writeFile(join(fixture.directory, "runtime", "plan.json"), JSON.stringify({ workers: fixture.store.settings().workers }));
+  const started = library.start(importRequest); await library.waitForIdle();
+  const imported = modelRegistry(fixture.store).find(model => model.id === started.modelId)!;
+  for (const worker of fixture.workers) {
+    worker.state.info.CheckpointLoaderSimple.input!.required!.ckpt_name = [[imported.artifacts[0].filename]];
+    const previous = worker.state.responseOverride;
+    worker.state.responseOverride = path => path === "/models/checkpoints" ? { body: JSON.stringify([imported.artifacts[0].filename]) } : previous?.(path);
+  }
+  const settings = settingsView(fixture.store);
+  settings.workers[1].enabled = false;
+  const configuration = settings.modelConfigurations.find(model => model.modelId === imported.id)!;
+  configuration.workerSelection = "manual";
+  configuration.workerIds = ["worker-1", "worker-2"];
+  fixture.store.saveSettings(validateSettings(settings, fixture.hardware, modelRegistry(fixture.store)));
+
+  await library.activate({ modelId: imported.id });
+  let saved = fixture.store.settings().modelConfigurations.find(model => model.modelId === imported.id)!;
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.workerSelection, "manual");
+  assert.deepEqual(saved.workerIds, ["worker-1", "worker-2"], "activation cannot add an unselected active GPU or drop a disabled selection");
+  library.start({ modelId: imported.id }); await library.waitForIdle();
+  assert.equal((await library.view()).download?.status, "succeeded");
+  saved = fixture.store.settings().modelConfigurations.find(model => model.modelId === imported.id)!;
+  assert.equal(saved.workerSelection, "manual");
+  assert.deepEqual(saved.workerIds, ["worker-1", "worker-2"]);
+
+  const disabled = fixture.store.settings();
+  disabled.workers[2].enabled = false;
+  fixture.store.saveSettings(disabled);
+  await assert.rejects(library.activate({ modelId: imported.id }), { code: "MODEL_WORKER_UNAVAILABLE" });
+  assert.deepEqual(fixture.store.settings().modelConfigurations.find(model => model.modelId === imported.id)?.workerIds, ["worker-1", "worker-2"]);
+  assert.equal((await fixture.engine.catalog()).models.find(model => model.id === imported.id)?.ready, false, "an unselected ready GPU cannot serve a manual selection");
+});
+
+test("activation does not overwrite a worker selection changed during discovery", async t => {
+  const { store, library } = await fixture(t);
+  const started = library.start(importRequest); await library.waitForIdle();
+  const settings = settingsView(store);
+  settings.workers = [{ id: "managed-a", name: "GPU A", baseUrl: "http://127.0.0.1:8188", enabled: true, location: "local", deviceIds: ["gpu-0"], maxConcurrentJobs: 1 }];
+  store.saveSettings(settings);
+  await mkdir(join(store.directory, "runtime"));
+  await writeFile(join(store.directory, "runtime", "plan.json"), JSON.stringify({ workers: settings.workers }));
+  const concurrent = new ModelLibrary(store, {
+    invalidateWorkers() {},
+    async refreshWorkers() {
+      const latest = settingsView(store);
+      const model = latest.modelConfigurations.find(model => model.modelId === started.modelId)!;
+      model.workerSelection = "manual"; model.workerIds = [];
+      store.saveSettings(latest);
+    },
+    availableWorkers: () => store.settings().workers,
+  });
+  t.after(() => concurrent.close());
+  await assert.rejects(concurrent.activate({ modelId: started.modelId }), { code: "MODEL_SETTINGS_CHANGED" });
+  const preserved = store.settings().modelConfigurations.find(model => model.modelId === started.modelId)!;
+  assert.equal(preserved.workerSelection, "manual");
+  assert.deepEqual(preserved.workerIds, []);
+  assert.equal(preserved.enabled, false);
+});
+
 test("catalog-only sources do not advertise a Hugging Face download and stale operations recover visibly", async t => {
   const { store, library } = await fixture(t);
   assert.equal((await library.view()).models.find(model => model.id === "wai-illustrious-v17")?.downloadable, false);

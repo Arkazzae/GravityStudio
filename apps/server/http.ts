@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
-import { ApiError } from "../../packages/contracts/index.ts";
+import { ApiError, type StudioSettings } from "../../packages/contracts/index.ts";
 import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
 import { Store, publicJob } from "./store.ts";
@@ -10,7 +10,7 @@ import { cookieToken, createSession, clearSession, digest, hashPassword, identif
 import { MAX_INPUT_BYTES, saveInput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
-import { RuntimeSetup } from "./runtime.ts";
+import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
 import { ModelLibrary } from "./models.ts";
 import { modelRegistry } from "./registry.ts";
 
@@ -37,12 +37,23 @@ async function readJson(request: IncomingMessage, limit = 128 * 1024): Promise<R
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(400, "INVALID_JSON", "The request must contain an object.");
   return value as Record<string, unknown>;
 }
+function protectManagedWorkers(current: StudioSettings, next: StudioSettings, managedWorkers: ManagedWorkerBinding[]) {
+  for (const managed of managedWorkers) {
+    const registered = current.workers.filter(worker => worker.id === managed.id || worker.baseUrl === managed.baseUrl);
+    const proposed = next.workers.filter(worker => worker.id === managed.id || worker.baseUrl === managed.baseUrl);
+    if (!registered.length && !proposed.length) continue;
+    const previous = registered[0], worker = proposed[0];
+    if (registered.length !== 1 || proposed.length !== 1 || !previous || !worker || worker.id !== previous.id || worker.baseUrl !== managed.baseUrl || worker.location !== "local" || worker.deviceIds.length !== 1 || worker.deviceIds[0] !== managed.deviceId || worker.enabled !== previous.enabled) {
+      throw new ApiError(409, "MANAGED_WORKER_LOCKED", "Managed GPU connections cannot be changed or removed here. Use Settings → GPUs to choose which GPUs to use.");
+    }
+  }
+}
 export interface ServerOptions {
   store: Store;
   engine: Engine;
   allowedOrigins: string[];
   setupSecret?: string;
-  runtime?: Pick<RuntimeSetup, "status" | "start" | "close">;
+  runtime?: Pick<RuntimeSetup, "status" | "start" | "close" | "managedWorkers">;
   models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
 }
 export async function createStudioServer(options: ServerOptions) {
@@ -125,17 +136,21 @@ export async function createStudioServer(options: ServerOptions) {
       if (path === "/api/hardware" && method === "GET") return json(response, await engine.hardwareReport(true));
       if (path === "/api/settings") {
         requireSession();
-        if (method === "GET") return json(response, settingsView(store));
+        if (method === "GET") return json(response, { ...settingsView(store), managedWorkers: await runtime.managedWorkers() });
         if (method === "PUT") {
           requireRuntimeIdle();
-          const settings = validateSettings(await readJson(request), await engine.hardwareReport(true), modelRegistry(store));
+          const body = await readJson(request);
+          const [hardware, managedWorkers] = await Promise.all([engine.hardwareReport(true), runtime.managedWorkers()]);
+          const settings = validateSettings(body, hardware, modelRegistry(store));
           requireRuntimeIdle();
-          const changedConcurrency = settings.policy.maxConcurrentJobs !== store.settings().policy.maxConcurrentJobs;
+          const current = store.settings();
+          protectManagedWorkers(current, settings, managedWorkers);
+          const changedConcurrency = settings.policy.maxConcurrentJobs !== current.policy.maxConcurrentJobs;
           const saved = store.saveSettings(settings);
           if (changedConcurrency) store.setMetadata("runtime-auto-concurrency", false);
           engine.invalidateWorkers();
           void engine.refreshWorkers(true);
-          return json(response, saved);
+          return json(response, { ...saved, managedWorkers });
         }
       }
       if (path === "/api/workers/probe" && method === "POST") {

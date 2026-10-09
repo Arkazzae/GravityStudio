@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -9,16 +9,20 @@ import { Engine } from "../../apps/server/engine.ts";
 import { createStudioServer } from "../../apps/server/http.ts";
 import { PNG } from "../inference/fake-comfy.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
+import type { StudioSettings } from "../../packages/contracts/index.ts";
+import { createRuntimeDeployment, runtimeWorkerSettings } from "../../scripts/runtime-plan.ts";
+import { writeRuntimeDeployment } from "../../scripts/runtime-control.ts";
+import { inventory } from "./helpers/engine-fixture.ts";
 
 const origin = "http://localhost:4321";
 const hardware = (): HardwareInventory => ({ schemaVersion: 1, detectedAt: new Date().toISOString(), host: { platform: "linux", architecture: "x64", logicalCpuCount: 8, memory: { totalBytes: 64 * 1024 ** 3, availableBytes: 60 * 1024 ** 3 }, container: { detected: false, markers: [] } }, gpus: [], diagnostics: [] });
-async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, detectedHardware = hardware()) {
   const directory = await mkdtemp(join(tmpdir(), "gravity-http-"));
   const store = new Store(directory);
-  const engine = new Engine(store, { detect: async () => hardware() });
+  const engine = new Engine(store, { detect: async () => detectedHardware });
   const server = await createStudioServer({ store, engine, allowedOrigins: [origin], setupSecret: "test-setup-secret" });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { await engine.stop(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await server.closeOperations(); await engine.stop(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); await rm(directory, { recursive: true, force: true }); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   let cookie = "";
   async function request(path: string, method = "GET", body?: unknown, extra: Record<string, string> = {}) {
@@ -30,7 +34,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
     const response = await request("/setup", "POST", { username: "owner", password: "test password with enough length", setupKey: "test-setup-secret" });
     assert.equal(response.status, 201); return response.json();
   }
-  return { store, engine, url, request, setup, cookie: () => cookie };
+  return { store, engine, directory, url, request, setup, cookie: () => cookie };
 }
 
 test("owner setup requires the local key and is never available a second time", async t => {
@@ -45,6 +49,7 @@ test("owner setup requires the local key and is never available a second time", 
   assert.equal(configuration.revision, 0);
   assert.ok(configuration.modelConfigurations.length >= 3);
   assert.ok(configuration.modelConfigurations.every((item: { enabled: boolean }) => item.enabled === false));
+  assert.deepEqual(configuration.managedWorkers, []);
 });
 
 test("browser mutations validate origins and API tokens cannot administer workers", async t => {
@@ -84,6 +89,94 @@ test("settings saves are versioned and reject unsupported hardware assignments",
   assert.equal(rejected.status, 400);
   assert.match((await rejected.json()).error.message, /no longer available/);
   assert.equal((await api.request("/workers/probe", "POST", { baseUrl: "http://169.254.169.254/" })).status, 400);
+});
+
+test("settings expose real managed bindings and reject reconfiguration without writing or probing", async t => {
+  const detected = inventory();
+  detected.gpus.forEach((gpu, index) => { gpu.uuid = `GPU-aaaaaaaa-bbbb-cccc-dddd-${String(index).padStart(12, "0")}`; gpu.driverVersion = "580.100.00"; });
+  const api = await fixture(t, detected); await api.setup();
+  const plan = createRuntimeDeployment(detected, { dataDirectory: api.directory, engine: "docker", gpuIds: detected.gpus.slice(0, 2).map(gpu => gpu.id) });
+  await writeRuntimeDeployment(plan);
+  const initial = api.store.settings();
+  initial.workers = runtimeWorkerSettings(plan).map((worker, index) => ({ ...worker, enabled: index === 0 }));
+  initial.workers.push({ id: "managed-manual", name: "External ComfyUI", baseUrl: "http://127.0.0.1:9999", enabled: false, location: "remote", deviceIds: [], maxConcurrentJobs: 1 });
+  api.store.saveSettings(initial);
+  let invalidated = 0, refreshed = 0;
+  api.engine.invalidateWorkers = () => { invalidated++; };
+  api.engine.refreshWorkers = async () => { refreshed++; };
+  const expected = plan.workers.map(worker => ({ id: worker.id, baseUrl: worker.baseUrl, deviceId: worker.gpuId }));
+  const view = await (await api.request("/settings")).json();
+  assert.deepEqual(view.managedWorkers, expected);
+  const before = api.store.settings();
+  const mutations: Array<[string, (settings: StudioSettings) => void]> = [
+    ["id", settings => { settings.workers[0].id = "renamed-managed-id"; }],
+    ["endpoint", settings => { settings.workers[0].baseUrl = "http://127.0.0.1:9998"; }],
+    ["location", settings => { settings.workers[0].location = "remote"; }],
+    ["GPU", settings => { settings.workers[0].deviceIds = [detected.gpus[1].id]; }],
+    ["enabled", settings => { settings.workers[0].enabled = false; }],
+    ["disabled worker enabled", settings => { settings.workers[1].enabled = true; }],
+    ["removal", settings => { settings.workers.splice(0, 1); }],
+    ["disabled removal", settings => { settings.workers.splice(1, 1); }],
+    ["identity and endpoint replacement", settings => { settings.workers[0].id = "manual-replacement"; settings.workers[0].baseUrl = "http://127.0.0.1:9998"; }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const proposed = structuredClone(view);
+    mutate(proposed);
+    proposed.managedWorkers = [];
+    proposed.policy.maxConcurrentJobs = 2;
+    const response = await api.request("/settings", "PUT", proposed);
+    assert.equal(response.status, 409, name);
+    const body = await response.json();
+    assert.equal(body.error.code, "MANAGED_WORKER_LOCKED", name);
+    assert.match(body.error.message, /Settings → GPUs/);
+    assert.deepEqual(api.store.settings(), before, name);
+    assert.equal(api.store.metadata("runtime-auto-concurrency"), undefined, name);
+  }
+  assert.equal(invalidated, 0);
+  assert.equal(refreshed, 0);
+
+  const allowed = structuredClone(view);
+  allowed.workers[0].name = "Front GPU";
+  allowed.workers[2] = { ...allowed.workers[2], id: "manual-updated", name: "Remote GPU", baseUrl: "http://127.0.0.1:9997", enabled: true, deviceIds: ["remote-card"] };
+  allowed.policy.maxConcurrentJobs = 2;
+  allowed.managedWorkers = [{ id: "manual-updated", baseUrl: "http://127.0.0.1:9997", deviceId: "forged" }];
+  const response = await api.request("/settings", "PUT", allowed);
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.deepEqual(saved.managedWorkers, expected);
+  assert.equal(saved.workers[0].name, "Front GPU");
+  assert.equal(saved.workers[2].enabled, true);
+  assert.equal(saved.policy.maxConcurrentJobs, 2);
+  assert.equal(api.store.metadata("runtime-auto-concurrency"), false);
+  assert.equal("managedWorkers" in api.store.settings(), false);
+  assert.equal(invalidated, 1);
+  assert.equal(refreshed, 1);
+
+  saved.workers.splice(2, 1);
+  assert.equal((await api.request("/settings", "PUT", saved)).status, 200, "manual workers remain removable");
+});
+
+test("planned worker identities cannot be spoofed before registration and unreadable plans fail closed", async t => {
+  const detected = inventory();
+  detected.gpus.forEach((gpu, index) => { gpu.uuid = `GPU-aaaaaaaa-bbbb-cccc-dddd-${String(index).padStart(12, "0")}`; gpu.driverVersion = "580.100.00"; });
+  const api = await fixture(t, detected); await api.setup();
+  const plan = createRuntimeDeployment(detected, { dataDirectory: api.directory, engine: "docker", gpuIds: [detected.gpus[0].id] });
+  await writeRuntimeDeployment(plan);
+  const initial = await (await api.request("/settings")).json();
+  initial.workers = runtimeWorkerSettings(plan);
+  initial.managedWorkers = [];
+  assert.equal((await api.request("/settings", "PUT", initial)).status, 409);
+  assert.equal(api.store.settings().revision, 0);
+  assert.deepEqual(api.store.settings().workers, []);
+
+  await writeFile(join(api.directory, "runtime", "plan.json"), "{broken JSON");
+  assert.equal((await api.request("/settings")).status, 500);
+  assert.equal((await api.request("/settings", "PUT", initial)).status, 500);
+  assert.equal(api.store.settings().revision, 0);
+  await rm(join(api.directory, "runtime", "plan.json"));
+  await mkdir(join(api.directory, "runtime", "plan.json"));
+  assert.equal((await api.request("/settings", "PUT", initial)).status, 500, "read errors must not unlock planned bindings");
+  assert.equal(api.store.settings().revision, 0);
 });
 
 test("reference uploads validate image bytes and require ownership to read", async t => {

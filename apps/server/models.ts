@@ -305,16 +305,19 @@ export class ModelLibrary {
     const settings = settingsView(this.store);
     const workers = settings.workers.filter(worker => worker.enabled && worker.location === "local" && managed.some(item => item.id === worker.id && item.baseUrl === worker.baseUrl));
     const current = settings.modelConfigurations.find(item => item.modelId === model.id) ?? defaultModelConfiguration(model);
-    const configuration = { ...current, enabled: true, artifacts: Object.fromEntries(model.artifacts.map(artifact => [artifact.role, artifact.filename])), workerIds: workers.map(worker => worker.id) };
+    const manual = current.workerSelection === "manual";
+    const unmanagedIds = current.workerIds.filter(id => !managed.some(worker => worker.id === id));
+    const configuration = { ...current, enabled: true, artifacts: Object.fromEntries(model.artifacts.map(artifact => [artifact.role, artifact.filename])), workerIds: manual ? [...current.workerIds] : [...new Set([...unmanagedIds, ...workers.map(worker => worker.id)])] };
     this.engine.invalidateWorkers();
     await this.engine.refreshWorkers(true);
     const snapshot = compileGeneration({ modelId: model.id, prompt: "Model availability check", seed: 0 }, model);
-    configuration.workerIds = this.engine.availableWorkers(configuration, snapshot).map(worker => worker.id);
-    if (!configuration.workerIds.length) throw downloadError("MODEL_WORKER_UNAVAILABLE", "The model is downloaded. Start the image engine and activate it when a GPU worker can see its files.", 409);
+    const checkedIds = this.engine.availableWorkers({ ...configuration, workerIds: configuration.workerIds.filter(id => workers.some(worker => worker.id === id)) }, snapshot).map(worker => worker.id);
+    if (!checkedIds.length) throw downloadError("MODEL_WORKER_UNAVAILABLE", "The model is downloaded. Start the image engine and activate it when a selected GPU worker can see its files.", 409);
     // Merge into the latest revision so a hardware setting saved during discovery is preserved.
     const latest = settingsView(this.store);
-    configuration.workerIds = configuration.workerIds.filter(id => latest.workers.some(worker => worker.id === id && worker.enabled && workers.some(previous => previous.id === id && previous.baseUrl === worker.baseUrl)));
-    if (!configuration.workerIds.length) throw downloadError("MODEL_WORKER_UNAVAILABLE", "GPU selection changed while checking this model. Activate it again.", 409);
+    if (JSON.stringify(latest.modelConfigurations.find(item => item.modelId === model.id)) !== JSON.stringify(current)) throw downloadError("MODEL_SETTINGS_CHANGED", "Model settings changed while checking its files. Activate it again to use the latest worker selection.", 409);
+    const stillAvailable = checkedIds.some(id => latest.workers.some(worker => worker.id === id && worker.enabled && workers.some(previous => previous.id === id && previous.baseUrl === worker.baseUrl)));
+    if (!stillAvailable) throw downloadError("MODEL_WORKER_UNAVAILABLE", "GPU selection changed while checking this model. Activate it again.", 409);
     latest.modelConfigurations = latest.modelConfigurations.map(item => item.modelId === model.id ? configuration : item);
     this.store.saveSettings(latest);
     return this.view();

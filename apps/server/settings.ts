@@ -79,12 +79,13 @@ export function validateSettings(value: unknown, hardware: HardwareInventory, mo
       artifacts[artifact.role] = filename;
     }
     requireCondition(Array.isArray(raw.workerIds) && raw.workerIds.every(worker => typeof worker === "string" && workerIds.has(worker)) && new Set(raw.workerIds).size === raw.workerIds.length, "Assign models only to configured workers.");
+    requireCondition(raw.workerSelection === undefined || raw.workerSelection === "automatic" || raw.workerSelection === "manual", "Choose automatic or manual model worker selection.");
     requireCondition(!raw.enabled || raw.workerIds.length > 0, "Assign an enabled model to at least one worker.");
     const memory = raw.memory ?? defaultModelConfiguration(model).memory;
     requireCondition(object(memory) && integer(memory.ramBytes, GiB, 8 * 1024 * GiB) && integer(memory.vramBytes, 256 * 1024 ** 2, 2 * 1024 * GiB), "Set positive RAM and VRAM budgets for this model.");
     // Only a completed calibration run may mark a budget as measured.
     modelIds.add(model.id);
-    return { modelId: model.id, enabled: raw.enabled, artifacts, workerIds: raw.workerIds as string[], memory: { ramBytes: memory.ramBytes, vramBytes: memory.vramBytes, source: "estimate" } };
+    return { modelId: model.id, enabled: raw.enabled, artifacts, workerIds: raw.workerIds as string[], ...(raw.workerSelection === undefined ? {} : { workerSelection: raw.workerSelection }), memory: { ramBytes: memory.ramBytes, vramBytes: memory.vramBytes, source: "estimate" } };
   });
   requireCondition(object(value.policy), "Provide resource and queue settings.");
   const policy = value.policy;

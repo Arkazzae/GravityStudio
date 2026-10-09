@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RuntimeSetup } from "../../apps/server/runtime.ts";
-import { createRuntimeDeployment, type RuntimeDeployment } from "../../scripts/runtime-plan.ts";
+import { validateSettings } from "../../apps/server/settings.ts";
+import { createRuntimeDeployment, runtimeWorkerSettings, type RuntimeDeployment } from "../../scripts/runtime-plan.ts";
 import { engineFixture, until } from "./helpers/engine-fixture.ts";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, saved = false) {
@@ -25,6 +26,31 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, saved = fals
   return { ...f, plan, manager, written: () => written, started: () => started, smokeCount: () => smokeCount, setBlock(value: () => Promise<void>) { block = value; } };
 }
 
+test("managed worker bindings come from the saved plan and exclude deployment internals", async t => {
+  const f = await fixture(t, true);
+  const expected = f.plan.workers.map(worker => ({ id: worker.id, baseUrl: worker.baseUrl, deviceId: worker.gpuId }));
+  const bindings = await f.manager.managedWorkers();
+  assert.deepEqual(bindings, expected);
+  assert.equal(f.store.settings().workers.length, 0, "unregistered planned workers still reserve their identities");
+  bindings[0].deviceId = "changed-by-client";
+  assert.deepEqual(await f.manager.managedWorkers(), expected);
+  assert.equal(f.started(), undefined);
+});
+
+test("managed worker discovery treats only a missing deployment as unmanaged", async t => {
+  const f = await fixture(t);
+  assert.deepEqual(await f.manager.managedWorkers(), []);
+  for (const error of [Object.assign(new Error("Permission denied"), { code: "EACCES" }), new SyntaxError("Invalid saved JSON")]) {
+    const manager = new RuntimeSetup(f.store, f.engine, { read: async directory => { assert.equal(directory, f.directory); throw error; } });
+    await assert.rejects(manager.managedWorkers(), thrown => thrown === error);
+    await manager.close();
+  }
+  const malformed = new RuntimeSetup(f.store, f.engine, { read: async () => ({ ...f.plan, workers: [{ ...f.plan.workers[0], gpuId: "" }] }) });
+  await assert.rejects(malformed.managedWorkers(), /Invalid saved managed-runtime worker binding/);
+  await malformed.close();
+  assert.equal(f.started(), undefined);
+});
+
 test("setup tests selected GPUs, preserves saved ports and registers selected workers automatically", async t => {
   const f = await fixture(t, true);
   const initial = f.store.settings();
@@ -44,6 +70,40 @@ test("setup tests selected GPUs, preserves saved ports and registers selected wo
   assert.deepEqual(f.store.settings().modelConfigurations[0].workerIds, [f.plan.workers[1].id]);
   assert.equal(f.engine.runtimeSetupActive, false);
   assert.equal(f.store.metadata<{ phase: string }>("runtime-setup")?.phase, "ready");
+});
+
+test("GPU selection expands automatic assignments but preserves manual choices through disable and re-enable", async t => {
+  const f = await fixture(t, true);
+  const initial = f.store.settings();
+  initial.workers = runtimeWorkerSettings(f.plan).map((worker, index) => ({ ...worker, enabled: index === 0 }));
+  initial.workers.push({ id: "remote-studio", name: "Remote studio", baseUrl: "http://192.0.2.10:8188", enabled: true, location: "remote", deviceIds: ["remote-gpu"], maxConcurrentJobs: 1 });
+  const [manual, automatic, legacy, unassigned] = initial.modelConfigurations;
+  manual.workerSelection = "manual"; manual.workerIds = [f.plan.workers[0].id]; manual.enabled = true;
+  automatic.workerSelection = "automatic"; automatic.workerIds = ["remote-studio", f.plan.workers[0].id]; automatic.enabled = true;
+  legacy.workerIds = ["remote-studio", f.plan.workers[0].id]; legacy.enabled = true;
+  unassigned.workerSelection = "manual"; unassigned.workerIds = [];
+  const invalid = structuredClone(initial);
+  Object.assign(invalid.modelConfigurations[0], { workerSelection: "unknown" });
+  assert.throws(() => validateSettings(invalid, f.hardware), { code: "INVALID_SETTINGS" });
+  f.store.saveSettings(validateSettings(initial, f.hardware));
+
+  for (const gpuIds of [f.plan.workers.map(worker => worker.gpuId), [f.plan.workers[1].gpuId], f.plan.workers.map(worker => worker.gpuId)]) {
+    f.manager.start({ gpuIds });
+    await until(() => !f.manager.status().busy);
+    assert.equal(f.manager.status().phase, "ready", f.manager.status().error ?? "");
+    const settings = f.store.settings();
+    const [savedManual, savedAutomatic, savedLegacy, savedUnassigned] = settings.modelConfigurations;
+    assert.equal(savedManual.workerSelection, "manual");
+    assert.equal(savedManual.enabled, true);
+    assert.deepEqual(savedManual.workerIds, [f.plan.workers[0].id], "temporarily disabled GPUs keep their manual assignment");
+    const expected = ["remote-studio", ...f.plan.workers.filter(worker => gpuIds.includes(worker.gpuId)).map(worker => worker.id)];
+    assert.deepEqual(savedAutomatic.workerIds, expected);
+    assert.equal(savedAutomatic.workerSelection, "automatic");
+    assert.deepEqual(savedLegacy.workerIds, expected, "pre-existing settings retain automatic behavior");
+    assert.equal(savedLegacy.workerSelection, undefined);
+    assert.deepEqual(savedUnassigned.workerIds, [], "manual empty selections are not populated automatically");
+    assert.equal(settings.workers.find(worker => worker.id === f.plan.workers[0].id)?.enabled, gpuIds.includes(f.plan.workers[0].gpuId));
+  }
 });
 
 test("runtime setup prevents overlapping setup, settings races and new generation submissions", async t => {

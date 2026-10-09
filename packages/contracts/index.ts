@@ -16,6 +16,8 @@ export interface ModelConfiguration {
   enabled: boolean;
   artifacts: Record<string, string>;
   workerIds: string[];
+  /** Missing values retain the automatic assignment behavior of older settings. */
+  workerSelection?: "automatic" | "manual";
   /** Measured or conservative limits for this particular environment. */
   memory: { ramBytes: number; vramBytes: number; source: "estimate" | "measured" };
 }

@@ -2,7 +2,7 @@ import { ApiError } from "../../packages/contracts/index.ts";
 import { prepareAutomaticRuntime } from "../../scripts/runtime-auto.ts";
 import { executeRuntimeCommand, readRuntimeDeployment, startRuntimeDeployment, smokeRuntimeDeployment, writeRuntimeDeployment, type RuntimeRunner } from "../../scripts/runtime-control.ts";
 import { runtimeWorkerSettings, type RuntimeDeployment } from "../../scripts/runtime-plan.ts";
-import { settingsView, validateSettings } from "./settings.ts";
+import { settingsView, validateSettings, validateWorkerUrl } from "./settings.ts";
 import type { Engine } from "./engine.ts";
 import type { Store } from "./store.ts";
 
@@ -15,6 +15,7 @@ export interface RuntimeSetupStatus {
   workerCount: number;
   updatedAt: string | null;
 }
+export interface ManagedWorkerBinding { id: string; baseUrl: string; deviceId: string }
 interface Dependencies {
   prepare: typeof prepareAutomaticRuntime;
   read: typeof readRuntimeDeployment;
@@ -40,6 +41,19 @@ export class RuntimeSetup {
     if (this.state.busy) this.update({ phase: "failed", busy: false, message: "Setup was interrupted by a server restart. Try again to continue.", error: "The saved runtime and downloaded layers will be reused." });
   }
   status() { return structuredClone(this.state); }
+  async managedWorkers(): Promise<ManagedWorkerBinding[]> {
+    let plan: RuntimeDeployment;
+    try { plan = await this.dependencies.read(this.store.directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+    const ids = new Set<string>(), endpoints = new Set<string>();
+    return plan.workers.map(worker => {
+      if (typeof worker.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(worker.id) || typeof worker.gpuId !== "string" || !worker.gpuId.length || worker.gpuId.length > 200) throw new Error("Invalid saved managed-runtime worker binding.");
+      const baseUrl = validateWorkerUrl(worker.baseUrl);
+      if (ids.has(worker.id) || endpoints.has(baseUrl)) throw new Error("Duplicate saved managed-runtime worker binding.");
+      ids.add(worker.id); endpoints.add(baseUrl);
+      return { id: worker.id, baseUrl, deviceId: worker.gpuId };
+    });
+  }
   private update(change: Partial<RuntimeSetupStatus>) {
     this.state = { ...this.state, ...change, updatedAt: new Date().toISOString() };
     this.store.setMetadata("runtime-setup", this.state);
@@ -93,7 +107,7 @@ export class RuntimeSetup {
     settings.workers = [...existing.map(worker => worker.location === "local" && !worker.deviceIds.some(id => gpuIds.includes(id)) ? { ...worker, enabled: false } : worker), ...managed];
     for (const model of settings.modelConfigurations) {
       const assigned = model.workerIds.map(id => aliases.get(id) ?? id);
-      model.workerIds = [...new Set(assigned.some(id => managedIds.has(id)) ? [...assigned.filter(id => !managedIds.has(id)), ...enabledIds] : assigned)];
+      model.workerIds = [...new Set(model.workerSelection === "manual" ? assigned : [...assigned.filter(id => !managedIds.has(id)), ...enabledIds])];
     }
     if (automaticConcurrency) settings.policy.maxConcurrentJobs = settings.workers.filter(worker => worker.enabled).length;
     if (settings.revision === 0) settings.policy.idleUnloadSeconds = 120;
