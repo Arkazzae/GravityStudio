@@ -1,5 +1,6 @@
 import { InferenceError } from "./types.ts";
 import { fitImageSize } from "../contracts/image-size.ts";
+import { MAX_LORAS } from "../contracts/lora-stack.ts";
 import type { ArtifactRole, FamilyId, FamilyRecipe, ImageQualityPreset, ModelArtifact, ModelManifest, Operation, SamplingDefaults } from "./types.ts";
 
 export const BIREFNET_ARTIFACT: Readonly<ModelArtifact> = Object.freeze({
@@ -19,28 +20,28 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
   sdxl: {
     id: "sdxl", name: "SDXL / Illustrious", revision: "2",
     operations: ["text-to-image", "image-to-image", "reference"], artifacts: ["checkpoint"],
-    defaults: base, dimensions: { multiple: 8, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+    defaults: base, dimensions: { multiple: 8, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4, maxLoras: MAX_LORAS,
     qualityPresets: [{ id: "fast", sampling: { steps: 20 }, pixels: 768 ** 2, minSide: 512 }, { id: "standard", sampling: { steps: 30 }, pixels: 896 ** 2, minSide: 512 }, { id: "high", sampling: { steps: 40 }, pixels: 1024 ** 2, minSide: 512 }],
   },
   "flux-2-klein-4b": {
     id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", revision: "2",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
-    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4, maxLoras: MAX_LORAS,
     qualityPresets: [{ id: "fast", sampling: { steps: 4 }, pixels: 768 ** 2 }, { id: "standard", sampling: { steps: 4 }, pixels: 1024 ** 2 }, { id: "high", sampling: { steps: 4 }, pixels: 2_097_152 }],
   },
   "flux-2-klein-9b": {
     id: "flux-2-klein-9b", name: "FLUX.2 Klein 9B", revision: "2",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
-    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4, maxLoras: MAX_LORAS,
     qualityPresets: [{ id: "fast", sampling: { steps: 4 }, pixels: 768 ** 2 }, { id: "standard", sampling: { steps: 4 }, pixels: 1024 ** 2 }, { id: "high", sampling: { steps: 4 }, pixels: 2_097_152 }],
   },
   "krea-2": {
     id: "krea-2", name: "Krea 2", revision: "2",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 8, cfg: 1, scheduler: "simple" },
-    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 2,
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 2, maxLoras: MAX_LORAS,
     qualityPresets: [{ id: "fast", sampling: { steps: 8 }, pixels: 1024 ** 2 }, { id: "standard", sampling: { steps: 8 }, pixels: 2_097_152 }, { id: "high", sampling: { steps: 8 }, pixels: 4_194_304 }],
   },
   "qwen-image-2.1": {
@@ -48,14 +49,14 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
     nativeTransparency: true,
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
-    dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,
+    dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10, maxLoras: MAX_LORAS,
     qualityPresets: [{ id: "fast", sampling: { steps: 8 }, pixels: 1024 ** 2 }, { id: "standard", sampling: { steps: 25 }, pixels: 2_097_152 }, { id: "high", sampling: { steps: 50 }, pixels: 4_194_304 }],
   },
   "ideogram-4": {
     id: "ideogram-4", name: "Ideogram 4", revision: "2",
     operations: ["text-to-image", "image-to-image", "reference"], artifacts: ["diffusion", "diffusion-unconditional", "text-encoder", "vae"],
     defaults: { ...base, steps: 20, cfg: 7, scheduler: "native" },
-    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 1,
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 1, maxLoras: 0,
     qualityPresets: [{ id: "fast", sampling: { steps: 12 }, pixels: 1024 ** 2 }, { id: "standard", sampling: { steps: 20 }, pixels: 2_097_152 }, { id: "high", sampling: { steps: 48 }, pixels: 4_194_304 }],
   },
 };
@@ -153,7 +154,7 @@ export function resolveModelOperation(model: Pick<ModelManifest, "familyId" | "o
 export function validateModel(manifest: ModelManifest): void {
   const fail = (message: string): never => { throw new InferenceError("INVALID_MODEL", message); };
   if (!manifest || typeof manifest !== "object") fail("A model manifest must be an object.");
-  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license", "licenseUrl", "preset", "qualityPresets"].includes(key))) fail("The model manifest has an unknown field.");
+  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license", "licenseUrl", "preset", "qualityPresets", "maxLoras"].includes(key))) fail("The model manifest has an unknown field.");
   if (typeof manifest.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(manifest.id)) fail("Model IDs use lowercase letters, numbers, dots, hyphens or underscores.");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 160) fail("Set a model name of at most 160 characters.");
   if (typeof manifest.revision !== "string" || !/^[a-zA-Z0-9._-]{1,96}$/.test(manifest.revision)) fail("Set a stable model revision.");
@@ -168,6 +169,7 @@ export function validateModel(manifest: ModelManifest): void {
   }
   if (!Object.hasOwn(FAMILY_RECIPES, manifest.familyId)) fail("This model architecture has no recipe.");
   const family = FAMILY_RECIPES[manifest.familyId];
+  if (manifest.maxLoras !== undefined && (!Number.isSafeInteger(manifest.maxLoras) || manifest.maxLoras < 0 || manifest.maxLoras > family.maxLoras)) fail("A checkpoint's LoRA limit cannot exceed its family's workflow policy.");
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== family.artifacts.length) fail("List exactly the model files required by the family.");
   const roles = new Set<string>();
   for (const artifact of manifest.artifacts) {

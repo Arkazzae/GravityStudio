@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DEFAULT_MODELS, FAMILY_RECIPES, effectiveModelOperations, effectiveModelQualityPresets, resolveModelOperation, validateModel } from "./catalog.ts";
 import { InferenceError } from "./types.ts";
+import { effectiveModelLoraLimit } from "./lora-stack.ts";
 import type { GenerationRequest, ModelArtifact, ModelManifest, ModelPreset, Operation, SamplingDefaults } from "./types.ts";
 
 export interface CheckpointManifestInput {
@@ -33,7 +34,7 @@ export function getModelPresets(): ModelPreset[] {
       id: model.id, name: model.name, revision: model.revision, familyId: model.familyId,
       primaryRole, dependencyRoles: model.artifacts.filter(artifact => artifact.role !== primaryRole).map(artifact => artifact.role),
       artifacts: structuredClone(model.artifacts), operations: effectiveModelOperations(model),
-      defaults: { ...FAMILY_RECIPES[model.familyId].defaults, ...model.defaults }, qualityPresets: effectiveModelQualityPresets(model),
+      defaults: { ...FAMILY_RECIPES[model.familyId].defaults, ...model.defaults }, qualityPresets: effectiveModelQualityPresets(model), maxLoras: effectiveModelLoraLimit(model),
     };
   });
 }
@@ -66,6 +67,7 @@ export function createCheckpointManifest(input: CheckpointManifestInput, templat
     artifacts: template.artifacts.map(artifact => overrides.get(artifact.role) ?? structuredClone(artifact)),
     defaults: { ...FAMILY_RECIPES[template.familyId].defaults, ...template.defaults, ...input.defaults },
     operations: [...(input.operations ?? allowedOperations)],
+    maxLoras: effectiveModelLoraLimit(template),
     qualityPresets: effectiveModelQualityPresets(template).map(preset => ({ ...preset, sampling: { ...preset.sampling, ...tuning } })),
   };
   validateModel(model);

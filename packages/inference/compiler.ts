@@ -6,6 +6,7 @@ import { compileIdeogramPrompt, parseIdeogramPrompt } from "./ideogram-prompt.ts
 import { appendGenerationExtensions, resolveGenerationExtensions } from "./generation-extensions.ts";
 import { appendEditingGraph, appendIdeogramReference } from "./generation-editing.ts";
 import { InferenceError } from "./types.ts";
+import { effectiveModelLoraLimit, validateLoraChoices } from "./lora-stack.ts";
 import type { ArtifactRole, BackgroundRemovalSnapshot, ExecutionSnapshot, GenerationExtensionManifest, GenerationRequest, GenerationSnapshot, GraphLink, InputImage, ModelManifest, ResolvedParameters, UpscalerManifest, UpscaleSnapshot, WorkflowGraph } from "./types.ts";
 
 export function canonicalJson(value: unknown): string {
@@ -376,7 +377,8 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
   if (request.outpaint) check(Object.values(request.outpaint).some(value => value > 0), "Extend at least one side of the source canvas.");
   check(!request.refiner || model.familyId === "sdxl", "The SDXL refiner only supports SDXL models.");
   check(request.referenceStrength === undefined || operation === "reference" && ["sdxl", "krea-2"].includes(model.familyId), "Reference strength is available for SDXL ReVision and Krea style references.");
-  check(request.loras === undefined || Array.isArray(request.loras) && request.loras.length <= 4 && new Set(request.loras.map(item => item?.id)).size === request.loras.length && request.loras.every(item => item && typeof item === "object" && Object.keys(item).length === 2 && typeof item.id === "string" && typeof item.strength === "number" && Number.isFinite(item.strength) && item.strength >= 0 && item.strength <= 2), "Choose up to four distinct LoRAs with strengths from 0 to 2.");
+  const maxLoras = effectiveModelLoraLimit(model);
+  check(request.loras === undefined || validateLoraChoices(request.loras, maxLoras), `Choose up to ${maxLoras} distinct LoRAs with strengths from 0 to 2.`);
   const extensions = resolveGenerationExtensions({ ...request, operation }, model, frozenExtensions);
   const parameters = parametersFor({ ...request, operation }, model);
   const resolvedRequest = { ...request, operation, images };

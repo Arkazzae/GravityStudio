@@ -63,6 +63,8 @@ export interface ModelManifest {
   qualityPresets?: ImageQualityPreset[];
   /** A variant may narrow, but cannot add to, its family's operations. */
   operations?: Operation[];
+  /** Optional checkpoint restriction; cannot exceed its family's workflow limit. */
+  maxLoras?: number;
   description?: string;
   license?: string;
   licenseUrl?: string;
@@ -89,6 +91,7 @@ export interface ModelPreset {
   operations: Operation[];
   defaults: SamplingDefaults;
   qualityPresets: ImageQualityPreset[];
+  maxLoras: number;
 }
 
 export interface FamilyRecipe {
@@ -102,6 +105,8 @@ export interface FamilyRecipe {
   qualityPresets: readonly ImageQualityPreset[];
   nativeTransparency?: true;
   maxReferences: number;
+  /** Adapter graph policy; memory admission is checked separately per job. */
+  maxLoras: number;
 }
 
 export interface InputImage {
