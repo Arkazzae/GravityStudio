@@ -6,6 +6,8 @@ import { ApiError, isUpscaleInput, isImageToolInput, type JobInput, type JobStat
 import type { AssetObjectStore, StoredObject } from "./object-store.ts";
 import { initializeAdministration, requireActiveUser } from "./administration.ts";
 import { initializeWorkTime, requireWorkTime, syncJobWorkTime } from "./work-time.ts";
+import { initializeApiAccess, savedTokenScopes } from './access.ts';
+import { LEGACY_API_SCOPES, type ApiScope, type ApiToken } from '../../packages/contracts/access.ts';
 
 export interface PlacementSnapshot { worker: WorkerSettings; memory: { ramBytes: number; vramBytes: number } }
 export interface StoredJob extends Omit<PublicJob, "outputs"> {
@@ -72,6 +74,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS output_deletions (output_id TEXT PRIMARY KEY REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);
     `);
     initializeAdministration(this.db);
+    initializeApiAccess(this.db);
     initializeWorkTime(this.db);
     const locations = this.db.prepare(`SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM inputs WHERE json_type(body,'$.object') IS NOT NULL
       UNION SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM outputs WHERE json_type(body,'$.object') IS NOT NULL`).all() as Array<{ store_id: string | null }>;
@@ -127,18 +130,22 @@ export class Store {
     return this.db.prepare("SELECT users.id,users.username,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>? AND users.status='active'").get(hash, Date.now()) as Owner | undefined;
   }
   revokeSession(hash: string) { this.db.prepare("DELETE FROM sessions WHERE hash=?").run(hash); }
-  saveApiToken(userId: string, name: string, hash: string) {
+  saveApiToken(userId: string, name: string, hash: string, options: { scopes: readonly ApiScope[]; expiresAt: string | null } = { scopes: LEGACY_API_SCOPES, expiresAt: null }): ApiToken {
     requireActiveUser(this.db, userId);
-    const token = { id: randomUUID(), name, createdAt: now() };
-    this.db.prepare("INSERT INTO api_tokens(id,user_id,name,hash,created_at) VALUES(?,?,?,?,?)").run(token.id, userId, name, hash, token.createdAt);
+    const token: ApiToken = { id: randomUUID(), name, createdAt: now(), lastUsedAt: null, expiresAt: options.expiresAt, scopes: [...options.scopes] };
+    this.db.prepare("INSERT INTO api_tokens(id,user_id,name,hash,created_at,scopes,expires_at) VALUES(?,?,?,?,?,?,?)").run(token.id, userId, name, hash, token.createdAt, json(token.scopes), token.expiresAt);
     return token;
   }
   apiToken(hash: string): Owner | undefined {
-    const user = this.db.prepare("SELECT users.id,users.username,users.role FROM api_tokens JOIN users ON users.id=api_tokens.user_id WHERE api_tokens.hash=? AND users.status='active'").get(hash) as Owner | undefined;
-    if (user) this.db.prepare("UPDATE api_tokens SET last_used_at=? WHERE hash=?").run(now(), hash);
-    return user;
+    return this.apiTokenAccess(hash)?.user;
   }
-  apiTokens(userId: string) { return this.db.prepare("SELECT id,name,created_at AS createdAt,last_used_at AS lastUsedAt FROM api_tokens WHERE user_id=? ORDER BY created_at DESC").all(userId); }
+  apiTokenAccess(hash: string): { user: Owner; scopes: ApiScope[]; tokenId: string } | undefined {
+    const row = this.db.prepare("SELECT users.id,users.username,users.role,api_tokens.id AS tokenId,api_tokens.scopes FROM api_tokens JOIN users ON users.id=api_tokens.user_id WHERE api_tokens.hash=? AND (api_tokens.expires_at IS NULL OR api_tokens.expires_at>?) AND users.status='active'").get(hash, now()) as (Owner & { scopes: string | null; tokenId: string }) | undefined;
+    if (!row) return;
+    this.db.prepare("UPDATE api_tokens SET last_used_at=? WHERE hash=?").run(now(), hash);
+    return { user: { id: row.id, username: row.username, role: row.role }, scopes: savedTokenScopes(row.scopes), tokenId: row.tokenId };
+  }
+  apiTokens(userId: string): ApiToken[] { return (this.db.prepare("SELECT id,name,created_at AS createdAt,last_used_at AS lastUsedAt,expires_at AS expiresAt,scopes FROM api_tokens WHERE user_id=? ORDER BY created_at DESC").all(userId) as Array<Omit<ApiToken, 'scopes'> & { scopes: string | null }>).map(row => ({ ...row, scopes: savedTokenScopes(row.scopes) })); }
   revokeApiToken(userId: string, id: string) { this.db.prepare("DELETE FROM api_tokens WHERE user_id=? AND id=?").run(userId, id); }
   createJob(userId: string, input: JobInput, snapshot: unknown, placements: PlacementSnapshot[], modelName: string, parameters: Record<string, unknown>, key: string, requestHash: string): StoredJob {
     this.db.exec("BEGIN IMMEDIATE");

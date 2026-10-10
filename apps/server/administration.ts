@@ -205,6 +205,7 @@ export class Administration {
     transaction(this.store.db, () => {
       this.revokeAccess(id);
       this.store.db.prepare("DELETE FROM idempotency WHERE user_id=?").run(id);
+      for (const table of ['api_image_requests', 'api_input_requests', 'api_downloads']) this.store.db.prepare(`DELETE FROM ${table} WHERE user_id=?`).run(id);
       this.store.db.prepare("DELETE FROM output_favorites WHERE user_id=?").run(id);
       this.store.db.prepare("DELETE FROM jobs WHERE user_id=?").run(id);
       this.store.db.prepare("DELETE FROM metadata WHERE key=?").run(`account:${id}`);

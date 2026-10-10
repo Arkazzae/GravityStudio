@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { ApiError, type Owner } from "../../packages/contracts/index.ts";
 import type { Store } from "./store.ts";
+import type { ApiScope } from '../../packages/contracts/access.ts';
 
 export const SESSION_COOKIE = "gravity_session";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
@@ -46,12 +47,12 @@ export function validSetupKey(supplied: unknown, expected: string): boolean {
 export function cookieToken(request: IncomingMessage): string | undefined {
   return request.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith(`${SESSION_COOKIE}=`))?.slice(SESSION_COOKIE.length + 1);
 }
-export function identify(request: IncomingMessage, store: Store): { user: Owner; source: "session" | "token" } | undefined {
+export function identify(request: IncomingMessage, store: Store): { user: Owner; source: "session" | "token"; scopes?: ApiScope[]; tokenId?: string } | undefined {
   const authorization = request.headers.authorization;
   if (authorization) {
     if (!authorization.startsWith("Bearer ") || authorization.length > 256) return undefined;
-    const user = store.apiToken(digest(authorization.slice(7)));
-    return user ? { user, source: "token" } : undefined;
+    const access = store.apiTokenAccess(digest(authorization.slice(7)));
+    return access ? { ...access, source: "token" } : undefined;
   }
   const token = cookieToken(request);
   const user = token && token.length <= 256 ? store.session(digest(token)) : undefined;
