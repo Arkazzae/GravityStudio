@@ -19,7 +19,7 @@ export interface StudioModel {
   qualityPresets?: Array<{ id: 'fast' | 'standard' | 'high'; pixels: number; minSide?: number; sampling?: { steps?: number; cfg?: number; sampler?: string; scheduler?: string } }>;
   defaults: { width: number; height: number; steps: number; cfg: number; negativePrompt?: string };
   limits?: { width?: ParameterRange; height?: ParameterRange; steps?: ParameterRange; cfg?: ParameterRange; maxImages?: number };
-  capabilities?: { imageInput?: boolean; maxImages?: number; minImages?: number; requiresImage?: boolean; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string }; ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string; modelId: 'seedvr2-7b'; maxDimension: 4096 }; editing?: { inpaint: FeatureAvailability; outpaint: FeatureAvailability; matchSource: FeatureAvailability; reference: FeatureAvailability; refiner: FeatureAvailability } };
+  capabilities?: { imageInput?: boolean; maxImages?: number; minImages?: number; requiresImage?: boolean; loras?: { max: number }; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string }; ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string; modelId: 'seedvr2-7b'; maxDimension: 4096 }; editing?: { inpaint: FeatureAvailability; outpaint: FeatureAvailability; matchSource: FeatureAvailability; reference: FeatureAvailability; refiner: FeatureAvailability } };
 }
 export interface Catalog { models: StudioModel[]; families: Array<{ id: string; name: string }> }
 export interface Hardware {

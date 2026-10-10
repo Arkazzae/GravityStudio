@@ -42,10 +42,12 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   const [assetsVisited, setAssetsVisited] = useState(false);
   useEffect(() => { if (browsing) setAssetsVisited(true); }, [browsing]);
   const [error, setError] = useState('');
-  const [tools, setTools] = useState<GenerationTool[] | null>(null);
+  const [toolResult, setToolResult] = useState<{ identity: string; tools: GenerationTool[] } | null>(null);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toolsError, setToolsError] = useState('');
   const [toolsRevision, setToolsRevision] = useState(0);
+  const toolsIdentity = `${uploadIdentity}\0${toolsRevision}\0${modelToolsRevision}`;
+  const tools = toolResult?.identity === toolsIdentity ? toolResult.tools : null;
   const model = models.find(model => model.id === draft.modelId);
   const maxImages = referenceLimit(model, draft);
   const sourceCanvas = draftCanvasSize(model, draft);
@@ -58,11 +60,11 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   const { dragging } = useFileIntake({ onFiles: files => { void upload(files); } });
   useEffect(() => () => { pendingUpload.current?.abort(); }, []);
   useEffect(() => {
-    setTools(null); setToolsError('');
+    setToolResult(null); setToolsError('');
     if (!draft.modelId || !connected) { setToolsLoading(false); return; }
     const controller = new AbortController(); setToolsLoading(true);
     void api<{ tools: GenerationTool[] }>(`/generation-tools?modelId=${encodeURIComponent(draft.modelId)}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) })
-      .then(result => { if (!controller.signal.aborted) setTools(result.tools); })
+      .then(result => { if (!controller.signal.aborted) setToolResult({ identity: toolsIdentity, tools: result.tools }); })
       .catch(failure => { if (!controller.signal.aborted) { setToolsError(errorMessage(failure)); if ((failure as { status?: number }).status === 401) onSessionExpired(); } })
       .finally(() => { if (!controller.signal.aborted) setToolsLoading(false); });
     return () => controller.abort();
@@ -161,7 +163,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
           <label htmlFor="image-prompt" className="sr-only">{draft.images.length ? 'Edit instructions' : 'Image prompt'}</label><textarea ref={prompt} id="image-prompt" value={draft.prompt} maxLength={16000} onChange={event => update({ prompt: event.target.value, structuredPrompt: undefined })} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} rows={1} placeholder={draft.images.length > 1 ? 'Describe how to use these references. Refer to them by number.' : draft.images.length ? 'Describe what you want to change in this image.' : 'Describe the shot you want.'} className="max-h-40 min-h-10 min-w-0 w-full resize-none bg-transparent py-2 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-2" />
         </div>
         <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-scroll pb-1.5 [&>div:first-child]:min-w-[74px] [&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
-          <ModelMenu disabled={uploading} onManage={onOpenModels} models={models} value={draft.modelId} referenceCount={draft.images.length} selectedReferenceLimit={maxImages} onChange={id => { const next = models.find(model => model.id === id); if (next) setDraft(modelDraft(draft, next)); }} />
+          <ModelMenu disabled={uploading} onManage={onOpenModels} models={models} value={draft.modelId} referenceCount={draft.images.length} selectedReferenceLimit={maxImages} onChange={id => { const next = models.find(model => model.id === id); if (next) setDraft(current => modelDraft(current, next, { previousModel: models.find(model => model.id === current.modelId), tools: current.modelId === draft.modelId ? tools : null })); }} />
           <ImageAspectRatioMenu model={model} draft={draft} onChange={update} />
           <ImageQualityMenu model={model} draft={draft} onChange={update} />
           <BackgroundMenu model={model} draft={draft} disabled={busy || uploading} onChange={update} />

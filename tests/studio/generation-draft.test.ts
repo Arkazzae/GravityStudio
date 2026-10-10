@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  deletedDraftInput, draftCanvasSize, editingProblem, generationInput, loraProblem, promptFields,
+  deletedDraftInput, draftCanvasSize, editingProblem, generationInput, loraLimit, loraProblem, moveLoraChoice, promptFields,
   referenceLimit, replaceDraftImages, reusedDraft, savedDraftEdits, savedInputImage, selectedModelDraft, structuredPromptProblem,
   type Draft,
 } from '../../apps/studio/src/lib/generation-draft.ts';
 import { FAMILY_RECIPES } from '../../packages/inference/catalog.ts';
 import { compileIdeogramPrompt } from '../../packages/inference/ideogram-prompt.ts';
+import { LEGACY_MAX_LORAS, MAX_LORAS } from '../../packages/contracts/lora-stack.ts';
 import type { GenerationInput, GenerationTool, InputImage, Job, StudioModel } from '../../apps/studio/src/lib/api.ts';
 
 const source: InputImage = { id: 'source-id', name: 'source.png', url: '/api/inputs/source-id', width: 1024, height: 768 };
@@ -125,7 +126,7 @@ test('native captions stay separate from readable prompts and blank or invalid e
   assert.equal(structuredPromptProblem(sdxl, { structuredPrompt: '{' }), null);
 });
 
-test('changing model removes model-specific adapters and unsupported edits while choosing native sampling defaults', () => {
+test('changing model without compatibility context resets adapters and unsupported edits while choosing native sampling defaults', () => {
   const current: Draft = { ...draft, background: 'transparent', images: [source], mask, matchSource: true, editSourceId: source.id,
     structuredPrompt: compileIdeogramPrompt('A paper boat'), loras: [{ id: 'old-lora', strength: .8 }], refiner: true, referenceStrength: .7, sampler: 'heun', scheduler: 'karras' };
   const changed = selectedModelDraft(current, { ...sdxl, capabilities: { editing: { inpaint: { available: false }, outpaint: available, matchSource: { available: false }, reference: available, refiner: available } } });
@@ -190,4 +191,77 @@ test('LoRA readiness is scoped to the selected family and chosen worker state', 
   assert.match(loraProblem(sdxl, choice, [{ ...tool, ready: false, missingReasons: ['Not on the assigned worker.'] }])!, /assigned worker/);
   assert.match(loraProblem(sdxl, [{ ...choice[0], strength: NaN }], [tool])!, /between 0 and 2/);
   assert.ok(loraProblem(sdxl, [...choice, ...choice], [tool]));
+});
+
+const loraTool = (id: string, familyIds = ['sdxl']): GenerationTool => ({ id, name: id, kind: 'lora', familyIds, ready: true, installed: true, missingReasons: [], artifacts: [] });
+const loraModel = (maximum: number): StudioModel => ({ ...sdxl, capabilities: { ...sdxl.capabilities, loras: { max: maximum } } });
+
+test('LoRA limits use the advertised capability with a bounded legacy fallback and explicit unsupported state', () => {
+  assert.equal(loraLimit(sdxl), LEGACY_MAX_LORAS);
+  assert.equal(loraLimit(undefined), LEGACY_MAX_LORAS);
+  assert.equal(loraLimit(loraModel(0)), 0);
+  assert.equal(loraLimit(loraModel(1)), 1);
+  assert.equal(loraLimit(loraModel(8)), 8);
+  assert.equal(loraLimit(loraModel(MAX_LORAS + 10)), MAX_LORAS);
+  for (const maximum of [-1, NaN, Infinity, 1.5]) assert.equal(loraLimit(loraModel(maximum)), 0);
+});
+
+test('larger LoRA stacks validate, persist and submit their exact ordered strengths', () => {
+  const choices = Array.from({ length: MAX_LORAS }, (_, index) => ({ id: `detail-${index}`, strength: index / MAX_LORAS }));
+  const tools = choices.map(choice => loraTool(choice.id));
+  const expanded = loraModel(MAX_LORAS);
+  assert.equal(loraProblem(expanded, choices, tools), null);
+  assert.match(loraProblem(sdxl, choices, tools)!, new RegExp(`up to ${LEGACY_MAX_LORAS}`));
+  assert.match(loraProblem(expanded, [...choices, { id: 'overflow', strength: 1 }], tools)!, new RegExp(`up to ${MAX_LORAS}`));
+  const restored = savedDraftEdits(JSON.parse(JSON.stringify({ loras: choices })));
+  assert.deepEqual(restored.loras, choices);
+  assert.deepEqual(generationInput(expanded, { ...draft, loras: restored.loras }).loras, choices);
+  assert.match(loraProblem(expanded, [choices[0], choices[0]], tools)!, /only once/);
+  assert.match(loraProblem(expanded, [{ ...choices[0], strength: 2.01 }], tools)!, /between 0 and 2/);
+  assert.match(loraProblem(expanded, choices, tools.map((tool, index) => index ? tool : { ...tool, ready: false, missingReasons: ['The destination worker needs this adapter.'] }))!, /destination worker/);
+});
+
+test('a lower or unsupported destination limit retains the stack and explains how to resolve it', () => {
+  const choices = [{ id: 'first', strength: .6 }, { id: 'second', strength: 1.1 }, { id: 'third', strength: .4 }];
+  const tools = choices.map(choice => loraTool(choice.id));
+  for (const maximum of [0, 2]) {
+    const destination = { ...loraModel(maximum), id: `narrow-${maximum}` };
+    const changed = selectedModelDraft({ ...draft, loras: choices }, destination, { previousModel: sdxl, tools });
+    assert.deepEqual(changed.loras, choices, 'Model selection must not silently truncate the user’s stack');
+    assert.match(loraProblem(destination, changed.loras, tools)!, maximum ? /up to 2/ : /does not support LoRAs/);
+    assert.equal(loraProblem(destination, [], null), null);
+  }
+});
+
+test('same-family checkpoint changes preserve order and unknown adapters until destination tools validate them', () => {
+  const choices = [{ id: 'known', strength: .7 }, { id: 'temporarily-unknown', strength: 1.2 }];
+  const destination = { ...loraModel(8), id: 'another-sdxl-checkpoint' };
+  const changed = selectedModelDraft({ ...draft, loras: choices }, destination, { previousModel: sdxl, tools: [loraTool('known')] });
+  assert.deepEqual(changed.loras, choices);
+  assert.notEqual(changed.loras, choices);
+  assert.notEqual(changed.loras![0], choices[0]);
+  assert.match(loraProblem(destination, changed.loras, null)!, /Checking/);
+  assert.match(loraProblem(destination, changed.loras, [loraTool('known')])!, /incompatible/);
+  assert.equal(loraProblem(destination, changed.loras, choices.map(choice => loraTool(choice.id))), null);
+  assert.deepEqual(selectedModelDraft({ ...draft, loras: choices }, destination, { previousModel: sdxl, tools: null }).loras, choices);
+});
+
+test('cross-family changes keep only explicitly compatible adapters and never assume two unknown families match', () => {
+  const choices = [{ id: 'shared-first', strength: .6 }, { id: 'wrong-family', strength: .3 }, { id: 'unknown', strength: 1 }, { id: 'shared-last', strength: 1.3 }];
+  const tools = [loraTool('shared-first', ['sdxl', 'qwen-image-2.1']), loraTool('wrong-family'), loraTool('shared-last', ['qwen-image-2.1'])];
+  const changed = selectedModelDraft({ ...draft, loras: choices }, qwen, { previousModel: sdxl, tools });
+  assert.deepEqual(changed.loras, [choices[0], choices[3]]);
+  assert.deepEqual(selectedModelDraft({ ...draft, loras: choices }, qwen, { previousModel: sdxl, tools: null }).loras, []);
+  const unknown = { ...sdxl, familyId: undefined };
+  assert.deepEqual(selectedModelDraft({ ...draft, loras: choices }, unknown, { previousModel: unknown, tools }).loras, []);
+  assert.deepEqual(selectedModelDraft({ ...draft, loras: [choices[0]] }, qwen, { previousModel: sdxl, tools: [{ ...tools[0], kind: 'refiner' }] }).loras, []);
+});
+
+test('LoRA reorder swaps adjacent entries without mutating strengths and respects both boundaries', () => {
+  const choices = [{ id: 'first', strength: .6 }, { id: 'second', strength: 1.1 }, { id: 'third', strength: .4 }];
+  const moved = moveLoraChoice(choices, 1, -1);
+  assert.deepEqual(moved, [choices[1], choices[0], choices[2]]);
+  assert.deepEqual(moveLoraChoice(moved, 0, 1), choices);
+  assert.deepEqual(choices.map(choice => choice.id), ['first', 'second', 'third']);
+  for (const [from, direction] of [[0, -1], [2, 1], [-1, 1], [3, -1], [1.5, 1]] as const) assert.equal(moveLoraChoice(choices, from, direction), choices);
 });

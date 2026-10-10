@@ -1,24 +1,29 @@
 import { sourceCanvasSize } from '../../../../packages/contracts/image-size.ts';
+import { LEGACY_MAX_LORAS, MAX_LORAS } from '../../../../packages/contracts/lora-stack.ts';
 import { compileIdeogramPrompt, parseIdeogramPrompt } from '../../../../packages/inference/ideogram-prompt.ts';
 import type { GenerationInput, GenerationTool, InputImage, Job, StudioModel, ImageBackground, LoraChoice, OutpaintPadding } from './api.ts';
 import { imageQualityForSize, imageQualitySampling, type ImageAspectRatio, type ImageQuality } from './image-settings.ts';
 
 export interface Draft { aspect?: ImageAspectRatio | 'custom'; quality?: ImageQuality | 'custom'; background?: ImageBackground; modelId: string; prompt: string; structuredPrompt?: string; negativePrompt: string; width: number; height: number; steps: number; cfg: number; sampler?: string; scheduler?: string; seed: string; denoise: number; images: InputImage[]; imageMode?: 'image-to-image' | 'reference'; editSourceId?: string; mask?: InputImage; missingMaskId?: string; outpaint?: OutpaintPadding; matchSource?: boolean; refiner?: boolean; referenceStrength?: number; loras?: LoraChoice[] }
 
-/** Explicit model selection resets model-specific settings, while draft restoration does not. */
-export function selectedModelDraft(draft: Draft, model: StudioModel): Draft {
+export interface ModelDraftContext { previousModel?: StudioModel; tools?: GenerationTool[] | null }
+
+/** Checkpoint changes preserve an adapter stack whose architecture is still compatible. */
+export function selectedModelDraft(draft: Draft, model: StudioModel, context: ModelDraftContext = {}): Draft {
   const quality = imageQualityForSize(model, model.defaults.width, model.defaults.height, 'auto');
   const editing = model.capabilities?.editing;
   const mask = editing?.inpaint.available ? draft.mask : undefined;
   const outpaint = editing?.outpaint.available ? draft.outpaint : undefined;
   const matchSource = editing?.matchSource.available && !!draft.matchSource;
+  const sameFamily = !!model.familyId && context.previousModel?.familyId === model.familyId;
+  const loras = (draft.loras || []).filter(choice => sameFamily || context.tools?.some(tool => tool.id === choice.id && tool.kind === 'lora' && !!model.familyId && tool.familyIds.includes(model.familyId))).map(choice => ({ ...choice }));
   return {
     ...draft, modelId: model.id, aspect: 'auto', sampler: undefined, scheduler: undefined,
     imageMode: undefined, ...model.defaults, ...imageQualitySampling(model, quality), quality,
     negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75,
     structuredPrompt: ideogramModel(model) ? draft.structuredPrompt : undefined,
     mask, missingMaskId: mask ? draft.missingMaskId : undefined, outpaint, matchSource, editSourceId: mask || outpaint || matchSource ? draft.editSourceId : undefined,
-    loras: [], refiner: false, referenceStrength: undefined,
+    loras, refiner: false, referenceStrength: undefined,
   };
 }
 
@@ -104,9 +109,26 @@ export function editingProblem(model: StudioModel | undefined, draft: Draft): st
   return null;
 }
 
+export function loraLimit(model: StudioModel | undefined): number {
+  const advertised = model?.capabilities?.loras?.max;
+  if (advertised === undefined) return LEGACY_MAX_LORAS;
+  return Number.isSafeInteger(advertised) && advertised >= 0 ? Math.min(advertised, MAX_LORAS) : 0;
+}
+
+export function moveLoraChoice(choices: LoraChoice[], from: number, direction: -1 | 1): LoraChoice[] {
+  const to = from + direction;
+  if (!Number.isInteger(from) || from < 0 || from >= choices.length || to < 0 || to >= choices.length) return choices;
+  const next = [...choices];
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
 export function loraProblem(model: StudioModel | undefined, choices: Draft['loras'], tools: GenerationTool[] | null): string | null {
   if (!choices?.length) return null;
-  if (choices.length > 4 || new Set(choices.map(choice => choice.id)).size !== choices.length) return 'Choose up to four different LoRAs.';
+  const maximum = loraLimit(model);
+  if (!maximum) return 'This model does not support LoRAs. Remove the selected LoRAs in Advanced or choose another model.';
+  if (choices.length > maximum) return `This model accepts up to ${maximum} LoRA${maximum === 1 ? '' : 's'}. Remove some in Advanced to generate.`;
+  if (new Set(choices.map(choice => choice.id)).size !== choices.length) return 'Choose different LoRAs. Each adapter can be selected only once.';
   if (!tools) return 'Checking selected LoRAs…';
   for (const choice of choices) {
     const tool = tools.find(tool => tool.id === choice.id && tool.kind === 'lora');
