@@ -84,6 +84,7 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
   {
     id: "krea-2-turbo", name: "Krea 2 Turbo", familyId: "krea-2", revision: "1",
     description: "Text to image with the standard Krea 2 encoder and sampler.", license: "Krea 2 Community License",
+    licenseUrl: "https://cdn.jsdelivr.net/gh/krea-ai/krea-2@db3984fbc6e13b34c0064990fc2d95ac64d00058/assets/hf_samples/LICENSE.pdf",
     artifacts: [
       { role: "diffusion", folder: "diffusion_models", filename: "krea2_turbo_fp8_scaled.safetensors", sha256: "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/diffusion_models/krea2_turbo_fp8_scaled.safetensors" },
       { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_4b_bf16.safetensors", sha256: "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34", source: "https://huggingface.co/Comfy-Org/Krea-2/blob/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/text_encoders/qwen3vl_4b_bf16.safetensors" },
@@ -93,6 +94,7 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
   {
     id: "qwen-image-2.1", name: "Qwen Image 2.1", familyId: "qwen-image-2.1", revision: "1",
     description: "BF16 image generation and instruction editing with up to ten references, including transparent PNG output.", license: "Qwen Research License (non-commercial)",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
     artifacts: [
       { role: "diffusion", folder: "diffusion_models", filename: "qwen_image_2.1_bf16.safetensors", sha256: "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/diffusion_models/qwen_image_2.1_bf16.safetensors" },
       { role: "text-encoder", folder: "text_encoders", filename: "qwen3vl_8b_bf16.safetensors", sha256: "68bdc82bc1b66851162ae656225e7e2068166b603db19bd5d5a3b90eb12669a9", source: "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/text_encoders/qwen3vl_8b_bf16.safetensors" },
@@ -103,6 +105,7 @@ export const DEFAULT_MODELS: readonly ModelManifest[] = [
     id: "ideogram-4-fp8", name: "Ideogram 4 FP8", familyId: "ideogram-4", revision: "1",
     description: "Local text-to-image generation for typography and detailed compositions.",
     license: "Ideogram Non-Commercial Model Agreement; commercial use requires a separate license",
+    licenseUrl: "https://huggingface.co/ideogram-ai/ideogram-4-fp8/blob/main/LICENSE.md",
     artifacts: [
       { role: "diffusion", folder: "diffusion_models", filename: "ideogram4_fp8_scaled.safetensors", sha256: "49a946f1b0f8bcf5eab7d3b1ecc7b453c104e034cb1b592032745692724bd306", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/diffusion_models/ideogram4_fp8_scaled.safetensors" },
       { role: "diffusion-unconditional", folder: "diffusion_models", filename: "ideogram4_unconditional_fp8_scaled.safetensors", sha256: "9b359007dae162cca7591d00868feea733eb7c56e56e3a214a4d5a9a2a07cd60", source: "https://huggingface.co/Comfy-Org/Ideogram-4/blob/2aa6c75ce6d5fabded0ca4d0f76abbfaf8edc87d/diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors" },
@@ -127,11 +130,18 @@ const allowedDefaults = new Set(Object.keys(base));
 export function validateModel(manifest: ModelManifest): void {
   const fail = (message: string): never => { throw new InferenceError("INVALID_MODEL", message); };
   if (!manifest || typeof manifest !== "object") fail("A model manifest must be an object.");
-  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license"].includes(key))) fail("The model manifest has an unknown field.");
+  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license", "licenseUrl"].includes(key))) fail("The model manifest has an unknown field.");
   if (typeof manifest.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(manifest.id)) fail("Model IDs use lowercase letters, numbers, dots, hyphens or underscores.");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 160) fail("Set a model name of at most 160 characters.");
   if (typeof manifest.revision !== "string" || !/^[a-zA-Z0-9._-]{1,96}$/.test(manifest.revision)) fail("Set a stable model revision.");
   for (const value of [manifest.description, manifest.license]) if (value !== undefined && (typeof value !== "string" || value.length > 4000)) fail("Model descriptions and licenses must be bounded text.");
+  if (manifest.licenseUrl !== undefined) {
+    try {
+      if (typeof manifest.licenseUrl !== "string" || manifest.licenseUrl.length > 2048) fail("Set a valid HTTPS license URL.");
+      const url = new URL(manifest.licenseUrl);
+      if (url.protocol !== "https:" || url.username || url.password) fail("License URLs must use HTTPS without credentials.");
+    } catch { fail("Set a valid HTTPS license URL without credentials."); }
+  }
   if (!Object.hasOwn(FAMILY_RECIPES, manifest.familyId)) fail("This model architecture has no recipe.");
   const family = FAMILY_RECIPES[manifest.familyId];
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== family.artifacts.length) fail("List exactly the model files required by the family.");

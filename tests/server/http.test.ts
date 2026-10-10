@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import { Store } from "../../apps/server/store.ts";
 import { Engine } from "../../apps/server/engine.ts";
 import { createStudioServer } from "../../apps/server/http.ts";
+import { ModelLibrary } from "../../apps/server/models.ts";
 import { saveOutput } from "../../apps/server/media.ts";
 import { PNG } from "../inference/fake-comfy.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
@@ -17,11 +18,11 @@ import { inventory } from "./helpers/engine-fixture.ts";
 
 const origin = "http://localhost:4321";
 const hardware = (): HardwareInventory => ({ schemaVersion: 1, detectedAt: new Date().toISOString(), host: { platform: "linux", architecture: "x64", logicalCpuCount: 8, memory: { totalBytes: 64 * 1024 ** 3, availableBytes: 60 * 1024 ** 3 }, container: { detected: false, markers: [] } }, gpus: [], diagnostics: [] });
-async function fixture(t: { after: (fn: () => Promise<void>) => void }, detectedHardware = hardware()) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, detectedHardware = hardware(), modelFetch?: typeof fetch) {
   const directory = await mkdtemp(join(tmpdir(), "gravity-http-"));
   const store = new Store(directory);
   const engine = new Engine(store, { detect: async () => detectedHardware });
-  const server = await createStudioServer({ store, engine, allowedOrigins: [origin], setupSecret: "test-setup-secret" });
+  const server = await createStudioServer({ store, engine, allowedOrigins: [origin], setupSecret: "test-setup-secret", ...(modelFetch ? { models: new ModelLibrary(store, engine, { fetch: modelFetch }) } : {}) });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { await server.closeOperations(); await engine.stop(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); await rm(directory, { recursive: true, force: true }); });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -66,7 +67,7 @@ test("browser mutations validate origins and API tokens cannot administer worker
   assert.equal((await fetch(`${api.url}/api/jobs`, { headers: bearer })).status, 200);
   assert.equal((await fetch(`${api.url}/api/settings`, { headers: bearer })).status, 403);
   for (const path of ["/runtime", "/models/library"]) assert.equal((await fetch(`${api.url}/api${path}`, { headers: bearer })).status, 403);
-  for (const path of ["/runtime", "/models/download", "/models/activate"]) {
+  for (const path of ["/runtime", "/models/access", "/models/download", "/models/activate"]) {
     assert.equal((await fetch(`${api.url}/api${path}`, { method: "POST", headers: { ...bearer, "Content-Type": "application/json" }, body: "{}" })).status, 403);
     assert.equal((await fetch(`${api.url}/api${path}`, { method: "POST", headers: { Cookie: api.cookie(), "Content-Type": "application/json" }, body: "{}" })).status, 403);
   }
@@ -76,6 +77,26 @@ test("browser mutations validate origins and API tokens cannot administer worker
   assert.equal("token" in list.tokens[0], false);
   assert.equal((await api.request(`/tokens/${created.id}`, "DELETE")).status, 200);
   assert.equal((await fetch(`${api.url}/api/jobs`, { headers: bearer })).status, 401);
+});
+
+test("model access checks require a session and inspect files without starting a download", async t => {
+  const requests: RequestInit[] = [];
+  const api = await fixture(t, hardware(), async (_url, options) => { requests.push(options!); return new Response(null, { status: 302, headers: { Location: "https://us.aws.cdn.hf.co/fixture" } }); });
+  assert.equal((await api.request("/models/access", "POST", { modelId: "ideogram-4-fp8" })).status, 401);
+  assert.equal(requests.length, 0);
+  await api.setup();
+  const response = await api.request("/models/access", "POST", { modelId: "ideogram-4-fp8" });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  const result = await response.json();
+  assert.equal(result.modelId, "ideogram-4-fp8");
+  assert.equal(result.available, true);
+  assert.equal(result.repositories[0].url, "https://huggingface.co/Comfy-Org/Ideogram-4");
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(options => options.method === "HEAD" && options.signal));
+  assert.equal(api.store.metadata("model-download"), undefined);
+  assert.equal((await api.request("/models/access", "POST", { url: "https://attacker.example/model.safetensors" })).status, 400);
+  assert.equal(requests.length, 4);
 });
 
 test("settings saves are versioned and reject unsupported hardware assignments", async t => {

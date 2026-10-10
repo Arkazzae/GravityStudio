@@ -56,3 +56,11 @@ test("family validation rejects unsupported operations, silent controls and unsa
   assert.throws(() => compileGeneration(base, model), /relative/);
   assert.throws(() => listModels([getModel("sdxl-base"), getModel("sdxl-base")]), /Duplicate/);
 });
+
+test("model license links must be safe HTTPS links and remain attached to snapshots", () => {
+  const model = getModel("ideogram-4-fp8");
+  assert.equal(compileGeneration({ modelId: model.id, prompt: "A poster", seed: 1 }, model).model.licenseUrl, "https://huggingface.co/ideogram-ai/ideogram-4-fp8/blob/main/LICENSE.md");
+  for (const url of ["javascript:alert(1)", "https://user:secret@huggingface.co/model", "not-a-url", "http://huggingface.co/model"]) {
+    assert.throws(() => listModels([{ ...model, licenseUrl: url }]), /HTTPS license URL/);
+  }
+});

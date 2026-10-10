@@ -59,7 +59,7 @@ export interface ServerOptions {
   allowedOrigins: string[];
   setupSecret?: string;
   runtime?: Pick<RuntimeSetup, "status" | "start" | "close" | "managedWorkers">;
-  models?: Pick<ModelLibrary, "view" | "start" | "activate" | "busy" | "close">;
+  models?: Pick<ModelLibrary, "view" | "checkAccess" | "start" | "activate" | "busy" | "close">;
   integrationFetch?: typeof fetch;
   textFetch?: typeof fetch;
   localText?: Pick<LocalTextRuntime, 'initialize' | 'status' | 'prepare' | 'configure' | 'release' | 'models' | 'run' | 'evictIdle' | 'close'>;
@@ -213,6 +213,18 @@ export async function createStudioServer(options: ServerOptions) {
         }
       }
       if (path === "/api/models/library" && method === "GET") { requireSession(); return json(response, await models.view()); }
+      if (path === "/api/models/access" && method === "POST") {
+        requireSession();
+        if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        const controller = new AbortController();
+        const abort = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", abort);
+        try {
+          const result = await models.checkAccess(await readJson(request, 8192), controller.signal);
+          if (!controller.signal.aborted) return json(response, result);
+          return;
+        } finally { response.off("close", abort); }
+      }
       if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readJson(request, 8192); requireRuntimeIdle(); return json(response, models.start(body), 202); }
       if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readJson(request, 1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
       if (path === "/api/mcp") {

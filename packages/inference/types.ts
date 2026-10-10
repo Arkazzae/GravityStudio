@@ -44,6 +44,7 @@ export interface ModelManifest {
   operations?: Operation[];
   description?: string;
   license?: string;
+  licenseUrl?: string;
 }
 
 export interface FamilyRecipe {

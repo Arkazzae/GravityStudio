@@ -5,9 +5,13 @@ import { basename, dirname, join, resolve } from "node:path";
 import { ApiError } from "../../packages/contracts/index.ts";
 import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest } from "../../packages/inference/index.ts";
 import type { Engine } from "./engine.ts";
+import { ModelAccessError, checkDownloadUrl, checkModelFileAccess, huggingFaceFile, modelAccessResponse, modelRepositories, modelRepository, type ModelAccessResult, type ModelDownloadAccess, type ModelRepositoryAccess } from "./model-access.ts";
 import { modelRegistry, saveImportedModel } from "./registry.ts";
 import { defaultModelConfiguration, settingsView } from "./settings.ts";
 import type { Store } from "./store.ts";
+
+export { huggingFaceFile } from "./model-access.ts";
+export type { ModelAccessResult, ModelAccessStatus, ModelDownloadAccess, ModelRepository, ModelRepositoryAccess } from "./model-access.ts";
 
 const GiB = 1024 ** 3;
 const MAX_FILE_BYTES = 100 * GiB;
@@ -23,31 +27,8 @@ export interface ModelDownload {
   id: string; modelId: string; modelName: string;
   status: "downloading" | "verifying" | "activating" | "succeeded" | "failed";
   stage: string; filename?: string; completedFiles: number; totalFiles: number;
-  receivedBytes: number; totalBytes: number | null; error?: string;
+  receivedBytes: number; totalBytes: number | null; error?: string; errorCode?: string; access?: ModelDownloadAccess;
   startedAt: string; updatedAt: string;
-}
-
-/** Accept file links, never repository pages or arbitrary download servers. */
-export function huggingFaceFile(value: unknown): string {
-  if (typeof value !== "string" || value.length > 2048) throw downloadError("INVALID_MODEL_SOURCE", "Paste a Hugging Face .safetensors file link.");
-  let url: URL;
-  try { url = new URL(value); } catch { throw downloadError("INVALID_MODEL_SOURCE", "Paste a complete Hugging Face .safetensors file link."); }
-  if (url.protocol !== "https:" || url.hostname !== "huggingface.co" || url.port || url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => key !== "download")) throw downloadError("INVALID_MODEL_SOURCE", "Use an HTTPS huggingface.co file link without credentials.");
-  let parts: string[];
-  try { parts = url.pathname.slice(1).split("/").map(part => decodeURIComponent(part)); } catch { throw downloadError("INVALID_MODEL_SOURCE", "The file link contains invalid characters."); }
-  const [owner, repo, action, revision, ...files] = parts;
-  if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(owner ?? "") || !/^[a-zA-Z0-9_.-]{1,100}$/.test(repo ?? "") || !["blob", "resolve"].includes(action) || !revision || revision.length > 128 || !isRelativeFile(parts.join("/")) || parts.some(part => part.includes("/")) || !files.length || !files.at(-1)!.endsWith(".safetensors")) throw downloadError("INVALID_MODEL_SOURCE", "Choose a .safetensors file using a Hugging Face blob or resolve link.");
-  return `https://huggingface.co/${[owner, repo, "resolve", revision, ...files].map(encodeURIComponent).join("/")}`;
-}
-
-// Official storage hosts: https://huggingface.co/docs/hub/models-downloading
-const downloadHosts = new Set([
-  "huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co",
-  "cas-bridge.xethub.hf.co", "cas-server.xethub.hf.co", "cas-server.xethub-eu.hf.co",
-  "transfer.xethub.hf.co", "transfer.xethub-eu.hf.co", "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co",
-]);
-function checkDownloadUrl(url: URL) {
-  if (url.protocol !== "https:" || url.username || url.password || url.port || !downloadHosts.has(url.hostname)) throw downloadError("UNSAFE_MODEL_REDIRECT", "Hugging Face redirected this file to an unsupported download host.");
 }
 
 async function regularFile(path: string): Promise<boolean> {
@@ -115,7 +96,8 @@ export class ModelLibrary {
     const models = await Promise.all(modelRegistry(this.store).map(async model => {
       const artifacts = await Promise.all(model.artifacts.map(async artifact => ({ role: artifact.role, filename: artifact.filename, installed: await regularFile(join(this.modelsDirectory, artifact.folder, artifact.filename)) })));
       const downloadable = model.artifacts.every(artifact => { try { huggingFaceFile(artifact.source); return true; } catch { return false; } });
-      return { id: model.id, name: model.name, familyId: model.familyId, family: FAMILY_RECIPES[model.familyId].name, description: model.description, license: model.license,
+      return { id: model.id, name: model.name, familyId: model.familyId, family: FAMILY_RECIPES[model.familyId].name, description: model.description, license: model.license, licenseUrl: model.licenseUrl,
+        repositories: modelRepositories(model.artifacts.map(artifact => artifact.source)),
         source: DEFAULT_MODELS.some(item => item.id === model.id) ? "catalog" as const : "huggingface" as const,
         installed: artifacts.every(artifact => artifact.installed), enabled: settings.modelConfigurations.some(configuration => configuration.modelId === model.id && configuration.enabled), downloadable,
         ...(!downloadable ? { unavailableReason: "This catalog model has no Hugging Face download source. Add its checkpoint to the shared model folder to use it." } : {}), artifacts };
@@ -123,8 +105,35 @@ export class ModelLibrary {
     const installed = await regularFile(join(this.modelsDirectory, BIREFNET_ARTIFACT.folder, BIREFNET_ARTIFACT.filename));
     const tool = { id: backgroundTool.id, name: backgroundTool.name, familyId: "background-removal", family: "Background removal", kind: "utility" as const,
       description: "Remove backgrounds after generation with any image model. Qwen Image 2.1 uses its native transparency instead.", license: "MIT", source: "catalog" as const,
+      repositories: modelRepositories(backgroundTool.artifacts.map(artifact => artifact.source)),
       installed, enabled: installed, downloadable: true, artifacts: [{ role: BIREFNET_ARTIFACT.role, filename: BIREFNET_ARTIFACT.filename, installed }] };
     return { models: [...models, tool], download: this.current ? { ...this.current } : null };
+  }
+
+  async checkAccess(value: unknown, signal?: AbortSignal): Promise<ModelAccessResult> {
+    if (this.controller.signal.aborted) throw downloadError("STUDIO_STOPPING", "The studio is restarting. Try again shortly.", 503);
+    if (!object(value) || Object.keys(value).length !== 1 || !(typeof value.modelId === "string" || typeof value.url === "string")) throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a Hugging Face checkpoint link.");
+    let modelId: string | undefined;
+    let sources: string[];
+    if (typeof value.modelId === "string") {
+      const model = value.modelId === backgroundTool.id ? backgroundTool : getModel(value.modelId, modelRegistry(this.store));
+      modelId = model.id;
+      sources = model.artifacts.map(artifact => huggingFaceFile(artifact.source));
+    } else sources = [huggingFaceFile(value.url)];
+    const cancelled = AbortSignal.any([this.controller.signal, ...(signal ? [signal] : [])]);
+    const checkCancelled = () => { if (cancelled.aborted) throw downloadError("MODEL_ACCESS_CANCELLED", "The model access check was cancelled. Try again.", 499); };
+    checkCancelled();
+    const token = this.huggingFaceToken() ?? process.env.HF_TOKEN;
+    const requestSignal = AbortSignal.any([cancelled, AbortSignal.timeout(15_000)]);
+    const checked = await Promise.all([...new Set(sources)].map(source => checkModelFileAccess(source, { fetch: this.fetchFile, token, signal: requestSignal })));
+    checkCancelled();
+    if ((this.huggingFaceToken() ?? process.env.HF_TOKEN) !== token) throw downloadError("MODEL_ACCESS_CHANGED", "Hugging Face credentials changed during this check. Check access again.", 409);
+    const repositories = new Map<string, ModelRepositoryAccess>();
+    for (const result of checked) {
+      const previous = repositories.get(result.id);
+      if (!previous || previous.status === "available" || result.status === "gated") repositories.set(result.id, result);
+    }
+    return { ...(modelId ? { modelId } : {}), available: checked.length > 0 && checked.every(result => result.status === "available"), hasToken: !!token, checkedAt: now(), repositories: [...repositories.values()] };
   }
 
   start(value: unknown): ModelDownload {
@@ -148,7 +157,8 @@ export class ModelLibrary {
     this.current = { id: randomUUID(), modelId: model.id, modelName: model.name, status: "downloading", stage: "Preparing download", completedFiles: 0, totalFiles: model.artifacts.length, receivedBytes: 0, totalBytes: null, startedAt: now(), updatedAt: now() };
     this.store.setMetadata(stateKey, this.current);
     this.flight = Promise.resolve().then(() => this.download(model)).catch(error => {
-      this.update({ status: "failed", stage: "Download stopped", error: error instanceof ApiError ? error.message : this.controller.signal.aborted ? "The studio stopped before the download finished. Try again after restarting." : "The model download failed. Check the connection and available disk space, then try again." });
+      this.update({ status: "failed", stage: "Download stopped", error: error instanceof ApiError ? error.message : this.controller.signal.aborted ? "The studio stopped before the download finished. Try again after restarting." : "The model download failed. Check the connection and available disk space, then try again.",
+        errorCode: error instanceof ApiError ? error.code : "MODEL_DOWNLOAD_FAILED", ...(error instanceof ModelAccessError ? { access: error.access } : {}) });
     }).finally(() => { this.flight = undefined; });
     return { ...this.current };
   }
@@ -179,6 +189,10 @@ export class ModelLibrary {
       const headers: Record<string, string> = { "Accept-Encoding": "identity" };
       if (url.hostname === "huggingface.co" && token) headers.Authorization = `Bearer ${token}`;
       const response = await this.fetchFile(url, { headers, redirect: "manual", signal });
+      if (response.headers.get("x-error-code") === "GatedRepo") {
+        await response.body?.cancel();
+        throw new ModelAccessError(modelAccessResponse(modelRepository(source), response));
+      }
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location"); await response.body?.cancel();
         if (!location) throw downloadError("INVALID_MODEL_REDIRECT", "The model download returned an incomplete redirect.");
@@ -186,8 +200,7 @@ export class ModelLibrary {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        if ([401, 403].includes(response.status)) throw downloadError("MODEL_ACCESS_REQUIRED", "Hugging Face requires access to this model. Accept its license and save your token in Settings → Integrations, then retry.");
-        throw downloadError("MODEL_DOWNLOAD_HTTP", `Hugging Face returned HTTP ${response.status}. Check the model file link and try again.`, 502);
+        throw new ModelAccessError(modelAccessResponse(modelRepository(source), response));
       }
       return response;
     }

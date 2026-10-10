@@ -8,7 +8,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 
 - The Image workspace: model and aspect ratio selection, advanced sampling settings, reference images, generation queue and persistent gallery.
 - Drop or paste PNG, JPEG and WebP files anywhere in Image to add references, or in Assets to import them into the library. Each file can be up to 20 MiB; reference counts follow the selected model.
-- Family recipes for SDXL / Illustrious, FLUX.2 Klein and Krea 2. The initial catalog includes SDXL Base, WAI Illustrious v17, Klein 4B and Krea 2 Turbo.
+- Family recipes for SDXL / Illustrious, FLUX.2 Klein, Krea 2, Qwen Image 2.1 and Ideogram 4. The catalog includes SDXL Base, WAI Illustrious v17, Klein 4B, Krea 2 Turbo, Qwen Image 2.1 and Ideogram 4 FP8.
 - AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
 - A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
@@ -50,7 +50,9 @@ Updates appear under **Settings → App** and reload only when you choose **Relo
 
 In **Settings**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
 
-Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Downloads are checked before activation. Models requiring Hugging Face access need their license accepted and a token saved under **Settings → Integrations**. Catalog entries without a download source can use files already placed in the shared model directory.
+Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Studio checks access to the required files before starting a download, then verifies the downloaded weights before activation. **Check access** can also be run separately. Catalog entries without a download source can use files already placed in the shared model directory.
+
+For a gated repository, open the repository link to accept its terms or request access on Hugging Face, then save a read token from that account under **Models → Hugging Face** or **Settings → Integrations**. A fine-grained token must allow access to the required repository. Studio does not accept terms on your behalf. Repository access and the model license are separate: publicly downloadable files still carry their license conditions. Model cards show repository and available license links, including the separate commercial-license requirements for Qwen Image 2.1 and Ideogram 4.
 
 Change the GPU checkboxes later and apply the selection. Existing worker identities and ports are retained; newly selected GPUs get additional workers. Finish or cancel queued generations before changing the selection. An existing ComfyUI installation can be connected through **Advanced settings**.
 
