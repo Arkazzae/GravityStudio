@@ -2284,7 +2284,6 @@ test('account drawer persists profiles, preserves conflicting drafts and clears 
     return await response.json() as Profile;
   }
   const displayName = '#account-panel input[name="displayName"]';
-  const workspaceName = '#account-panel input[name="workspaceName"]';
   const value = (selector: string) => browser.evaluate<string>(`document.querySelector(${JSON.stringify(selector)}).value`);
   async function panelButton(label: string) {
     const expression = `Array.from(document.querySelectorAll('#account-panel button')).find(button => button.textContent.trim() === ${JSON.stringify(label)})`;
@@ -2325,17 +2324,17 @@ test('account drawer persists profiles, preserves conflicting drafts and clears 
   const initial = await profile();
   await openAccount();
   assert.equal(await value(displayName), initial.displayName);
-  assert.equal(await value(workspaceName), initial.workspaceName);
+  assert.equal(await browser.evaluate("!!document.querySelector('#account-panel #account-workspace-heading')"), false, 'Account has no Workspace section');
+  assert.equal(await browser.evaluate("!!document.querySelector('#account-panel input[name=\"workspaceName\"]')"), false, 'Account has no workspace name field');
   assert.equal(await browser.evaluate("document.querySelector('#account-panel input[name=\"username\"]').readOnly"), true, 'The login username cannot be changed through the profile form');
   assert.equal(await value('#account-panel input[name="username"]'), fixture.owner.username);
   assert.equal(await browser.evaluate("document.querySelectorAll('#account-panel [aria-label=\"Avatar color\"] input[type=radio]').length"), 6, 'All six avatar colors are available');
 
   await browser.fill(displayName, 'Ada Lovelace');
-  await browser.fill(workspaceName, 'Northlight Studio');
   await browser.click('#account-panel input[type="radio"][value="mint"]');
   await panelButton('Save changes'); await closed();
   const saved = await profile();
-  assert.deepEqual({ displayName: saved.displayName, workspaceName: saved.workspaceName, avatarTheme: saved.avatarTheme }, { displayName: 'Ada Lovelace', workspaceName: 'Northlight Studio', avatarTheme: 'mint' });
+  assert.deepEqual({ displayName: saved.displayName, workspaceName: saved.workspaceName, avatarTheme: saved.avatarTheme }, { displayName: 'Ada Lovelace', workspaceName: initial.workspaceName, avatarTheme: 'mint' }, 'Profile edits preserve the stored workspace name');
   assert.equal(saved.revision, initial.revision + 1);
   assert.match(await browser.evaluate<string>("document.querySelector('button[aria-label=\"Account\"]').textContent"), /AL/, 'Saving updates the avatar initials in the header');
 
@@ -2343,7 +2342,7 @@ test('account drawer persists profiles, preserves conflicting drafts and clears 
   await browser.until("!!document.querySelector('#image-prompt') && !window.__gravityAccountRequests", 'A fresh page loads the saved account');
   await instrumentRequests(); await openAccount();
   assert.equal(await value(displayName), saved.displayName, 'The display name survives a full page reload');
-  assert.equal(await value(workspaceName), saved.workspaceName, 'The workspace name is stored by the server');
+  assert.equal((await profile()).workspaceName, initial.workspaceName, 'The stored workspace name survives profile edits and a full page reload');
   assert.equal(await browser.evaluate("document.querySelector('#account-panel input[type=radio][value=mint]').checked"), true);
 
   await browser.fill(displayName, 'Discard this profile draft');
@@ -2390,11 +2389,13 @@ test('account drawer persists profiles, preserves conflicting drafts and clears 
   await browser.until("!!Array.from(document.querySelectorAll('#account-panel button')).find(button => button.textContent.trim() === 'Reload saved profile') && !!document.querySelector('#account-panel [role=alert]')", 'A stale account revision offers an explicit reload');
   assert.equal(await value(displayName), 'Keep my conflicting draft', 'A conflict never replaces the unfinished draft silently');
   assert.equal((await profile()).revision, otherClient.revision, 'The rejected stale save cannot overwrite another browser');
+  assert.equal((await profile()).workspaceName, otherClient.workspaceName, 'A conflicting save preserves the workspace name from another browser');
   await panelButton('Reload saved profile');
   await browser.until(`document.querySelector(${JSON.stringify(displayName)}).value === 'Saved by another browser'`, 'Explicit reload loads the saved profile');
-  assert.equal(await value(workspaceName), 'Shared Workspace');
   await browser.fill(displayName, 'Final Profile'); await panelButton('Save changes'); await closed();
-  assert.equal((await profile()).displayName, 'Final Profile', 'Saving can retry after a conflict has been resolved');
+  const finalProfile = await profile();
+  assert.equal(finalProfile.displayName, 'Final Profile', 'Saving can retry after a conflict has been resolved');
+  assert.equal(finalProfile.workspaceName, otherClient.workspaceName, 'Saving after an explicit reload preserves the latest stored workspace name');
 
   await openAccount();
   const bytes = Buffer.from(fixture.workers[0].state.outputBytes).toString('base64');

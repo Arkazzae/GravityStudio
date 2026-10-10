@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { Check, FolderClosed, LoaderCircle, LogOut, MonitorIcon, UserRound, X } from '@/components/ui/icons';
+import { Check, LoaderCircle, LogOut, MonitorIcon, UserRound, X } from '@/components/ui/icons';
 import { AppSettings } from '@/components/setup/AppSettings';
 import { CompletionAlertSettings, type CompletionAlertSettingsProps } from '@/components/system/NotificationsPopover';
 import { api, errorMessage, type AccountProfile } from '@/lib/api';
@@ -42,7 +42,7 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   const [profile, setProfile] = useState<AccountProfile | null>(null);
-  const [draft, setDraft] = useState<AccountProfile | null>(null);
+  const [draft, setDraft] = useState<Pick<AccountProfile, 'displayName' | 'avatarTheme'> | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -85,9 +85,9 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
   }, []);
   useEffect(() => { void load(); return () => reading.current?.abort(); }, [load]);
 
-  const changed = !!profile && !!draft && (draft.displayName.trim() !== profile.displayName || draft.workspaceName.trim() !== profile.workspaceName || draft.avatarTheme !== profile.avatarTheme);
-  const valid = !!draft?.displayName.trim() && !!draft.workspaceName.trim();
-  function update(patch: Partial<Pick<AccountProfile, 'displayName' | 'workspaceName' | 'avatarTheme'>>) {
+  const changed = !!profile && !!draft && (draft.displayName.trim() !== profile.displayName || draft.avatarTheme !== profile.avatarTheme);
+  const valid = !!draft?.displayName.trim();
+  function update(patch: Partial<Pick<AccountProfile, 'displayName' | 'avatarTheme'>>) {
     setDraft(current => current ? { ...current, ...patch } : current);
     if (!conflict) setError('');
   }
@@ -101,7 +101,7 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
     const controller = new AbortController(); writing.current = controller;
     setSaving(true); setError('');
     try {
-      const result = await api<AccountProfile>('/account', { method: 'PUT', body: JSON.stringify({ revision: profile.revision, displayName: draft.displayName.trim(), workspaceName: draft.workspaceName.trim(), avatarTheme: draft.avatarTheme }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]) });
+      const result = await api<AccountProfile>('/account', { method: 'PUT', body: JSON.stringify({ revision: profile.revision, displayName: draft.displayName.trim(), workspaceName: profile.workspaceName, avatarTheme: draft.avatarTheme }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]) });
       if (!mounted.current || controller.signal.aborted || writing.current !== controller) return;
       setProfile(result); setDraft(result); setConflict(false); setOpen(false);
       callbacks.current.onNotice('Account updated', 'Your profile is saved on your Studio server.');
@@ -167,10 +167,6 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
               </fieldset>
               <label className={styles.field}><span>Display name</span><input name="displayName" autoComplete="nickname" required maxLength={64} value={draft.displayName} placeholder="Your name" onChange={event => update({ displayName: event.target.value })} /></label>
               <label className={styles.field}><span>Username<small>Sign-in name</small></span><input name="username" autoComplete="username" value={user.username} readOnly /></label>
-            </section>
-            <section className={styles.section} aria-labelledby="account-workspace-heading">
-              <h2 id="account-workspace-heading"><FolderClosed strokeWidth={1.8} />Workspace</h2>
-              <label className={styles.field}><span>Workspace name</span><input name="workspaceName" required maxLength={64} value={draft.workspaceName} placeholder="Personal workspace" onChange={event => update({ workspaceName: event.target.value })} /></label>
             </section>
           </fieldset>}
           <section className={`${styles.section} ${styles.notificationSection}`} aria-labelledby="account-notifications-heading">
