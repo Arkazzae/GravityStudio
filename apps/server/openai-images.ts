@@ -4,6 +4,7 @@ import { ApiError, type GenerationInput } from '../../packages/contracts/index.t
 import { ApiMedia, canonical, hash } from './api-media.ts';
 import type { Engine } from './engine.ts';
 import { publicJob, type Store } from './store.ts';
+import { MAX_LORAS, validateLoraChoices } from '../../packages/contracts/lora-stack.ts';
 
 export const OPENAI_IMAGE_BODY_LIMIT = 64 * 1024 ** 2;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -75,7 +76,7 @@ export async function openaiImages(options: {
   }
   if (studio.operation !== undefined && (typeof studio.operation !== 'string' || !['text-to-image', 'image-to-image', 'reference'].includes(studio.operation))) invalid('Choose a supported studio.operation.');
   if (studio.outpaint !== undefined && (!object(studio.outpaint) || Object.keys(studio.outpaint).length !== 4 || ['left', 'right', 'top', 'bottom'].some(edge => !Number.isSafeInteger((studio.outpaint as Record<string, unknown>)[edge]) || Number((studio.outpaint as Record<string, unknown>)[edge]) < 0))) invalid('studio.outpaint must contain nonnegative integer left, right, top and bottom margins.');
-  if (studio.loras !== undefined && (!Array.isArray(studio.loras) || studio.loras.length > 16 || studio.loras.some(item => !object(item) || Object.keys(item).some(key => !['id', 'strength'].includes(key)) || typeof item.id !== 'string' || !item.id || item.id.length > 128 || typeof item.strength !== 'number' || !Number.isFinite(item.strength)))) invalid('studio.loras must contain valid LoRA IDs and strengths.');
+  if (studio.loras !== undefined && !validateLoraChoices(studio.loras)) invalid(`studio.loras must contain up to ${MAX_LORAS} compatible LoRAs with unique IDs and strengths from 0 to 2.`);
   const images = body.images ?? [];
   if (!Array.isArray(images) || images.length > 10 || editing && !images.length) invalid('Supply between 1 and 10 reference images for an edit.');
   if (body.mask !== undefined && !images.length) invalid('A mask requires a source image.');

@@ -5,6 +5,7 @@ import type { ModelManifest } from "../../packages/inference/types.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
 import { DEFAULT_SETTINGS, type Store } from "./store.ts";
 import { modelRegistry } from "./registry.ts";
+import { effectiveModelLoraLimit } from "../../packages/inference/index.ts";
 
 const GiB = 1024 ** 3;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -105,7 +106,7 @@ export function modelCard(model: ModelManifest, configuration: ModelConfiguratio
     ...model, family: family.name, familyId: family.id,
     defaults: { ...family.defaults, ...model.defaults }, operations,
     dimensions: family.dimensions, qualityPresets: effectiveModelQualityPresets(model), requiredArtifactRoles: family.artifacts,
-    ready, capabilities: { ready, maxImages, minImages: requiresImage ? 1 : 0, requiresImage, reference: operations.includes("reference") },
+    ready, capabilities: { ready, maxImages, minImages: requiresImage ? 1 : 0, requiresImage, reference: operations.includes("reference"), loras: { max: effectiveModelLoraLimit(model) } },
     missingReasons: configuration.enabled ? ready ? [] : ["Start the image engine with the required model files."] : ["Add this model from the model library."],
   };
 }

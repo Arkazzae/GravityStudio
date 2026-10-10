@@ -7,6 +7,7 @@ import { InferenceError } from "../../packages/inference/index.ts";
 import { publicJob, type Store } from "./store.ts";
 import type { Engine } from "./engine.ts";
 import { deleteInput, deleteOutput, MAX_INPUT_BYTES, saveInputFromOutput } from "./media.ts";
+import { MAX_LORAS, validateLoraChoices } from "../../packages/contracts/lora-stack.ts";
 
 export const MCP_INLINE_INPUT_BYTES = 2 * 1024 ** 2;
 export interface McpOptions {
@@ -36,7 +37,7 @@ const generation = z.strictObject({
   maskId: id.optional().describe("Owned mask image matching the first reference. White edits, black preserves."),
   outpaint: z.strictObject({ left: z.number().int().min(0).max(2048), right: z.number().int().min(0).max(2048), top: z.number().int().min(0).max(2048), bottom: z.number().int().min(0).max(2048) }).optional(),
   matchSource: z.boolean().optional(), refiner: z.boolean().optional(), referenceStrength: z.number().min(0).max(2).optional(),
-  loras: z.array(z.strictObject({ id: z.string().min(1).max(96), strength: z.number().min(0).max(2) })).max(4).optional(),
+  loras: z.array(z.strictObject({ id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/), strength: z.number().min(0).max(2) })).max(MAX_LORAS).refine(value => validateLoraChoices(value), "Choose unique compatible LoRA IDs and strengths from 0 to 2.").optional(),
 });
 const source = z.discriminatedUnion("type", [z.strictObject({ type: z.literal("input"), inputId: id }), z.strictObject({ type: z.literal("output"), jobId: id, outputId: z.string().regex(/^[a-f0-9]{32}$/) })]);
 const upscale = z.strictObject({

@@ -16,6 +16,8 @@ import { BACKGROUND_REMOVAL_MODEL, compileBackgroundRemoval } from "../../packag
 import { isBackgroundRemovalSnapshot } from "../../packages/inference/types.ts";
 import { rebindGenerationInputs } from "../../packages/inference/compiler.ts";
 import { requireWorkTime, WorkTimeService } from "./work-time.ts";
+import { validateLoraChoices } from "../../packages/contracts/lora-stack.ts";
+import { effectiveModelLoraLimit } from "../../packages/inference/index.ts";
 
 interface WorkerState {
   connected: boolean;
@@ -59,8 +61,9 @@ function generationMemory(snapshot: GenerationSnapshot, configuration: ModelConf
     vramBytes: Math.max(generation.vramBytes, snapshot.postprocess.model.memory.vramBytes) };
 }
 function extensionsFor(store: Store, request: Pick<GenerationRequest, "loras" | "refiner" | "operation">, model: ModelManifest): GenerationExtensionManifest[] {
-  const loras = request.loras ?? [];
-  if (!Array.isArray(loras) || loras.length > 4 || loras.some(item => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => !["id", "strength"].includes(key)) || typeof item.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/.test(item.id) || typeof item.strength !== "number" || !Number.isFinite(item.strength) || item.strength < 0 || item.strength > 2) || new Set(loras.map(item => item.id)).size !== loras.length) throw new ApiError(400, "INVALID_LORAS", "Choose up to four compatible LoRAs with strengths from 0 to 2.");
+  const loras = request.loras === undefined ? [] : request.loras;
+  const maxLoras = effectiveModelLoraLimit(model);
+  if (!validateLoraChoices(loras, maxLoras)) throw new ApiError(400, "INVALID_LORAS", `Choose up to ${maxLoras} compatible LoRAs with unique IDs and strengths from 0 to 2.`);
   const ids = [...loras.map(item => item.id), ...(request.refiner ? ["sdxl-refiner-1.0"] : []), ...(request.operation === "reference" && model.familyId === "sdxl" ? ["sdxl-clip-vision"] : []), ...(request.operation === "reference" && model.familyId === "krea-2" ? ["krea2-style-reference"] : [])];
   return generationExtensionRegistry(store).filter(item => ids.includes(item.id));
 }
@@ -252,7 +255,8 @@ export class Engine {
     const settings = settingsView(this.store), models = modelRegistry(this.store);
     if (modelId !== undefined && !models.some(model => model.id === modelId)) throw new ApiError(404, "MODEL_NOT_FOUND", "Choose an image model from the catalog.");
     const tools = await Promise.all(generationExtensionRegistry(this.store).map(async tool => {
-      const candidates = models.filter(model => tool.familyIds.includes(model.familyId) && (modelId === undefined || model.id === modelId));
+      const familyCandidates = models.filter(model => tool.familyIds.includes(model.familyId) && (modelId === undefined || model.id === modelId));
+      const candidates = familyCandidates.filter(model => tool.kind !== "lora" || effectiveModelLoraLimit(model) > 0);
       let ready = false;
       for (const model of candidates) {
         const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
@@ -271,7 +275,7 @@ export class Engine {
         const state = this.workers.get(worker.id);
         return state?.identity === workerIdentity(worker) && state.discovery && tool.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
       });
-      return { ...tool, installed, ready, missingReasons: ready ? [] : [!candidates.length ? "This adapter does not support the selected model family." : !installed ? "Download this adapter in Settings → Models → Tools." : "Enable a compatible image model and assign a worker with all required files and nodes."] };
+      return { ...tool, installed, ready, missingReasons: ready ? [] : [!candidates.length ? familyCandidates.length && tool.kind === "lora" ? "This checkpoint does not support LoRAs." : "This adapter does not support the selected model family." : !installed ? "Download this adapter in Settings → Models → Tools." : "Enable a compatible image model and assign a worker with all required files and nodes."] };
     }));
     return { tools };
   }
