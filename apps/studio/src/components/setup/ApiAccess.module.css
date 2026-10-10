@@ -1,0 +1,35 @@
+.access { min-width: 0; }
+.endpoints { display: grid; gap: 16px; }
+.copyRow { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.copyRow > input { flex: 1; }
+.guide { margin-top: 20px; }
+.guide > summary, .scopeDetails > summary, .savedScopes > summary { width: fit-content; max-width: 100%; cursor: pointer; border-radius: 4px; color: var(--color-ink); font-size: 13px; line-height: 1.6; }
+.guide > summary, .scopeDetails > summary { padding-block: 8px; }
+.guide > summary:hover, .scopeDetails > summary:hover, .savedScopes > summary:hover { color: var(--color-volt); }
+.examples { min-width: 0; padding-top: 12px; }
+.exampleTabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.codeHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; margin-bottom: 6px; }
+.code { max-width: 100%; overflow-x: auto; border-radius: 10px; background: var(--color-panel-2); padding: 14px; color: var(--color-ink); font-size: 12px; line-height: 1.7; tab-size: 2; }
+.tokenOptions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-top: 16px; }
+.scopeDetails { margin-top: 12px; }
+.permissions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 20px; margin-block: 12px 18px; }
+.permission { display: flex; min-width: 0; align-items: flex-start; gap: 10px; cursor: pointer; }
+.permission > input { width: 17px; height: 17px; flex-shrink: 0; margin-top: 2px; accent-color: var(--color-volt); }
+.create { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; gap: 8px; border-radius: var(--radius-chip); background: var(--color-volt); padding: 10px 16px; color: var(--color-on-volt); font-size: 14px; font-weight: 600; margin-top: 12px; transition: background-color .15s; }
+.create:hover:not(:disabled) { background: var(--color-volt-hi); }
+.create:disabled { opacity: .5; }
+.token { display: flex; align-items: flex-start; gap: 12px; padding-block: 16px; }
+.savedScopes { margin-top: 8px; }
+.savedScopes > summary { font-size: 12px; color: var(--color-ink-2); }
+.revoke { display: inline-flex; min-height: 40px; flex-shrink: 0; align-items: center; gap: 6px; border-radius: 8px; padding: 8px 10px; color: var(--color-ink-2); font-size: 12px; transition: background-color .15s, color .15s; }
+.revoke:hover { background: var(--color-chip); color: var(--color-ink); }
+.revoke:disabled { opacity: .5; }
+.guide > summary:focus-visible, .scopeDetails > summary:focus-visible, .savedScopes > summary:focus-visible, .create:focus-visible, .revoke:focus-visible, .permission > input:focus-visible, .code:focus-visible { outline: 2px solid var(--color-volt); outline-offset: 3px; }
+@container (max-width: 420px) {
+  .tokenOptions, .permissions { grid-template-columns: minmax(0, 1fr); }
+  .token { flex-wrap: wrap; }
+  .token > div { flex-basis: 180px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .create, .revoke { transition: none; }
+}
