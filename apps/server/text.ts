@@ -182,7 +182,7 @@ export class TextService {
         const result = await generateRefinement(connection, textModel, prompt, inner, this.fetcher);
         if (inner.aborted) throw cancelled(inner);
         this.expectRevision(settings.revision);
-        const refined = parseRefinementResult(result.text, originalPrompt, instruction);
+        const refined = parseRefinementResult(result.text, originalPrompt, instruction, model);
         if (connection.apiKey && refined.includes(connection.apiKey)) throw new ApiError(502, 'TEXT_INVALID_RESPONSE', 'The text model returned an invalid refinement.');
         return { prompt: refined, originalPrompt, provider, modelId, ...(result.usage ? { usage: result.usage } : {}) };
       }, meter?.begin), signal, 180_000).finally(() => { meter?.end(); this.refining = false; });
@@ -197,7 +197,7 @@ export class TextService {
       unchanged();
       const result = await generateRefinement(connection, textModel, prompt, inner, this.fetcher);
       unchanged();
-      const refined = parseRefinementResult(result.text, originalPrompt, instruction);
+      const refined = parseRefinementResult(result.text, originalPrompt, instruction, model);
       if (connection.apiKey && refined.includes(connection.apiKey)) throw new ApiError(502, "TEXT_INVALID_RESPONSE", "The text provider returned an invalid refinement.");
       return { prompt: refined, originalPrompt, provider, modelId, ...(result.usage ? { usage: result.usage } : {}) };
     }, signal).finally(() => { this.refining = false; });
