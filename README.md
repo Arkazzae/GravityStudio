@@ -10,7 +10,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Drop or paste PNG, JPEG and WebP files anywhere in Image to add references, or in Assets to import them into the library. Each file can be up to 20 MiB; reference counts follow the selected model.
 - Family recipes for SDXL / Illustrious, FLUX.2 Klein, Krea 2, Qwen Image 2.1 and Ideogram 4. The catalog includes SDXL Base, WAI Illustrious v17, Klein 4B, Krea 2 Turbo, Qwen Image 2.1 and Ideogram 4 FP8.
 - AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
-- A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
+- A model library with Hugging Face downloads and checkpoint imports based on supported model presets.
 - Image upscaling with Nomos2 HQ and SeedVR2 3B / 7B on the same ComfyUI workers.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
@@ -63,7 +63,7 @@ Updates appear under **Settings → App** and reload only when you choose **Relo
 
 In **Settings → GPUs**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
 
-Then open **Settings → Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Studio checks access to the required files before starting a download, then verifies the downloaded weights before activation. **Check access** can also be run separately. Catalog entries without a download source can use files already placed in the shared model directory.
+Then open **Settings → Models** to download a catalog model or import compatible Hugging Face `.safetensors` weights. Select a model preset to inherit its workflow, supporting files and sampling settings. **Advanced import options** can replace separately loaded text encoders, VAEs or secondary diffusion weights, and restrict a checkpoint to text-to-image. Replacements must match the preset's architecture; downloading a valid safetensors file does not establish compatibility. Studio checks access to every required file before downloading and verifies the complete package before activation. **Check access** can also be run separately. Catalog entries without a download source can use files already placed in the shared model directory.
 
 For a gated repository, open the repository link to accept its terms or request access on Hugging Face, then save a read token from that account under **Settings → Models → Hugging Face** or **Settings → Integrations**. A fine-grained token must allow access to the required repository. Studio does not accept terms on your behalf. Repository access and the model license are separate: publicly downloadable files still carry their license conditions. Model cards show repository and available license links, including the separate commercial-license requirements for Qwen Image 2.1 and Ideogram 4.
 

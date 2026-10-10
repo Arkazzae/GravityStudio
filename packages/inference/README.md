@@ -76,9 +76,11 @@ Artifact URLs and expected SHA-256 digests are in [catalog.ts](./catalog.ts). Th
 sha256sum /models/checkpoints/sd_xl_base_1.0.safetensors
 ```
 
-The Models panel downloads weights from Hugging Face when requested, verifies their SHA-256 and safetensors structure, and activates them after checking worker capabilities. Imported SDXL / Illustrious checkpoints use the same family recipe and receive their own persisted manifest.
+The Models panel downloads weights from Hugging Face when requested, verifies their SHA-256 and safetensors structure, and activates them after checking worker capabilities. `getModelPresets()` advertises reviewed catalog templates. `createCheckpointManifest()` replaces their primary weights, optionally replaces supported dependency roles, and freezes the preset identity, effective defaults, quality settings and allowed operations in a persisted manifest. Operations can be narrowed but cannot exceed the preset's capabilities. A package revision covers the complete manifest after all file digests are recorded.
 
-Worker discovery checks filenames and node capabilities through the ComfyUI API. It reports `integrity: "filenames-only"`: the standard API does not verify bytes on a remote worker. Library downloads are verified separately on the studio host. If you override an artifact filename in advanced settings, the server removes the catalog's expected digest from that resolved artifact.
+Separately loaded text encoders, VAEs and secondary diffusion weights can be overridden within the recipe's existing roles. SDXL's current checkpoint loader keeps its embedded encoder and VAE; external replacements require a recipe change. File validation establishes structure and integrity, not tensor architecture compatibility or the imported weights' license. Model readiness probes use an allowed operation, including variants that require an input image.
+
+Worker discovery checks filenames and node capabilities through the ComfyUI API. It reports `integrity: "filenames-only"`: the standard API does not verify bytes on a remote worker. Library downloads are verified separately on the studio host. If you override an artifact filename in advanced settings, the server removes the catalog's expected digest and download source from that resolved artifact.
 
 ## Add a fine-tune
 
