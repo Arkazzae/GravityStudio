@@ -4,6 +4,7 @@ import { Boxes, Check, FolderClosed, Heart, ImageIcon, LoaderCircle, Search, X }
 import { FileDropOverlay } from '@/components/ui/FileDropOverlay';
 import { api, errorMessage, type InputImage, type Job } from '@/lib/api';
 import { imageFileProblem } from '@/lib/image-files';
+import { referenceKey, visibleImportedImages, type SavedReference } from '@/lib/reference-assets';
 import { useFileIntake } from '@/lib/use-file-intake';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import dialogStyles from '@/components/studio/StudioDialog.module.css';
@@ -13,17 +14,20 @@ interface Asset {
   id: string; url: string; label: string; search: string; mimeType: string;
   source: 'generated' | 'import'; day?: string; createdAt?: string;
   favorite?: boolean;
+  reference: SavedReference;
 }
 type Category = 'all' | 'favorites' | 'image' | 'imports';
 const categories = [{ id: 'all', label: 'All Assets', icon: Boxes }, { id: 'favorites', label: 'Favorites', icon: Heart }, { id: 'image', label: 'Image', icon: ImageIcon }, { id: 'imports', label: 'Imports', icon: FolderClosed }] as const;
 const dateLabel = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
-export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClose, favoriteError, unavailableReason }: {
+export function ReferencePicker({ open, triggerRef, jobs, references, max = 1, onPick, onPickSaved, onClose, favoriteError, unavailableReason }: {
   open: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
   jobs: Job[];
+  references: InputImage[];
   max?: number;
   onPick: (files: File[], signal: AbortSignal) => Promise<{ ok: boolean; error?: string }>;
+  onPickSaved: (references: SavedReference[], signal: AbortSignal) => Promise<{ ok: boolean; error?: string }>;
   onClose: () => void;
   favoriteError?: string;
   unavailableReason?: string;
@@ -45,16 +49,20 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
   const [error, setError] = useState('');
   const dialogEvents = useRetainedDialog({ dialog, open, onClose, triggerRef, initialFocus: search, dismissible: !busy });
   const limit = Math.max(0, max);
+  const attached = useMemo(() => new Set(references.map(input => referenceKey({ type: 'input', input }))), [references]);
+  const libraryImports = useMemo(() => visibleImportedImages(imports, jobs), [imports, jobs]);
   const pool = useMemo<Asset[]>(() => [
     ...jobs.flatMap(job => job.outputs.filter(output => output.mimeType.startsWith('image/')).map(output => ({
       id: output.id, url: output.url, mimeType: output.mimeType, label: job.prompt || job.modelName || job.modelId,
       search: `${job.prompt} ${job.modelName || job.modelId} ${output.width || ''} ${output.height || ''}`.toLowerCase(),
       source: 'generated' as const, day: job.createdAt.slice(0, 10), createdAt: job.createdAt,
       favorite: !!output.favorite,
+      reference: { type: 'output' as const, jobId: job.id, outputId: output.id },
     }))).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    ...imports.map(input => ({ id: input.id, url: input.url, mimeType: 'image/png', label: input.name,
-      search: `${input.name} imported ${input.width} ${input.height}`.toLowerCase(), source: 'import' as const })),
-  ], [jobs, imports]);
+    ...libraryImports.map(input => ({ id: input.id, url: input.url, mimeType: 'image/png', label: input.name,
+      search: `${input.name} imported ${input.width} ${input.height}`.toLowerCase(), source: 'import' as const,
+      reference: { type: 'input' as const, input } })),
+  ], [jobs, libraryImports]);
   const chosen = useMemo(() => {
     const byId = new Map(pool.map(asset => [asset.id, asset]));
     return picked.map(id => byId.get(id) || selectedAssets.current.get(id)).filter((asset): asset is Asset => !!asset);
@@ -90,6 +98,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
 
   function toggle(id: string) {
     const asset = pool.find(entry => entry.id === id);
+    if (asset && attached.has(referenceKey(asset.reference))) return;
     if (asset) selectedAssets.current.set(id, asset);
     setError('');
     setPicked(current => current.includes(id) ? current.filter(entry => entry !== id)
@@ -120,17 +129,10 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
     const controller = new AbortController();
     request.current = controller; setBusy(true); setError('');
     try {
-      const files: File[] = [];
-      for (const asset of chosen) {
-        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]);
-        const response = await fetch(asset.url, { credentials: 'same-origin', signal });
-        if (!response.ok) throw new Error('An image could not be loaded. Try again or choose another image.');
-        const blob = await response.blob();
-        signal.throwIfAborted();
-        const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType === 'image/webp' ? 'webp' : 'png';
-        files.push(new File([blob], asset.source === 'import' ? asset.label : `reference-${asset.id}.${extension}`, { type: asset.mimeType }));
-      }
-      await pickFiles(files, controller);
+      const result = await onPickSaved(chosen.map(asset => asset.reference), controller.signal);
+      if (controller.signal.aborted || request.current !== controller) return;
+      if (result.ok) { setPicked([]); selectedAssets.current.clear(); onClose(); }
+      else setError(result.error || 'The references could not be added. Try again.');
     } catch (failure) {
       if (!controller.signal.aborted) setError(errorMessage(failure));
     } finally {
@@ -161,7 +163,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
           {categories.map(({ id, label, icon: Icon }) => <div key={id}>
             {(id === 'image' || id === 'imports') && <p className={styles.sectionLabel}>{id === 'image' ? 'Type' : 'Folders'}</p>}
             <button type="button" className={styles.navItem} aria-current={folder === id ? 'page' : undefined} onClick={() => setFolder(id)}>
-              <Icon className={id === 'imports' ? styles.folderIcon : undefined} /><span className={styles.navLabel}>{label}</span><span className={styles.count}>{id === 'imports' ? imports.length : id === 'favorites' ? pool.filter(asset => asset.favorite).length : pool.length}</span>
+              <Icon className={id === 'imports' ? styles.folderIcon : undefined} /><span className={styles.navLabel}>{label}</span><span className={styles.count}>{id === 'imports' ? libraryImports.length : id === 'favorites' ? pool.filter(asset => asset.favorite).length : pool.length}</span>
             </button>
           </div>)}
         </nav>
@@ -172,9 +174,9 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
           {groups.map(([day, group]) => <section key={day} className={styles.group} aria-label={day === 'imports' ? 'Imported images' : dateLabel(day)}>
             <h3 className={styles.groupHeader}>{day === 'imports' ? 'Imported images' : <time dateTime={day}>{dateLabel(day)}</time>}</h3>
             <div className={styles.grid}>{group.map(asset => {
-              const selected = picked.includes(asset.id), blocked = !selected && full && limit !== 1;
+              const selected = picked.includes(asset.id), alreadyAdded = attached.has(referenceKey(asset.reference)), blocked = alreadyAdded || (!selected && full && limit !== 1);
               return <article key={asset.id} data-asset-id={asset.id} data-source={asset.source} className={styles.card} data-selected={selected} data-disabled={blocked}>
-                <button type="button" className={styles.openCard} disabled={blocked || busy} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${asset.label}`} title={blocked ? `Choose up to ${limit}.` : asset.label} onClick={() => toggle(asset.id)}>
+                <button type="button" className={styles.openCard} disabled={blocked || busy} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${asset.label}`} title={alreadyAdded ? 'Already added as a reference.' : blocked ? `Choose up to ${limit}.` : asset.label} onClick={() => toggle(asset.id)}>
                   <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={`image-checkerboard ${styles.media}`} />
                   <span className={styles.cardOverlay} /><span className={styles.caption}>{asset.label}</span>
                 </button><span className={styles.mark} aria-hidden="true"><Check strokeWidth={3} /></span>

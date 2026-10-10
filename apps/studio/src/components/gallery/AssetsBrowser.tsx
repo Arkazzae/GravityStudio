@@ -6,6 +6,7 @@ import { FavoriteButton } from '@/components/ui/FavoriteButton';
 import { FileDropOverlay } from '@/components/ui/FileDropOverlay';
 import { api, errorMessage, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { imageFileProblem } from '@/lib/image-files';
+import { visibleImportedImages } from '@/lib/reference-assets';
 import { useFileIntake } from '@/lib/use-file-intake';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { DeleteImageButton } from './DeleteImageButton';
@@ -82,14 +83,15 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
   }, [open, inputBusy, loadRevision]);
   useEffect(() => { if (gallery.current) gallery.current.scrollTop = 0; }, [folder, query]);
 
+  const libraryImports = useMemo(() => visibleImportedImages(imports, jobs), [imports, jobs]);
   const pool = useMemo<Asset[]>(() => [
     ...jobs.flatMap(job => job.outputs.filter(output => output.mimeType.startsWith('image/')).map(output => ({
       id: output.id, url: output.url, label: job.prompt || job.modelName || job.modelId,
       search: `${job.prompt} ${job.modelName || job.modelId} ${output.width || ''} ${output.height || ''}`.toLowerCase(),
       day: job.createdAt.slice(0, 10), source: 'generated' as const, entry: { id: output.id, job, output },
     }))).sort((a, b) => b.entry.job.createdAt.localeCompare(a.entry.job.createdAt)),
-    ...imports.map(input => ({ id: input.id, url: input.url, label: input.name, search: `${input.name} ${input.width} ${input.height}`.toLowerCase(), day: 'imports', source: 'import' as const, input })),
-  ], [jobs, imports]);
+    ...libraryImports.map(input => ({ id: input.id, url: input.url, label: input.name, search: `${input.name} ${input.width} ${input.height}`.toLowerCase(), day: 'imports', source: 'import' as const, input })),
+  ], [jobs, libraryImports]);
   const visible = useMemo(() => pool.filter(asset =>
     (folder !== 'generated' || asset.source === 'generated') && (folder !== 'imports' || asset.source === 'import') &&
     (folder !== 'favorites' || asset.source === 'generated' && asset.entry.output.favorite) && (!query.trim() || asset.search.includes(query.trim().toLowerCase()))

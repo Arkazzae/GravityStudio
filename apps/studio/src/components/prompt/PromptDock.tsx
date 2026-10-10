@@ -16,6 +16,7 @@ import { imageBackground, imageBackgroundProblem } from '@/lib/image-background'
 import { api, errorMessage, type GenerationTool, type InputImage, type StudioModel, type Job } from '@/lib/api';
 import { draftCanvasSize, editingProblem, generationInput, generationOperation, loraProblem, referenceLimit, replaceDraftImages, selectedModelDraft, structuredPromptProblem, type Draft } from '@/lib/generation-draft';
 import { imageFileProblem } from '@/lib/image-files';
+import { appendReferences, referenceKey, type SavedReference } from '@/lib/reference-assets';
 import { useFileIntake } from '@/lib/use-file-intake';
 
 export type { Draft } from '@/lib/generation-draft';
@@ -87,12 +88,22 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
     return () => observer.disconnect();
   }, []);
   useEffect(() => { if (!dock.current) return; const observer = new ResizeObserver(([entry]) => onHeight(entry.contentRect.height + 24)); observer.observe(dock.current); return () => observer.disconnect(); }, [onHeight]);
-  async function upload(files: File[], signal?: AbortSignal): Promise<{ ok: boolean; error?: string }> {
+  async function upload(files: File[], signal?: AbortSignal) { return addReferences(files, signal); }
+  async function addReferences(selection: Array<File | SavedReference>, signal?: AbortSignal): Promise<{ ok: boolean; error?: string }> {
     const reject = (message: string) => { setError(message); return { ok: false, error: message }; };
-    if (!files.length || pendingUpload.current) return reject(pendingUpload.current ? 'Wait for the current upload to finish.' : 'Choose an image to add.');
+    if (!selection.length || pendingUpload.current) return reject(pendingUpload.current ? 'Wait for the current upload to finish.' : 'Choose an image to add.');
     if (!connected) return reject('Wait for the studio server before adding images.');
     if (!maxImages) return reject('Choose a model that supports reference images to add these files.');
-    if (files.length + draft.images.length > maxImages) return reject(`This model accepts up to ${maxImages} reference image${maxImages === 1 ? '' : 's'}.`);
+    const seen = new Set(draft.images.map(input => referenceKey({ type: 'input', input })));
+    const sources = selection.filter(source => {
+      if (source instanceof File) return true;
+      const key = referenceKey(source);
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (!sources.length) return { ok: true };
+    if (sources.length + draft.images.length > maxImages) return reject(`This model accepts up to ${maxImages} reference image${maxImages === 1 ? '' : 's'}.`);
+    const files = sources.filter((source): source is File => source instanceof File);
     const problem = imageFileProblem(files);
     if (problem) return reject(problem);
     const controller = new AbortController();
@@ -101,13 +112,26 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
     setUploading(true); setError('');
     const added: InputImage[] = [];
     try {
-      for (const file of files) {
+      const saved = sources.some(source => !(source instanceof File) && source.type === 'input')
+        ? (await api<{ inputs: InputImage[] }>('/inputs', { signal: AbortSignal.any([requestSignal, AbortSignal.timeout(45_000)]) })).inputs : [];
+      for (const source of sources) {
         requestSignal.throwIfAborted();
-        added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': file.type, 'X-Filename': encodeURIComponent(file.name) }, body: file, signal: AbortSignal.any([requestSignal, AbortSignal.timeout(45_000)]) }));
+        if (source instanceof File) {
+          added.push(await api<InputImage>('/inputs', { method: 'POST', headers: { 'Content-Type': source.type, 'X-Filename': encodeURIComponent(source.name) }, body: source, signal: AbortSignal.any([requestSignal, AbortSignal.timeout(45_000)]) }));
+        } else if (source.type === 'input') {
+          const input = saved.find(input => input.id === source.input.id);
+          if (!input) throw new Error('An image is no longer available. Choose another image.');
+          added.push(input);
+        } else {
+          added.push(await api<InputImage>('/inputs/from-output', { method: 'POST', body: JSON.stringify({ jobId: source.jobId, outputId: source.outputId }), signal: AbortSignal.any([requestSignal, AbortSignal.timeout(45_000)]) }));
+        }
       }
       requestSignal.throwIfAborted();
       if (latestIdentity.current !== uploadIdentity) return { ok: false };
-      setDraft(current => current.modelId === draft.modelId && current.images.length + added.length <= maxImages ? { ...current, images: [...current.images, ...added] } : current);
+      setDraft(current => {
+        const images = appendReferences(current.images, added);
+        return current.modelId === draft.modelId && images.length <= maxImages ? { ...current, images } : current;
+      });
       return { ok: true };
     } catch (error) {
       if (requestSignal.aborted || latestIdentity.current !== uploadIdentity) return { ok: false };
@@ -150,7 +174,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>
     {dragging && <FileDropOverlay target="references" fullscreen available={maxImages > 0} title={maxImages ? 'Drop images to add references' : 'This model does not support reference images'} detail={uploading ? 'Wait for the current upload to finish.' : maxImages ? 'PNG, JPEG or WebP, up to 20 MiB each.' : 'Choose a model that accepts reference images.'} />}
-    {(browsing || assetsVisited) && <ReferencePicker open={browsing} triggerRef={referenceTrigger} jobs={jobs} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} favoriteError={favoriteError} onClose={onCloseAssets} unavailableReason={maxImages < 1 ? 'Choose a model that supports reference images to use these assets.' : undefined} />}
+    {(browsing || assetsVisited) && <ReferencePicker open={browsing} triggerRef={referenceTrigger} jobs={jobs} references={draft.images} max={Math.max(0, maxImages - draft.images.length)} onPick={upload} onPickSaved={addReferences} favoriteError={favoriteError} onClose={onCloseAssets} unavailableReason={maxImages < 1 ? 'Choose a model that supports reference images to use these assets.' : undefined} />}
     {model && draft.images[0] && <ReferenceEditor key={`${uploadIdentity}:${draft.images[0].id}:${draft.mask?.id || ''}:${draft.missingMaskId || ''}:${JSON.stringify(draft.outpaint)}:${!!draft.matchSource}`} open={editorOpen} model={model} image={draft.images[0]} missingMask={!!draft.mask && draft.missingMaskId === draft.mask.id} value={{ mask: draft.missingMaskId === draft.mask?.id ? undefined : draft.mask, outpaint: draft.outpaint, matchSource: draft.matchSource }} operation={generationOperation(model, draft)} onBusyChange={setEditorBusy} onSessionExpired={onSessionExpired} onClose={() => setEditorOpen(false)} onApply={value => setDraft(current => current.modelId === model.id && current.images[0]?.id === draft.images[0].id ? { ...current, mask: value.mask, missingMaskId: undefined, outpaint: value.outpaint, matchSource: !!value.matchSource, editSourceId: value.mask || value.outpaint || value.matchSource ? current.images[0].id : undefined } : current)} />}
   </div>;
 }
