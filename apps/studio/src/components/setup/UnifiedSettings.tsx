@@ -16,22 +16,23 @@ import { StorageSettings } from './StorageSettings';
 import type { Bootstrap, Hardware } from '@/lib/api';
 
 const personalSections = [
-  { id: 'app', label: 'App', icon: MonitorIcon },
-  { id: 'work-time', label: 'Work time', icon: Clock3 },
-  { id: 'api', label: 'API access', icon: KeyRound },
+  { id: 'app', label: 'App', icon: MonitorIcon, group: 'Personal' },
+  { id: 'work-time', label: 'Work time', icon: Clock3, group: 'Personal' },
+  { id: 'api', label: 'API access', icon: KeyRound, group: 'Personal' },
 ] as const;
 const adminSections = [
-  { id: 'models', label: 'Models', icon: Boxes },
-  { id: 'gpus', label: 'GPUs', icon: Cpu },
-  { id: 'generation', label: 'Generation', icon: SlidersHorizontal },
-  { id: 'assistant', label: 'Assistant', icon: Wand2 },
-  { id: 'connections', label: 'Connections', icon: HardDrive },
-  { id: 'model-files', label: 'Model files', icon: Layers2 },
-  { id: 'integrations', label: 'Integrations', icon: ExternalLink },
-  { id: 'storage', label: 'Storage', icon: HardDrive },
-  { id: 'users', label: 'Users', icon: Users },
-  { id: 'invitations', label: 'Invitations', icon: Plus },
-  { id: 'mail', label: 'Mail', icon: Mail },
+  { id: 'models', label: 'Models', icon: Boxes, group: 'Creation' },
+  { id: 'generation', label: 'Generation', icon: SlidersHorizontal, group: 'Creation' },
+  { id: 'assistant', label: 'Assistant', icon: Wand2, group: 'Creation' },
+  { id: 'model-files', label: 'Model files', icon: Layers2, group: 'Creation' },
+  { id: 'gpus', label: 'GPUs', icon: Cpu, group: 'Server' },
+  { id: 'connections', label: 'Connections', icon: HardDrive, group: 'Server' },
+  { id: 'integrations', label: 'Integrations', icon: ExternalLink, group: 'Server' },
+  { id: 'storage', label: 'Storage', icon: HardDrive, group: 'Server' },
+  { id: 'users', label: 'Users', icon: Users, group: 'Administration' },
+  { id: 'invitations', label: 'Invitations', icon: Plus, group: 'Administration' },
+  { id: 'work-time', label: 'Work time', icon: Clock3, group: 'Administration' },
+  { id: 'mail', label: 'Mail', icon: Mail, group: 'Administration' },
 ] as const;
 export type UnifiedSettingsSection = typeof personalSections[number]['id'] | typeof adminSections[number]['id'];
 const serverSections = new Set<UnifiedSettingsSection>(['gpus', 'generation', 'assistant', 'connections', 'model-files', 'integrations']);
@@ -51,7 +52,7 @@ export function UnifiedSettings({ user, section, onSectionChange, initialHardwar
   modelsRequest?: { section: ModelsSection; revision: number };
 }) {
   const admin = user.role === 'admin';
-  const sections = admin ? [...personalSections, ...adminSections] : [...personalSections];
+  const sections = admin ? [...personalSections.filter(entry => entry.id !== 'work-time'), ...adminSections] : [...personalSections];
   const selected = sections.some(entry => entry.id === section) ? section : 'app';
   const isServer = admin && serverSections.has(selected);
   const [serverVisited, setServerVisited] = useState(isServer), [modelsVisited, setModelsVisited] = useState(admin && selected === 'models');

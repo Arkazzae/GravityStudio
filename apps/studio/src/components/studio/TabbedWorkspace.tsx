@@ -1,5 +1,5 @@
 'use client';
-import { useLayoutEffect, useRef, type ComponentType, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useLayoutEffect, useRef, type ComponentType, type KeyboardEvent, type ReactNode } from 'react';
 import type { IconProps } from '@/components/ui/icons';
 import styles from './TabbedWorkspace.module.css';
 
@@ -8,6 +8,7 @@ export interface WorkspaceSection<T extends string> {
   label: string;
   icon: ComponentType<IconProps>;
   busy?: boolean;
+  group?: string;
 }
 
 export function TabbedWorkspace<T extends string>({ id, label, sections, selected, onSelect, children }: {
@@ -19,7 +20,12 @@ export function TabbedWorkspace<T extends string>({ id, label, sections, selecte
   children: ReactNode;
 }) {
   const content = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => { if (content.current) content.current.scrollTop = 0; }, [selected]);
+  const sidebar = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (content.current) content.current.scrollTop = 0;
+    const frame = requestAnimationFrame(() => sidebar.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+    return () => cancelAnimationFrame(frame);
+  }, [selected]);
 
   function navigate(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let next: number;
@@ -34,13 +40,16 @@ export function TabbedWorkspace<T extends string>({ id, label, sections, selecte
   }
 
   return <div className={styles.workspace}>
-    <nav className={styles.sidebar} role="tablist" aria-label={label} aria-orientation="vertical">
-      {sections.map(({ id: section, label: title, icon: Icon, busy }, index) => <button key={section} type="button" role="tab"
+    <nav ref={sidebar} className={styles.sidebar} role="tablist" aria-label={label} aria-orientation="vertical">
+      {sections.map(({ id: section, label: title, icon: Icon, busy, group }, index) => <Fragment key={section}>
+        {group && sections[index - 1]?.group !== group && <div id={`${id}-group-${encodeURIComponent(group)}`} className={styles.groupHeading} role="presentation" aria-hidden="true"><span>{group}</span></div>}
+        <button type="button" role="tab"
         id={`${id}-tab-${section}`} aria-controls={`${id}-panel-${section}`} aria-selected={selected === section}
+        aria-describedby={group ? `${id}-group-${encodeURIComponent(group)}` : undefined}
         aria-label={title} title={title} tabIndex={selected === section ? 0 : -1} className={styles.tab}
         onClick={() => onSelect(section)} onKeyDown={event => navigate(event, index)}>
         <Icon size={18} className={busy ? 'animate-spin' : undefined} /><span className={styles.tabLabel}>{title}</span>
-      </button>)}
+      </button></Fragment>)}
     </nav>
     <div ref={content} data-dialog-scroll={selected} className={`${styles.content} @container`}>{children}</div>
   </div>;

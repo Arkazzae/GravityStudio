@@ -33,6 +33,16 @@
 .tab:focus-visible { outline: 2px solid var(--color-volt); outline-offset: -2px; }
 .tabLabel { min-width: 0; }
 
+.groupHeading {
+  flex-shrink: 0;
+  padding: 16px 12px 4px;
+  color: var(--color-ink-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.groupHeading:first-child { padding-top: 4px; }
+
 .content {
   min-width: 0;
   min-height: 0;
@@ -46,5 +56,8 @@
   .sidebar { width: 56px; padding: 12px 5px; }
   .tab { justify-content: center; padding-inline: 0; }
   .tabLabel { display: none; }
+  .groupHeading { margin: 10px 9px 8px; padding: 0; border-top: 1px solid var(--color-line); }
+  .groupHeading:first-child { display: none; }
+  .groupHeading span { display: none; }
   .content { padding: 20px 16px; }
 }

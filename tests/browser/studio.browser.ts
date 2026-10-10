@@ -1053,7 +1053,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['App', 'Work time', 'API access', 'Models', 'GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'Storage', 'Users', 'Invitations', 'Mail']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['App', 'API access', 'Models', 'Generation', 'Assistant', 'Model files', 'GPUs', 'Connections', 'Integrations', 'Storage', 'Users', 'Invitations', 'Work time', 'Mail']);
   assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-integrations')"), false, 'Integration settings load only after selecting their tab');
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
@@ -1061,7 +1061,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(await browser.evaluate('document.activeElement?.id'), `settings-tab-${section}`, 'Keyboard navigation moves focus with the selected tab');
     assert.equal(await browser.evaluate(`document.querySelector('#settings-panel-${section}').getAttribute('aria-labelledby')`), `settings-tab-${section}`, 'The selected panel is labelled by its tab');
   }
-  await browser.click('#settings-tab-gpus');
+  await browser.click('#settings-tab-models');
   await settingsKey('ArrowDown', 'generation');
   await browser.fill('#settings-panel-generation input[name="ramReserveGiB"]', '9');
   await browser.fill('#settings-panel-generation input[name="vramReserveGiB"]', '1.5');
@@ -1069,6 +1069,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.fill('#settings-panel-generation select[name="idleUnloadSeconds"]', '300');
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').textContent.includes('Keep models ready')"), true, 'Retention is controlled in Generation');
   await settingsKey('ArrowDown', 'assistant');
+  await settingsKey('ArrowDown', 'model-files');
+  await settingsKey('ArrowDown', 'gpus');
   await settingsKey('ArrowDown', 'connections');
   const workerNameInput = '#settings-panel-connections input[maxlength="80"]';
   await browser.until("document.querySelector('#settings-panel-connections')?.innerText.includes('Assigned GPU')", 'Managed worker shows its assigned GPU');
@@ -1095,7 +1097,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('#settings-panel-connections input[name=worker-gpu]')", 'Removing the unsaved manual worker returns to the managed worker');
   await browser.fill(workerNameInput, 'Unsaved browser worker');
   await browser.click('#settings-tab-connections');
-  await settingsKey('ArrowDown', 'model-files');
+  await settingsKey('ArrowUp', 'gpus');
+  await settingsKey('ArrowUp', 'model-files');
   await browser.fill('#settings-panel-model-files select', modelId);
   const modelWorkers = '#settings-panel-model-files input[type="checkbox"][name="model-worker"]';
   const selectedModelWorkers = `Array.from(document.querySelectorAll('${modelWorkers}:checked')).map(input => input.value)`;
@@ -1109,9 +1112,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const checkpointInput = '#settings-panel-model-files input[list="artifacts-checkpoint"]';
   await browser.fill(checkpointInput, 'unsaved-browser-checkpoint.safetensors');
   await browser.click('#settings-tab-model-files');
-  await settingsKey('ArrowUp', 'connections');
+  await settingsKey('ArrowDown', 'gpus');
+  await settingsKey('ArrowDown', 'connections');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(workerNameInput)}).value`), 'Unsaved browser worker', 'Changing tabs preserves an unsaved connection name');
-  await settingsKey('ArrowDown', 'model-files');
+  await settingsKey('ArrowUp', 'gpus');
+  await settingsKey('ArrowUp', 'model-files');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(checkpointInput)}).value`), 'unsaved-browser-checkpoint.safetensors', 'Changing tabs preserves an unsaved model filename');
   assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy'], 'Changing tabs preserves the worker selection draft');
   await browser.click(`${modelWorkers}[value="browser-comfy-first"]`);
@@ -1124,8 +1129,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await settingsKey('Home', 'app');
   assert.equal(await browser.evaluate("['generation', 'connections', 'model-files'].every(section => document.querySelector('#settings-panel-' + section)?.getClientRects().length === 0)"), true, 'Inactive sections remain mounted and hidden');
   await settingsKey('End', 'mail');
+  await settingsKey('ArrowUp', 'work-time');
   await settingsKey('Home', 'app');
-  await settingsKey('ArrowDown', 'work-time');
   await settingsKey('ArrowDown', 'api');
   await browser.until("document.body.innerText.includes('API & MCP access')", 'API access settings');
   await browser.fill('input[placeholder="My MCP client"]', 'Browser test MCP');
@@ -1157,7 +1162,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal((await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
   // Fail one list request to exercise retry without contacting any external provider.
   await browser.evaluate("(() => { const originalFetch = window.fetch.bind(window); window.fetch = (input, init) => { if (String(input) === '/api/integrations' && !init?.method) { window.fetch = originalFetch; return Promise.resolve(new Response(JSON.stringify({error: {message: 'Integration list unavailable.'}}), {status: 503, headers: {'Content-Type': 'application/json'}})); } return originalFetch(input, init); }; })()");
-  await browser.click('#settings-tab-model-files');
+  await browser.click('#settings-tab-connections');
   await settingsKey('ArrowDown', 'integrations');
   await browser.until("document.querySelector('#settings-panel-integrations [role=alert]')?.textContent.includes('Integration list unavailable.')", 'Integration list failure is actionable');
   await clickScopedText('#settings-panel-integrations', 'Try again');
