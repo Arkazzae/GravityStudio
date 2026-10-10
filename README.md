@@ -14,14 +14,15 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Image upscaling with Nomos2 HQ and SeedVR2 3B / 7B on the same ComfyUI workers.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
-- Administrator and user accounts, one-use invitations, private galleries, revocable API tokens, a REST API and an MCP endpoint.
+- Administrator and user accounts, one-use invitations, private galleries, scoped API tokens with expiration, a REST API and an MCP endpoint.
+- An OpenAI-compatible gateway for image generation/editing and streamed text conversations with configured local or external models.
 - One Settings workspace with role-based administration, model management, disk usage, server-time allowances and SMTP, Resend or Cloudflare invitation email.
 - A slide-out Account panel with a saved display name, avatar colors and workspace name.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
 - Live GPU memory and runtime activity, optional completion sounds and desktop notifications, and an installable PWA with manual updates.
 
-This first version focuses on image generation and prompt assistance. A standalone chat workspace, video, audio, training and an incoming OpenAI-compatible API are outside this release.
+This first version focuses on image generation and language-model access. A standalone chat workspace, video, audio and training are outside this release.
 
 ## Start the studio
 
@@ -46,7 +47,7 @@ Open **Settings**. Tabs are grouped into **Personal**, **Creation**, **Server** 
 
 Create an invitation with a role, expiration and optional initial time allowance. Copy its link or explicitly send it by email. Links can be used once and can be revoked before acceptance. Studio stores only their hashes. There is no open registration. Suspension immediately revokes sessions and API tokens; reactivation requires signing in again. Deleting an account removes its images and account data, retaining an anonymous usage ledger. Active jobs and uploads must finish first; queued jobs are cancelled. Interrupted jobs must be resolved before deletion. Failed storage cleanup leaves the account disabled and retries automatically.
 
-**Work time** measures time reserved for model loading, execution and handling the result. Overlapping tasks count once per user. Queue waits, browsing, downloads and idle models are free. Administrators have unlimited time; invited users receive the allowance chosen in their invitation and can receive later adjustments with a reason. Exhaustion blocks new work and pauses queued admission, while active jobs finish normally and may leave a negative balance. Interrupted image jobs retain their reservation until resolved. Local prompt refinement counts; external provider requests do not use the machine-time allowance. Earlier completed jobs are not charged retroactively.
+**Work time** measures time reserved for model loading, execution and handling the result. Overlapping tasks count once per user. Queue waits, browsing, downloads and idle models are free. Administrators have unlimited time; invited users receive the allowance chosen in their invitation and can receive later adjustments with a reason. Exhaustion blocks new work and pauses queued admission, while active jobs finish normally and may leave a negative balance. Interrupted image jobs retain their reservation until resolved. Local prompt refinement and chat count; external provider requests do not use the machine-time allowance. Earlier completed jobs are not charged retroactively.
 
 Under **Settings → Mail**, configure a sender and choose authenticated SMTP (implicit TLS or required STARTTLS), Resend, or Cloudflare Email Service. Secrets use the same encrypted credential vault as model integrations. Resend needs an API key and verified sending domain. Cloudflare uses its [SMTP sending service](https://developers.cloudflare.com/email-service/api/send-emails/smtp/), an onboarded sending domain and an API token with **Email Sending:Edit** permission. Email Routing alone is insufficient. **Send test email** sends only when explicitly requested; saving settings does not send a message. Provider acceptance does not guarantee inbox delivery.
 
@@ -120,11 +121,19 @@ External workers are supported. Their reported memory is checked before admissio
 
 ## API and MCP
 
-Create a token under **Settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an administrator browser session.
+Open **Settings → API access** to copy connection details and create a token. Choose image creation, read-only library access, language models, all Studio workflows, or individual permissions. Tokens expire after 7, 30, 90 or 365 days, or can have no expiration. The secret is displayed once; revoke it from the same panel. Model downloads, provider credentials and administration remain restricted to administrator browser sessions.
 
-The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model, adapter and upscaler listing, image generation and editing, upscaling, background removal, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
+| Interface | Default local address | Available workflows |
+| --- | --- | --- |
+| OpenAI-compatible API | `http://127.0.0.1:4321/v1` | Model discovery, chat completions with streaming, image generation and editing, reference files |
+| MCP over Streamable HTTP | `http://127.0.0.1:4321/api/mcp` | Images, editing, upscaling, cutout, owned assets and favorites, durable jobs, text/refine and server status |
+| Studio REST API | `http://127.0.0.1:4321/api` | Native image controls, job progress and authenticated media |
 
-See [API usage](apps/server/README.md) for requests and response behavior.
+Clients authenticate with `Authorization: Bearer <Studio token>`. This release uses personal access tokens; it does not provide OAuth login or a bundled stdio MCP server. MCP exposes only tools allowed by the token. Local models use the same GPU scheduling and server-time allowance as Studio; external text requests use the administrator's configured provider connection. Grant `text:generate` explicitly to enable those requests.
+
+Image requests enter the same durable queue and gallery as the web interface. Supply an `Idempotency-Key` and reuse it with the identical request after a lost response. OpenAI image calls can use `Prefer: respond-async` to return accepted job IDs immediately. Disconnecting does not cancel accepted image jobs. Chat requests stream directly and are not durable jobs.
+
+See [API usage](apps/server/README.md) for the supported compatibility subset, permissions, curl and SDK examples, image masks and recovery behavior.
 
 ## Integration keys
 
@@ -146,7 +155,7 @@ In **Settings → Models → Language** or **Settings → Assistant**, load the 
 
 Open **AI** in the prompt dock to **Refine** the current prompt or **Rewrite** it with an instruction. Guidance follows the selected image model's family. Only text is sent to the provider; reference images stay in Studio. Generation uses the resulting prompt without another automatic refinement. Undo restores the preceding prompt until you edit it, and Cancel stops waiting and aborts the upstream request. The provider may still charge for work it has already performed.
 
-Refinement requires an active user's browser session. Existing Studio API tokens and MCP clients cannot invoke paid text requests. Responses have time and size limits, incomplete output is rejected, and replies cannot replace a draft edited during the request. Quoted lettering and image markers are preserved; edit the original prompt directly when changing them. Cloud adapters are covered with protocol fixtures; no live paid-provider inference is part of the automated tests.
+Refinement accepts an active user's browser session or a token with `text:generate`, including MCP clients. Existing tokens need that permission granted through a newly created token before they can invoke language models. Responses have time and size limits, incomplete output is rejected, and replies cannot replace a draft edited during the request. Quoted lettering and image markers are preserved; edit the original prompt directly when changing them. Cloud adapters are covered with protocol fixtures; no live paid-provider inference is part of the automated tests.
 
 ## Data and deployment
 
