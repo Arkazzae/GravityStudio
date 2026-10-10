@@ -77,12 +77,13 @@ test("Ultra retains every family's High aspect presets and produces an even 4096
   }
 });
 
-test("Ultra promotes ordinary and custom canvases to High without changing generation sampling controls", () => {
+test("Ultra promotes canvases and default sampling to High while preserving explicit controls", () => {
   for (const model of familyModels()) {
     const snapshot = compileGeneration({ ...ultra, modelId: model.id }, model);
     assert.deepEqual([snapshot.parameters.width, snapshot.parameters.height], highCanvases[model.familyId][0], model.id);
     const ordinary = compileGeneration({ ...base, modelId: model.id }, model);
-    for (const key of ["steps", "cfg", "sampler", "scheduler", "clipSkip", "seed", "denoise"] as const) {
+    assert.equal(snapshot.parameters.steps, FAMILY_RECIPES[model.familyId].qualityPresets.find(preset => preset.id === "high")!.sampling!.steps);
+    for (const key of ["cfg", "sampler", "scheduler", "clipSkip", "seed", "denoise"] as const) {
       assert.equal(snapshot.parameters[key], ordinary.parameters[key], `${model.id} ${key}`);
     }
     const custom = compileGeneration({ ...ultra, modelId: model.id, width: 1216, height: 1024 }, model);
@@ -228,7 +229,7 @@ test("ordinary generation retains requested dimensions and has no Ultra requirem
 });
 
 test("invalid quality, unsafe dimensions and alternative upscalers cannot silently enable a different Ultra recipe", () => {
-  for (const quality of ["high", "Ultra", "ultra-quality", "", null, false, 1, {}]) {
+  for (const quality of ["custom", "Ultra", "ultra-quality", "", null, false, 1, {}]) {
     assert.throws(() => compileGeneration({ ...base, quality } as GenerationRequest), { code: "INVALID_INPUT" });
   }
   for (const patch of [{ width: 0 }, { width: 1025 }, { width: 4096 }, { height: Infinity }, { height: 768.5 }, { postprocess: { modelId: "nomos2-hq" } }]) {

@@ -1,6 +1,6 @@
 export const JOB_STATUSES = ["queued", "preparing", "running", "succeeded", "failed", "cancelled", "interrupted"] as const;
 export type JobStatus = typeof JOB_STATUSES[number];
-export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras" | "background_removal" | "upscale_models";
+export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras" | "clip_vision" | "background_removal" | "upscale_models";
 export interface WorkerSettings {
   id: string;
   name: string;
@@ -39,7 +39,7 @@ export interface IntegrationStatus {
 export interface IntegrationTestResult { ok: true; message: string }
 export interface GenerationInput {
   /** High native resolution followed by SeedVR2 7B to a 4096px longest edge. */
-  quality?: "ultra";
+  quality?: "fast" | "standard" | "high" | "ultra";
   modelId: string;
   background?: "auto" | "opaque" | "transparent";
   operation?: "text-to-image" | "image-to-image" | "reference";
@@ -54,6 +54,13 @@ export interface GenerationInput {
   sampler?: string;
   scheduler?: string;
   images?: string[];
+  /** Owned lossless mask input; white pixels select the area to change. */
+  maskId?: string;
+  outpaint?: { left: number; right: number; top: number; bottom: number };
+  matchSource?: boolean;
+  refiner?: boolean;
+  referenceStrength?: number;
+  loras?: { id: string; strength: number }[];
 }
 export interface SavedOutput {
   id: string;
@@ -72,8 +79,15 @@ export interface UpscaleInput {
   scale: 2 | 4;
   seed?: number;
 }
-export type JobInput = GenerationInput | UpscaleInput;
+export interface BackgroundRemovalInput {
+  operation: "remove-background";
+  modelId: "birefnet";
+  source: UpscaleSource;
+}
+export type JobInput = GenerationInput | UpscaleInput | BackgroundRemovalInput;
 export function isUpscaleInput(input: JobInput): input is UpscaleInput { return input.operation === "upscale"; }
+export function isBackgroundRemovalInput(input: JobInput): input is BackgroundRemovalInput { return input.operation === "remove-background"; }
+export function isImageToolInput(input: JobInput): input is UpscaleInput | BackgroundRemovalInput { return isUpscaleInput(input) || isBackgroundRemovalInput(input); }
 export interface UpscalerCard {
   id: string;
   name: string;

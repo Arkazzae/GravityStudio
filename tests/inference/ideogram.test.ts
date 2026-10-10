@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { checkCapabilities, compileGeneration, getModel, verifySnapshot } from "../../packages/inference/index.ts";
 import type { ComfyDiscovery, GenerationRequest } from "../../packages/inference/index.ts";
 import signatures from "./fixtures/comfy-v0.39.0-signatures.json" with { type: "json" };
+import editingInfo from "./fixtures/editing-object-info.json" with { type: "json" };
 
 const modelId = "ideogram-4-fp8";
 const request = { modelId, prompt: 'Poster reading "Zażółć gęślą jaźń"\nA ceramic cup beside the lettering.', seed: 0 };
@@ -16,6 +17,9 @@ function discovery(): ComfyDiscovery {
   const definitions = signatures.nodes as Record<string, { required: Record<string, string | string[]>; optional: Record<string, string | string[]>; outputs: string[] }>;
   const objectInfo: ComfyDiscovery["objectInfo"] = {};
   for (const { class_type } of Object.values(snapshot.graph)) {
+    if (class_type === "SplitSigmas" || class_type === "DisableNoise") {
+      objectInfo[class_type] = structuredClone(editingInfo[class_type]); continue;
+    }
     const definition = definitions[class_type];
     const sockets = (values: Record<string, string | string[]>) => Object.fromEntries(Object.entries(values).map(([name, type]) => [name, [type === "COMBO" ? choices[name] : type]]));
     objectInfo[class_type] = { input: { required: sockets(definition.required), optional: sockets(definition.optional) }, output: definition.outputs };
@@ -32,14 +36,15 @@ test("Ideogram uses independent conditional and image-only unconditional models 
   assert.equal(graph.model_negative.inputs.weight_dtype, "default");
   assert.equal(graph.clip.inputs.type, "ideogram4");
   assert.equal(graph.vae.inputs.vae_name, "flux2-vae.safetensors");
-  assert.deepEqual(graph.guider.inputs, { model: ["polish", 0], model_negative: ["model_negative", 0], positive: ["positive", 0], cfg: 7 });
+  assert.deepEqual(graph.guider.inputs, { model: ["model", 0], model_negative: ["model_negative", 0], positive: ["positive", 0], cfg: 7 });
   assert.equal("negative" in graph, false, "zeroed text would run the wrong unconditional model path");
-  assert.deepEqual(graph.polish.inputs, { model: ["model", 0], cfg: 3, start_percent: 0.7, end_percent: 1 });
+  assert.deepEqual(graph.polish.inputs, { model: ["model", 0], model_negative: ["model_negative", 0], positive: ["positive", 0], cfg: 3 });
+  assert.deepEqual(graph.polish_schedule.inputs, { sigmas: ["schedule", 0], step: 18 });
   assert.deepEqual(graph.schedule.inputs, { steps: 20, width: 1024, height: 1024, mu: 0, std: 1.75 });
   assert.deepEqual(graph.latent.inputs, { width: 1024, height: 1024, batch_size: 1 });
   assert.equal(graph.noise.inputs.noise_seed, 0);
   assert.equal(graph.sampler.inputs.sampler_name, "euler");
-  assert.deepEqual(graph.sample.inputs, { noise: ["noise", 0], guider: ["guider", 0], sampler: ["sampler", 0], sigmas: ["schedule", 0], latent_image: ["latent", 0] });
+  assert.deepEqual(graph.sample.inputs, { noise: ["noise", 0], guider: ["guider", 0], sampler: ["sampler", 0], sigmas: ["polish_schedule", 0], latent_image: ["latent", 0] });
   assert.deepEqual(graph.output.inputs.images, ["decode", 0]);
   verifySnapshot(snapshot);
 });
@@ -83,7 +88,7 @@ test("Ideogram discovery requires both diffusion files, native nodes and the cor
   const missingFile = discovery();
   missingFile.models.diffusion_models = ["ideogram4_fp8_scaled.safetensors"];
   assert(checkCapabilities(snapshot, missingFile).issues.some(issue => issue.code === "MISSING_MODEL" && issue.message.includes("unconditional")));
-  for (const name of ["Ideogram4Scheduler", "DualModelGuider", "CFGOverride"]) {
+  for (const name of ["Ideogram4Scheduler", "DualModelGuider", "SplitSigmas", "DisableNoise"]) {
     const missingNode = discovery(); delete missingNode.objectInfo[name];
     assert(checkCapabilities(snapshot, missingNode).issues.some(issue => issue.code === "MISSING_NODE" && issue.message.includes(name)));
   }

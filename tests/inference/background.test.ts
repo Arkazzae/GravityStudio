@@ -80,8 +80,8 @@ test("other image families cut out the final image once using pinned auxiliary w
       const normal = compileGeneration(input);
       const snapshot = compileGeneration({ ...input, background: "transparent" });
       assert.deepEqual(snapshot.model.artifacts, normal.model.artifacts, "Optional weights do not alter the image-model manifest");
-      assert.deepEqual(snapshot.auxiliaryArtifacts, [BIREFNET_ARTIFACT]);
-      assert.notEqual(snapshot.auxiliaryArtifacts![0], BIREFNET_ARTIFACT);
+      assert.deepEqual(snapshot.auxiliaryArtifacts, [...(normal.auxiliaryArtifacts ?? []), BIREFNET_ARTIFACT]);
+      assert.notEqual(snapshot.auxiliaryArtifacts!.at(-1), BIREFNET_ARTIFACT);
       assert.equal(snapshot.graph.background_model.class_type, "LoadBackgroundRemovalModel");
       assert.deepEqual(snapshot.graph.background_model.inputs, { bg_removal_name: BIREFNET_ARTIFACT.filename });
       assert.deepEqual(snapshot.graph.background_mask, { class_type: "RemoveBackground", inputs: { bg_removal_model: ["background_model", 0], image: normal.graph.output.inputs.images } });

@@ -37,3 +37,24 @@ export function ultraOutputSize(width: number, height: number): { width: number;
   const factor = 4096 / Math.max(width, height);
   return { width: Math.max(2, 2 * Math.round(width * factor / 2)), height: Math.max(2, 2 * Math.round(height * factor / 2)) };
 }
+
+/** Fit a source without cropping, then add explicit grid-aligned canvas padding. */
+export function sourceCanvasSize(model: ImageSizeModel, source: { width: number; height: number }, padding?: { left: number; right: number; top: number; bottom: number }): { width: number; height: number; sourceWidth: number; sourceHeight: number } | null {
+  if (![source.width, source.height].every(value => Number.isSafeInteger(value) && value > 0 && value <= 32768)) return null;
+  const d = model.dimensions ?? DEFAULT_DIMENSIONS;
+  const p = padding ?? { left: 0, right: 0, top: 0, bottom: 0 };
+  if (!p || Object.keys(p).length !== 4 || ![p.left, p.right, p.top, p.bottom].every(value => Number.isInteger(value) && value >= 0 && value <= 2048 && value % d.multiple === 0)) return null;
+  const ratio = source.width / source.height;
+  const x = p.left + p.right, y = p.top + p.bottom;
+  let best: ReturnType<typeof sourceCanvasSize> = null;
+  let score = Infinity;
+  for (let w = d.multiple; w + x <= d.max; w += d.multiple) {
+    for (const h of new Set([Math.floor(w / ratio / d.multiple), Math.ceil(w / ratio / d.multiple)].map(value => value * d.multiple))) {
+      const width = w + x, height = h + y;
+      if (h < d.multiple || width < d.min || height < d.min || height > d.max || width * height > d.maxPixels || Math.abs(w / h / ratio - 1) > .02) continue;
+      const candidate = Math.abs(Math.log(w * h / (source.width * source.height))) + 8 * Math.abs(Math.log(w / h / ratio));
+      if (candidate < score) { score = candidate; best = { width, height, sourceWidth: w, sourceHeight: h }; }
+    }
+  }
+  return best;
+}

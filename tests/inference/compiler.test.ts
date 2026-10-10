@@ -49,7 +49,7 @@ test("family validation rejects unsupported operations, silent controls and unsa
     assert.throws(() => compileGeneration({ ...base, ...patch } as never), InferenceError);
   }
   assert.throws(() => compileGeneration({ ...base, operation: "image-to-image" }), /input image/);
-  assert.throws(() => compileGeneration({ modelId: "krea-2-turbo", operation: "reference", prompt: "Edit" }), /does not support/);
+  assert.throws(() => compileGeneration({ modelId: "krea-2-turbo", operation: "image-to-image", prompt: "Edit" }), /does not support/);
   assert.throws(() => compileGeneration({ modelId: "flux-2-klein-4b", prompt: "A cup", negativePrompt: "blur" }), /negative prompt/);
   assert.throws(() => compileGeneration({ ...base, operation: "image-to-image", images: [{ filename: "../private.png", subfolder: "", type: "input" }] }), /uploaded/);
   const model = getModel("sdxl-base"); model.artifacts[0].filename = "../private.safetensors";

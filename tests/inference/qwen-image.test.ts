@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { checkCapabilities, compileGeneration, FAMILY_RECIPES, getModel, verifySnapshot } from "../../packages/inference/index.ts";
 import type { ComfyDiscovery, InputImage } from "../../packages/inference/index.ts";
 import qwenObjectInfo from "./fixtures/qwen-image-2.1-object-info.json" with { type: "json" };
+import backgroundObjectInfo from "./fixtures/background-object-info.json" with { type: "json" };
 import { sdxlObjectInfo } from "./fake-comfy.ts";
 
 const modelId = "qwen-image-2.1";
@@ -15,7 +16,7 @@ function discovery(): ComfyDiscovery {
   const filename = (role: string) => model.artifacts.find(artifact => artifact.role === role)!.filename;
   return {
     objectInfo: {
-      ...structuredClone(sdxlObjectInfo), ...structuredClone(qwenObjectInfo),
+      ...structuredClone(sdxlObjectInfo), ...structuredClone(qwenObjectInfo), JoinImageWithAlpha: structuredClone(backgroundObjectInfo.JoinImageWithAlpha),
       UNETLoader: { input: { required: { unet_name: [[filename("diffusion")]], weight_dtype: [["default"]] } }, output: ["MODEL"] },
       CLIPLoader: { input: { required: { clip_name: [[filename("text-encoder")]], type: [["qwen_image"]] }, optional: { device: [["default", "cpu"]] } }, output: ["CLIP"] },
       VAELoader: { input: { required: { vae_name: [[filename("vae")]] } }, output: ["VAE"] },
@@ -50,7 +51,8 @@ test("Qwen references retain slot order, VAE conditioning and the requested outp
   assert.deepEqual(snapshot.graph.conditioning.inputs.vae, ["vae", 0]);
   for (const index of references.keys()) {
     const link = snapshot.graph.conditioning.inputs[`images.image_${index + 1}`];
-    assert.deepEqual(link, [`reference_${index}`, 0]);
+    assert.deepEqual(link, [`reference_${index}_rgba`, 0]);
+    assert.deepEqual(snapshot.graph[`reference_${index}_rgba`].inputs.alpha, [`reference_${index}`, 1]);
     assert.equal(snapshot.graph[`reference_${index}`].inputs.image, `grav/request/reference-${index}.png`);
   }
   assert.equal(snapshot.graph.conditioning.inputs.resolution, 992);
@@ -65,7 +67,7 @@ test("Qwen references retain slot order, VAE conditioning and the requested outp
 test("Qwen reference edits avoid reported sampling grids and save exactly the requested dimensions", () => {
   for (const [width, height, sampleWidth, sampleHeight] of [[1024, 1024, 1056, 1056], [1536, 1024, 1568, 1056], [768, 1024, 768, 1024]]) {
     const snapshot = compileGeneration({ ...request, operation: "reference", images: references.slice(0, 1), width, height });
-    assert.equal(snapshot.recipe.revision, "2");
+    assert.equal(snapshot.recipe.revision, "3");
     assert.deepEqual([snapshot.parameters.width, snapshot.parameters.height], [width, height]);
     assert.deepEqual(snapshot.graph.latent.inputs, { width: sampleWidth, height: sampleHeight, batch_size: 1 });
     assert.equal(snapshot.graph.conditioning.inputs.resolution, 992);

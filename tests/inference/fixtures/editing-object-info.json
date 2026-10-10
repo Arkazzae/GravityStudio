@@ -1,0 +1,746 @@
+{
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [
+          "COMBO",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ]
+  },
+  "LoadBackgroundRemovalModel": {
+    "input": {
+      "required": {
+        "bg_removal_name": [
+          "COMBO",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "BACKGROUND_REMOVAL"
+    ]
+  },
+  "RemoveBackground": {
+    "input": {
+      "required": {
+        "bg_removal_model": [
+          "BACKGROUND_REMOVAL",
+          {}
+        ],
+        "image": [
+          "IMAGE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "MASK"
+    ]
+  },
+  "InvertMask": {
+    "input": {
+      "required": {
+        "mask": [
+          "MASK",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "MASK"
+    ]
+  },
+  "JoinImageWithAlpha": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "alpha": [
+          "MASK",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ]
+  },
+  "SplitImageWithAlpha": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ]
+  },
+  "ImagePadForOutpaint": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "left": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "top": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "right": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "bottom": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "feathering": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ]
+  },
+  "ImageToMask": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "channel": [
+          [
+            "red",
+            "green",
+            "blue",
+            "alpha"
+          ],
+          {}
+        ]
+      }
+    },
+    "output": [
+      "MASK"
+    ]
+  },
+  "SetLatentNoiseMask": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "mask": [
+          "MASK",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ]
+  },
+  "VAEEncodeForInpaint": {
+    "input": {
+      "required": {
+        "pixels": [
+          "IMAGE",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "mask": [
+          "MASK",
+          {}
+        ],
+        "grow_mask_by": [
+          "INT",
+          {
+            "min": 0,
+            "max": 64,
+            "step": 1
+          }
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ]
+  },
+  "ImageCompositeMasked": {
+    "input": {
+      "required": {
+        "destination": [
+          "IMAGE",
+          {}
+        ],
+        "source": [
+          "IMAGE",
+          {}
+        ],
+        "x": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "y": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "resize_source": [
+          "BOOLEAN",
+          {}
+        ]
+      },
+      "optional": {
+        "mask": [
+          "MASK",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ]
+  },
+  "ImageCrop": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "width": [
+          "INT",
+          {
+            "min": 1,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "min": 1,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "x": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "y": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ]
+  },
+  "SolidMask": {
+    "input": {
+      "required": {
+        "value": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "width": [
+          "INT",
+          {
+            "min": 1,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "min": 1,
+            "max": 16384,
+            "step": 1
+          }
+        ]
+      }
+    },
+    "output": [
+      "MASK"
+    ]
+  },
+  "MaskComposite": {
+    "input": {
+      "required": {
+        "destination": [
+          "MASK",
+          {}
+        ],
+        "source": [
+          "MASK",
+          {}
+        ],
+        "x": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "y": [
+          "INT",
+          {
+            "min": 0,
+            "max": 16384,
+            "step": 1
+          }
+        ],
+        "operation": [
+          [
+            "multiply",
+            "add",
+            "subtract",
+            "and",
+            "or",
+            "xor"
+          ],
+          {}
+        ]
+      }
+    },
+    "output": [
+      "MASK"
+    ]
+  },
+  "CLIPVisionLoader": {
+    "input": {
+      "required": {
+        "clip_name": [
+          "COMBO",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "CLIP_VISION"
+    ]
+  },
+  "CLIPVisionEncode": {
+    "input": {
+      "required": {
+        "clip_vision": [
+          "CLIP_VISION",
+          {}
+        ],
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "crop": [
+          [
+            "center",
+            "none"
+          ],
+          {}
+        ]
+      }
+    },
+    "output": [
+      "CLIP_VISION_OUTPUT"
+    ]
+  },
+  "unCLIPConditioning": {
+    "input": {
+      "required": {
+        "conditioning": [
+          "CONDITIONING",
+          {}
+        ],
+        "clip_vision_output": [
+          "CLIP_VISION_OUTPUT",
+          {}
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "min": -10.0,
+            "max": 10.0,
+            "step": 0.01
+          }
+        ],
+        "noise_augmentation": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING"
+    ]
+  },
+  "LoraLoader": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "lora_name": [
+          "COMBO",
+          {}
+        ],
+        "strength_model": [
+          "FLOAT",
+          {
+            "min": -100.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ],
+        "strength_clip": [
+          "FLOAT",
+          {
+            "min": -100.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL",
+      "CLIP"
+    ]
+  },
+  "LoraLoaderModelOnly": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "lora_name": [
+          "COMBO",
+          {}
+        ],
+        "strength_model": [
+          "FLOAT",
+          {
+            "min": -100.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ]
+  },
+  "ModelSamplingFlux": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "max_shift": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ],
+        "base_shift": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ],
+        "width": [
+          "INT",
+          {
+            "min": 16,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "min": 16,
+            "max": 16384,
+            "step": 8
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ]
+  },
+  "TextEncodeQwenImageEditPlus": {
+    "input": {
+      "required": {
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "prompt": [
+          "STRING",
+          {}
+        ]
+      },
+      "optional": {
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "image1": [
+          "IMAGE",
+          {}
+        ],
+        "image2": [
+          "IMAGE",
+          {}
+        ],
+        "image3": [
+          "IMAGE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING"
+    ]
+  },
+  "FluxKontextMultiReferenceLatentMethod": {
+    "input": {
+      "required": {
+        "conditioning": [
+          "CONDITIONING",
+          {}
+        ],
+        "reference_latents_method": [
+          [
+            "offset",
+            "index",
+            "uxo/uno",
+            "index_timestep_zero"
+          ],
+          {}
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING"
+    ]
+  },
+  "KSamplerAdvanced": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "add_noise": [
+          [
+            "enable",
+            "disable"
+          ],
+          {}
+        ],
+        "noise_seed": [
+          "INT",
+          {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1
+          }
+        ],
+        "sampler_name": [
+          "COMBO",
+          {}
+        ],
+        "scheduler": [
+          "COMBO",
+          {}
+        ],
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ],
+        "start_at_step": [
+          "INT",
+          {
+            "min": 0,
+            "max": 10000
+          }
+        ],
+        "end_at_step": [
+          "INT",
+          {
+            "min": 0,
+            "max": 10000
+          }
+        ],
+        "return_with_leftover_noise": [
+          [
+            "disable",
+            "enable"
+          ],
+          {}
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ]
+  },
+  "SplitSigmasDenoise": {
+    "input": {
+      "required": {
+        "sigmas": [
+          "SIGMAS",
+          {}
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "output": [
+      "SIGMAS",
+      "SIGMAS"
+    ]
+  },
+  "SplitSigmas": {
+    "input": {
+      "required": {
+        "sigmas": [
+          "SIGMAS",
+          {}
+        ],
+        "step": [
+          "INT",
+          {
+            "min": 0,
+            "max": 10000
+          }
+        ]
+      }
+    },
+    "output": [
+      "SIGMAS",
+      "SIGMAS"
+    ]
+  },
+  "DisableNoise": {
+    "input": {
+      "required": {}
+    },
+    "output": [
+      "NOISE"
+    ]
+  }
+}

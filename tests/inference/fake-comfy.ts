@@ -53,7 +53,8 @@ export async function fakeComfy() {
     if (url.pathname === "/upload/image") {
       state.uploadBody = text;
       const subfolder = text.match(/name="subfolder"\r\n\r\n([^\r]+)/)?.[1];
-      return json({ name: "input.png", subfolder, type: "input" });
+      const name = text.match(/name="image"; filename="([^"\r\n]+)"/)?.[1] ?? "input.png";
+      return json({ name, subfolder, type: "input" });
     }
     if (url.pathname === "/free") { state.frees++; return res.end(); }
     if (url.pathname === "/prompt") {

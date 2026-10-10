@@ -1,8 +1,24 @@
 export type FamilyId = "sdxl" | "flux-2-klein-4b" | "flux-2-klein-9b" | "krea-2" | "qwen-image-2.1" | "ideogram-4";
 export type Operation = "text-to-image" | "image-to-image" | "reference";
 export type BackgroundMode = "auto" | "opaque" | "transparent";
-export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae" | "background-removal" | "upscale";
-export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "background_removal" | "upscale_models";
+export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae" | "background-removal" | "upscale" | "clip-vision" | "lora" | "refiner";
+export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "background_removal" | "upscale_models" | "clip_vision" | "loras";
+export type GenerationQuality = "fast" | "standard" | "high" | "ultra";
+export interface OutpaintPadding { left: number; right: number; top: number; bottom: number }
+export interface GenerationExtensionManifest {
+  id: string;
+  name: string;
+  revision: string;
+  kind: "lora" | "refiner" | "vision" | "style-reference";
+  category: "image";
+  description: string;
+  familyIds: FamilyId[];
+  artifacts: ModelArtifact[];
+  memory: { ramBytes: number; vramBytes: number };
+  license?: string;
+  licenseUrl?: string;
+  trigger?: string;
+}
 
 export interface ModelArtifact {
   role: ArtifactRole;
@@ -30,6 +46,7 @@ export interface ImageQualityPreset {
   pixels: number;
   /** Recommended minimum side for preset fitting; manual family limits remain authoritative. */
   minSide?: number;
+  sampling?: Partial<Pick<SamplingDefaults, "steps" | "cfg" | "sampler" | "scheduler">>;
 }
 
 /** Checkpoint data, independent of machines, processes and GPU addresses. */
@@ -67,7 +84,7 @@ export interface InputImage {
 }
 
 export interface GenerationRequest {
-  quality?: "ultra";
+  quality?: GenerationQuality;
   modelId: string;
   operation?: Operation;
   prompt: string;
@@ -84,14 +101,31 @@ export interface GenerationRequest {
   background?: BackgroundMode;
   /** Worker-side image references, supplied by the trusted application. */
   images?: InputImage[];
+  mask?: InputImage;
+  outpaint?: OutpaintPadding;
+  matchSource?: boolean;
+  /** Trusted source dimensions, supplied from stored media metadata. */
+  sourceSize?: { width: number; height: number };
+  refiner?: boolean;
+  referenceStrength?: number;
+  loras?: { id: string; strength: number }[];
 }
 
 export interface ResolvedParameters extends SamplingDefaults {
-  quality?: "ultra";
+  quality?: GenerationQuality;
   prompt: string;
   seed: number;
   denoise: number;
   background: BackgroundMode;
+  matchSource?: boolean;
+  sourceSize?: { width: number; height: number };
+  outpaint?: OutpaintPadding;
+  refiner?: boolean;
+  referenceStrength?: number;
+  loras?: { id: string; strength: number }[];
+  /** Internal sampling canvas for a bounded reference layout; output stays width/height. */
+  samplingWidth?: number;
+  samplingHeight?: number;
 }
 
 export type GraphLink = [string, number];
@@ -154,6 +188,9 @@ export interface GenerationSnapshot extends SnapshotBase {
   parameters: ResolvedParameters;
   /** Pinned restoration recipe; native sampling dimensions remain in parameters. */
   postprocess?: { model: UpscalerManifest; width: number; height: number };
+  extensions?: GenerationExtensionManifest[];
+  /** Separate from reference images so replay cannot turn a mask into a reference. */
+  mask?: InputImage;
 }
 
 export interface UpscaleSnapshot extends SnapshotBase {
@@ -162,7 +199,17 @@ export interface UpscaleSnapshot extends SnapshotBase {
   parameters: UpscaleParameters;
 }
 
-export type ExecutionSnapshot = GenerationSnapshot | UpscaleSnapshot;
+export interface BackgroundRemovalSnapshot extends SnapshotBase {
+  recipe: { familyId: "birefnet"; revision: string; operation: "remove-background" };
+  model: { id: "birefnet"; familyId: "birefnet"; revision: string; name: string; artifacts: ModelArtifact[]; memory: { ramBytes: number; vramBytes: number } };
+  parameters: { sourceWidth: number; sourceHeight: number; width: number; height: number };
+}
+
+export type ExecutionSnapshot = GenerationSnapshot | UpscaleSnapshot | BackgroundRemovalSnapshot;
+
+export function isBackgroundRemovalSnapshot(snapshot: ExecutionSnapshot): snapshot is BackgroundRemovalSnapshot {
+  return snapshot.recipe.operation === "remove-background";
+}
 
 export function isUpscaleSnapshot(snapshot: ExecutionSnapshot): snapshot is UpscaleSnapshot {
   return snapshot.recipe.operation === "upscale";

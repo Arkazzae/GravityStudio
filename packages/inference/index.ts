@@ -4,3 +4,6 @@ export * from "./compiler.ts";
 export * from "./discovery.ts";
 export * from "./comfy.ts";
 export * from "./upscale.ts";
+export * from "./background-removal.ts";
+export * from "./ideogram-prompt.ts";
+export * from "./generation-extensions.ts";
