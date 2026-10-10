@@ -11,36 +11,42 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
     id: "sdxl", name: "SDXL / Illustrious", revision: "1",
     operations: ["text-to-image", "image-to-image"], artifacts: ["checkpoint"],
     defaults: base, dimensions: { multiple: 8, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 1,
+    qualityPresets: [{ id: "fast", pixels: 768 ** 2, minSide: 512 }, { id: "standard", pixels: 896 ** 2, minSide: 512 }, { id: "high", pixels: 1024 ** 2, minSide: 512 }],
   },
   "flux-2-klein-4b": {
     id: "flux-2-klein-4b", name: "FLUX.2 Klein 4B", revision: "1",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
     dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+    qualityPresets: [{ id: "fast", pixels: 768 ** 2 }, { id: "standard", pixels: 1024 ** 2 }, { id: "high", pixels: 2_097_152 }],
   },
   "flux-2-klein-9b": {
     id: "flux-2-klein-9b", name: "FLUX.2 Klein 9B", revision: "1",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 4, cfg: 1, scheduler: "native" },
     dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 4,
+    qualityPresets: [{ id: "fast", pixels: 768 ** 2 }, { id: "standard", pixels: 1024 ** 2 }, { id: "high", pixels: 2_097_152 }],
   },
   "krea-2": {
     id: "krea-2", name: "Krea 2", revision: "1",
     operations: ["text-to-image"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 8, cfg: 1, scheduler: "simple" },
-    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 2_097_152 }, maxReferences: 0,
+    dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 0,
+    qualityPresets: [{ id: "fast", pixels: 1024 ** 2 }, { id: "standard", pixels: 2_097_152 }, { id: "high", pixels: 4_194_304 }],
   },
   "qwen-image-2.1": {
     id: "qwen-image-2.1", name: "Qwen Image 2.1", revision: "2",
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
     dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,
+    qualityPresets: [{ id: "fast", pixels: 1024 ** 2 }, { id: "standard", pixels: 2_097_152 }, { id: "high", pixels: 4_194_304 }],
   },
   "ideogram-4": {
     id: "ideogram-4", name: "Ideogram 4", revision: "1",
     operations: ["text-to-image"], artifacts: ["diffusion", "diffusion-unconditional", "text-encoder", "vae"],
     defaults: { ...base, steps: 20, cfg: 7, scheduler: "native" },
     dimensions: { multiple: 16, min: 256, max: 2048, maxPixels: 4_194_304 }, maxReferences: 0,
+    qualityPresets: [{ id: "fast", pixels: 1024 ** 2 }, { id: "standard", pixels: 2_097_152 }, { id: "high", pixels: 4_194_304 }],
   },
 };
 

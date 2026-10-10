@@ -101,7 +101,7 @@ export function modelCard(model: ModelManifest, configuration: ModelConfiguratio
   return {
     ...model, family: family.name, familyId: family.id,
     defaults: { ...family.defaults, ...model.defaults }, operations: model.operations ?? family.operations,
-    dimensions: family.dimensions, requiredArtifactRoles: family.artifacts,
+    dimensions: family.dimensions, qualityPresets: family.qualityPresets, requiredArtifactRoles: family.artifacts,
     ready, capabilities: { ready, maxImages: family.maxReferences, reference: family.maxReferences > 0 },
     missingReasons: configuration.enabled ? ready ? [] : ["Start the image engine with the required model files."] : ["Add this model from the model library."],
   };

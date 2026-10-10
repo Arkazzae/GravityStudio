@@ -23,6 +23,14 @@ export interface SamplingDefaults {
   clipSkip: number;
 }
 
+export interface ImageQualityPreset {
+  id: "fast" | "standard" | "high";
+  /** Target output pixel count, fitted to the selected aspect ratio and family limits. */
+  pixels: number;
+  /** Recommended minimum side for preset fitting; manual family limits remain authoritative. */
+  minSide?: number;
+}
+
 /** Checkpoint data, independent of machines, processes and GPU addresses. */
 export interface ModelManifest {
   id: string;
@@ -45,6 +53,7 @@ export interface FamilyRecipe {
   artifacts: readonly ArtifactRole[];
   defaults: Readonly<SamplingDefaults>;
   dimensions: { multiple: number; min: number; max: number; maxPixels: number };
+  qualityPresets: readonly ImageQualityPreset[];
   maxReferences: number;
 }
 

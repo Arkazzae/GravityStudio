@@ -36,6 +36,8 @@ Retry an uncertain submission with the **same key and exactly the same request**
 
 Uploads accept an optional `X-Filename` header, percent-encoded for non-ASCII names. The upload response contains the input `id` directly. Pass those IDs in the generation request's `images` array. The catalog describes which models accept references. Dimensions, steps, guidance, seed, negative prompt and denoise are validated by the selected family recipe.
 
+Each catalog model includes family `qualityPresets`: `fast`, `standard` and `high`, with a target `pixels` count and optional recommended `minSide`. These resolution choices also apply to imported checkpoints in that family. Fit the target to the selected aspect ratio and the model's `dimensions` limits, then submit explicit `width` and `height`; quality does not change sampling settings and is not a generation request field.
+
 Jobs retain the accepted recipe, model filenames, parameters and placement budget. A worker disconnect can produce `interrupted`: the server keeps looking for that existing generation and does not submit it again automatically. Running or interrupted jobs cannot be cancelled through this version of the API.
 
 If the worker has lost the generation after a restart, the owner can choose **Close unknown job** in the queue or Activity panel. After explicit acknowledgement, the server checks the original worker's queue and history again. Only an absent job still marked `interrupted` is closed as `failed`, with an explanation retained in its record, releasing its resource reservation. A reported job resumes recovery; an unreachable worker keeps its reservation. Closing never resubmits the generation, and a result that appears later will not be recovered automatically.

@@ -7,6 +7,7 @@ export interface StudioModel {
   unavailableReason?: string; missingReasons?: string[]; requiredArtifactRoles?: string[];
   operations?: Array<'text-to-image' | 'image-to-image' | 'reference'>;
   dimensions?: { multiple: number; min: number; max: number; maxPixels: number };
+  qualityPresets?: Array<{ id: 'fast' | 'standard' | 'high'; pixels: number; minSide?: number }>;
   defaults: { width: number; height: number; steps: number; cfg: number; negativePrompt?: string };
   limits?: { width?: ParameterRange; height?: ParameterRange; steps?: ParameterRange; cfg?: ParameterRange; maxImages?: number };
   capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean };
