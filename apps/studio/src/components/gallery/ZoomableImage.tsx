@@ -77,6 +77,9 @@ function ImageViewport({ src, alt, className, onError, referrerPolicy }: ImagePr
       }}
       onPointerDown={event => {
         if (zoom === 1 || event.button !== 0 || event.pointerType === "touch") return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        // Leave scrollbar drags to the browser; only the image canvas pans by hand.
+        if (event.clientX >= rect.left + event.currentTarget.clientWidth || event.clientY >= rect.top + event.currentTarget.clientHeight) return;
         event.preventDefault(); event.currentTarget.focus({ preventScroll: true });
         drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop };
         event.currentTarget.setPointerCapture(event.pointerId); setDragging(true);

@@ -56,6 +56,10 @@
     height: 100%;
   }
 
+  html {
+    color-scheme: dark;
+  }
+
   body {
     background: var(--color-void);
     color: var(--color-ink);
@@ -69,24 +73,40 @@
     color: var(--color-on-volt);
   }
 
-  /* Thin, unobtrusive scrollbars — the studio chrome should never shout. */
+  /* Share the studio's neutral palette across every scrolling surface. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2e2e2e transparent;
+    scrollbar-color: var(--color-ink-3) transparent;
+  }
+  /* Standard properties override the rounded WebKit track when both are supported. */
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
   }
   *::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
   *::-webkit-scrollbar-thumb {
-    background: #2e2e2e;
+    min-width: 24px;
+    min-height: 24px;
+    border: 2px solid transparent;
     border-radius: 99px;
+    background-color: var(--color-ink-3);
+    background-clip: padding-box;
   }
-  *::-webkit-scrollbar-thumb:hover {
-    background: #3d3d3d;
+  *::-webkit-scrollbar-thumb:hover,
+  *::-webkit-scrollbar-thumb:active {
+    background-color: var(--color-ink-2);
   }
-  *::-webkit-scrollbar-track {
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
     background: transparent;
+  }
+  *::-webkit-scrollbar-button {
+    display: none;
   }
 
   textarea {
@@ -127,13 +147,6 @@
     border: 0;
     border-radius: 99px;
     background: #f5f5f5;
-  }
-}
-
-@utility no-scrollbar {
-  scrollbar-width: none;
-  &::-webkit-scrollbar {
-    display: none;
   }
 }
 

@@ -141,7 +141,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   return <div key={bootstrap.user?.id} className="flex h-dvh flex-col overflow-hidden">
     <header className="titlebar sticky top-0 z-40 flex h-[52px] shrink-0 items-center gap-1 bg-void pl-4 pr-3 max-md:h-auto max-md:flex-wrap max-md:py-2">
       <Link href="/image" onClick={event => { event.preventDefault(); closePanel(); }} aria-label="Gravity Studio" className="mr-3 shrink-0 text-ink transition-colors hover:text-volt"><Logo className="size-6" /></Link>
-      <nav aria-label="Studio" className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto max-md:order-last max-md:basis-full max-md:py-2">
+      <nav aria-label="Studio" className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto max-md:order-last max-md:basis-full max-md:py-2">
         {['Explore', 'Image', 'Edit', 'Video', 'Cinema Studio', 'Audio', 'Music', '3D'].map(category => <div key={category} className="flex shrink-0 items-center">
           {category === 'Image' && <span aria-hidden="true" className="mx-2 h-4 w-px bg-line-2" />}
           {category === 'Image'
