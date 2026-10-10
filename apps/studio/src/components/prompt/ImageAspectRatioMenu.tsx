@@ -1,5 +1,5 @@
 'use client';
-import { Scan } from '@/components/ui/icons';
+import { RatioFrame, Scan } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { Dropdown, MenuLabel, MenuOption } from '@/components/ui/Dropdown';
 import { IMAGE_ASPECT_RATIOS, imageAspectRatio, imageSizeForRatio, type ImageAspectRatio } from '@/lib/image-settings';
@@ -8,7 +8,7 @@ import type { Draft } from './PromptDock';
 
 function RatioIcon({ ratio }: { ratio: number | null }) {
   return <span className="grid size-[18px] shrink-0 place-items-center" aria-hidden="true">
-    {ratio === null ? <Scan strokeWidth={1.7} /> : <span className="rounded-[2.5px] border-[1.5px] border-current" style={{ width: 16 * Math.min(1, ratio), height: 16 * Math.min(1, 1 / ratio) }} />}
+    {ratio === null ? <Scan strokeWidth={1.7} /> : <RatioFrame preserveAspectRatio="none" strokeWidth={1.5} className="[&_path]:[vector-effect:non-scaling-stroke]" style={{ width: 20 * Math.min(1, ratio), height: 20 * Math.min(1, 1 / ratio) }} />}
   </span>;
 }
 

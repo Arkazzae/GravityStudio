@@ -6,7 +6,7 @@ import {
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
   ExportSquare, Folder, Gallery, GalleryAdd, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, MessageQuestion,
   Notification as NotificationIcon, Monitor, Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
-  Shuffle as ShuffleIcon, Status, TickCircle, Trash, User, Warning2, type Icon,
+  Shuffle as ShuffleIcon, Status, Stop, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
 import { cn } from '@/lib/utils';
 import styles from './icons.module.css';
@@ -59,6 +59,7 @@ export const Library = /* @__PURE__ */ icon(Gallery, 'Library');
 export const LoaderCircle = /* @__PURE__ */ icon(Status, 'LoaderCircle');
 export const LogOut = /* @__PURE__ */ icon(Logout, 'LogOut');
 export const Plus = /* @__PURE__ */ icon(Add, 'Plus');
+export const RatioFrame = /* @__PURE__ */ icon(Stop, 'RatioFrame');
 export const RefreshCw = /* @__PURE__ */ icon(Refresh, 'RefreshCw');
 export const Repeat2 = /* @__PURE__ */ icon(RepeateMusic, 'Repeat2');
 export const RotateCcw = /* @__PURE__ */ icon(ArrowRotateLeft, 'RotateCcw');

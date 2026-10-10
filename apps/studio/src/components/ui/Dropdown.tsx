@@ -1,6 +1,7 @@
 "use client";
 
 import { useLayoutEffect } from "react";
+import { Check } from "@/components/ui/icons";
 import { cn } from "@/lib/utils";
 import { useAnchoredPopover } from "@/lib/useAnchoredPopover";
 import styles from "./Dropdown.module.css";
@@ -78,7 +79,7 @@ export function MenuItem({
 /*
  * The dock's menus all read like the model menu: a quiet uppercase heading, then
  * rows of a bare mark, a name and an optional note. The chosen row is lit and
- * its mark turns volt — there are no ticks, tiles or rings.
+ * its mark turns volt.
  */
 
 /** Names a menu, or a section of one. Quiet, because it repeats down a list. */
@@ -101,8 +102,7 @@ export function MenuNote({ children, className, ...props }: React.HTMLAttributes
   return <p className={cn("px-2 py-1.5 text-[11.5px] leading-relaxed text-ink-3", className)} {...props}>{children}</p>;
 }
 
-/** Where a row's mark sits. Without a mark it holds a dot, so a plain value
- *  still has something to light up when it is the chosen one. */
+/** Holds a row's icon, or a check for a selected plain value. */
 export function MenuTile({ active, children, className }: { active?: boolean; children?: React.ReactNode; className?: string }) {
   return (
     <span
@@ -114,7 +114,7 @@ export function MenuTile({ active, children, className }: { active?: boolean; ch
         className,
       )}
     >
-      {children ?? <span className={cn("block size-1 rounded-full bg-current", !active && "opacity-60")} />}
+      {children ?? (active ? <Check /> : null)}
     </span>
   );
 }
