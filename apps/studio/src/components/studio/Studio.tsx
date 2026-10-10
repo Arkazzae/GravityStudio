@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { Boxes, HardDrive, LayoutGrid, Library, Rows3, Settings } from '@/components/ui/icons';
 import { Logo } from '@/components/layout/Logo';
 import { AccountButton } from '@/components/account/AccountButton';
+import { imageBackground } from '@/lib/image-background';
 import { IconChip } from '@/components/ui/Chip';
 import { AuthPanel } from '@/components/setup/AuthPanel';
 import { SettingsWorkspace, type SettingsSection } from '@/components/setup/SettingsWorkspace';
@@ -66,7 +67,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     try {
       const value = JSON.parse(localStorage.getItem(`gravity:image-draft:${userId}`) || 'null');
       if (value && typeof value.modelId === 'string' && typeof value.prompt === 'string') {
-        setDraft({ ...initialDraft, ...value, images: Array.isArray(value.images) ? value.images.filter((image: { id?: unknown; url?: unknown }) => typeof image.id === 'string' && typeof image.url === 'string' && image.url.startsWith('/api/inputs/')) : [] });
+        setDraft({ ...initialDraft, ...value, background: imageBackground(value.background), images: Array.isArray(value.images) ? value.images.filter((image: { id?: unknown; url?: unknown }) => typeof image.id === 'string' && typeof image.url === 'string' && image.url.startsWith('/api/inputs/')) : [] });
       }
     } catch { /* A blocked or full browser store does not prevent generation. */ }
     setDraftOwner(userId);
@@ -121,7 +122,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     finally { setSigningOut(false); }
   }
   function reuse(job: Job) {
-    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', quality: 'custom', ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
+    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', quality: 'custom', ...job.parameters, background: imageBackground(job.parameters.background), negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
     document.getElementById('image-prompt')?.focus();
   }
   async function deleteOutput(job: Job, output: Job['outputs'][number]) {

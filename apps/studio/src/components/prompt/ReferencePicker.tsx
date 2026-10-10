@@ -175,7 +175,7 @@ export function ReferencePicker({ open, triggerRef, jobs, max = 1, onPick, onClo
               const selected = picked.includes(asset.id), blocked = !selected && full && limit !== 1;
               return <article key={asset.id} data-asset-id={asset.id} data-source={asset.source} className={styles.card} data-selected={selected} data-disabled={blocked}>
                 <button type="button" className={styles.openCard} disabled={blocked || busy} aria-pressed={selected} aria-label={`${selected ? 'Deselect' : 'Select'} ${asset.label}`} title={blocked ? `Choose up to ${limit}.` : asset.label} onClick={() => toggle(asset.id)}>
-                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={styles.media} />
+                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={`image-checkerboard ${styles.media}`} />
                   <span className={styles.cardOverlay} /><span className={styles.caption}>{asset.label}</span>
                 </button><span className={styles.mark} aria-hidden="true"><Check strokeWidth={3} /></span>
               </article>;

@@ -216,6 +216,7 @@ input, textarea { caret-color: var(--color-volt); }
 .field input:focus,.field select:focus,.field textarea:focus { border-color: var(--color-volt); outline: none; }
 .field input[type=checkbox] { width: 17px; min-height: 17px; accent-color: var(--color-volt); }
 .error-notice { border: 1px solid #e8997038; border-radius: 10px; background: #67412c33; padding: 11px 13px; color: #ffc3aa; font-size: 13px; line-height: 1.5; }
+.image-checkerboard { background-color: var(--color-panel-2); background-image: conic-gradient(var(--color-chip) 25%, transparent 0 50%, var(--color-chip) 0 75%, transparent 0); background-size: 16px 16px; }
 .text-action { color: var(--color-ink-2); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
 .text-action:hover { color: var(--color-ink); }
 dialog::backdrop { background: #000c; }

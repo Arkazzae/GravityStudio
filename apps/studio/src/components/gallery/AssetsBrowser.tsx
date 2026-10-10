@@ -174,7 +174,7 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
               <h3 className={libraryStyles.groupHeader}>{dayLabel(day)}</h3>
               <div className={libraryStyles.grid}>{group.map(asset => <article key={asset.id} data-asset-id={asset.id} data-source={asset.source} className={`${libraryStyles.card} ${styles.card}`}>
                 <button type="button" className={libraryStyles.openCard} aria-label={`Open ${asset.label}`} title={asset.label} onClick={() => setViewer({ id: asset.id, source: asset.source, open: true })}>
-                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={libraryStyles.media} /><span className={libraryStyles.cardOverlay} /><span className={libraryStyles.caption}>{asset.label}</span>
+                  <img src={asset.url} alt={asset.label} loading="lazy" decoding="async" draggable={false} className={`image-checkerboard ${libraryStyles.media}`} /><span className={libraryStyles.cardOverlay} /><span className={libraryStyles.caption}>{asset.label}</span>
                 </button>
                 <div className={styles.cardActions}>
                   {asset.source === 'generated' && <FavoriteButton favorite={!!asset.entry.output.favorite} busy={imageBusy.has(`${asset.entry.job.id}:${asset.id}`)} onClick={() => onFavorite(asset.entry.job, asset.entry.output)} />}

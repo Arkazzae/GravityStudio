@@ -5,6 +5,7 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, External
 import { FavoriteButton } from '@/components/ui/FavoriteButton';
 import { BrandMark } from '@/components/ui/BrandMark';
 import { modelBrand } from '@/lib/model-brand';
+import { imageBackground, imageBackgroundLabels } from '@/lib/image-background';
 import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
@@ -19,7 +20,7 @@ export interface ViewerEntry {
 
 const labels: Record<string, string> = {
   steps: 'Steps', cfg: 'Guidance', negativePrompt: 'Negative prompt', sampler: 'Sampler',
-  scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength',
+  scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength', background: 'Background',
 };
 
 export function OutputViewer({ items, open, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError, dialogId = 'output-viewer', onDelete }: {
@@ -82,7 +83,7 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
   const details: [string, string][] = [
     ['Model', name],
     ...(size ? [['Size', size] as [string, string]] : []),
-    ...parameters.map(([key, value]) => [labels[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, first => first.toUpperCase()), String(value)] as [string, string]),
+    ...parameters.map(([key, value]) => [labels[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, first => first.toUpperCase()), key === 'background' ? imageBackgroundLabels[imageBackground(value)] : String(value)] as [string, string]),
     ...(item.job.parameters.seed !== undefined ? [['Seed', String(item.job.parameters.seed)] as [string, string]] : []),
     ['Created', Number.isNaN(created.valueOf()) ? 'Saved on your server' : created.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })],
   ];
@@ -153,7 +154,7 @@ function InputReferences({ ids = [] }: { ids?: string[] }) {
     }).catch(() => { /* The saved prompt and output stay available if input previews cannot be loaded. */ });
     return () => controller.abort();
   }, [key]);
-  return images.length ? <div className="mb-2.5 flex flex-wrap gap-1.5">{images.map(image => <img key={image.id} src={image.url} alt={`Source image: ${image.name}`} className="size-14 rounded-lg object-cover" />)}</div> : null;
+  return images.length ? <div className="mb-2.5 flex flex-wrap gap-1.5">{images.map(image => <img key={image.id} src={image.url} alt={`Source image: ${image.name}`} className="image-checkerboard size-14 rounded-lg object-cover" />)}</div> : null;
 }
 
 function OutputImage({ src, prompt }: { src: string; prompt: string }) {

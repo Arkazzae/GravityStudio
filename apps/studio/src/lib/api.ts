@@ -1,6 +1,7 @@
 export interface Bootstrap { configured: boolean; authenticated: boolean; setupRequired?: boolean; setupKeyRequired?: boolean; user?: { id: string; username: string } }
 export type AvatarThemeId = 'studio' | 'lime' | 'mint' | 'blue' | 'violet' | 'rose';
 export interface AccountProfile { revision: number; displayName: string; workspaceName: string; avatarTheme: AvatarThemeId }
+export type ImageBackground = 'auto' | 'opaque' | 'transparent';
 export interface ParameterRange { min: number; max: number; step?: number; default: number }
 export interface StudioModel {
   id: string; name: string; family: string; description?: string; ready: boolean; installed: boolean;
@@ -10,7 +11,7 @@ export interface StudioModel {
   qualityPresets?: Array<{ id: 'fast' | 'standard' | 'high'; pixels: number; minSide?: number }>;
   defaults: { width: number; height: number; steps: number; cfg: number; negativePrompt?: string };
   limits?: { width?: ParameterRange; height?: ParameterRange; steps?: ParameterRange; cfg?: ParameterRange; maxImages?: number };
-  capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean };
+  capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string } };
 }
 export interface Catalog { models: StudioModel[]; families: Array<{ id: string; name: string }> }
 export interface Hardware {
@@ -26,11 +27,11 @@ export interface RuntimeSetupStatus { phase: 'idle' | 'checking' | 'building' | 
 export type IntegrationProviderId = 'huggingface' | 'civitai' | 'gemini' | 'openai' | 'anthropic' | 'nanogpt';
 export interface IntegrationStatus { id: IntegrationProviderId; name: string; description: string; credential: { suffix: string; updatedAt: string } | null }
 export interface IntegrationTestResult { ok: true; message: string }
-export interface LibraryModel { id: string; name: string; familyId: string; family: string; description?: string; license?: string; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
+export interface LibraryModel { id: string; name: string; familyId: string; family: string; kind?: 'utility'; description?: string; license?: string; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
 export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; startedAt: string; updatedAt: string }
 export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null }
 export interface InputImage { id: string; url: string; name: string; width: number; height: number }
-export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string }
+export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string; background?: ImageBackground }
 export interface Job {
   id: string; modelId: string; modelName?: string; prompt: string; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';

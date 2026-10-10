@@ -111,7 +111,7 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true }: { on
         {model.description && <p className="mt-2 max-w-[65ch] break-words text-sm leading-relaxed text-ink-2">{model.description}</p>}
         {!model.downloadable && !model.installed && <p className="mt-2 break-words text-xs leading-relaxed text-ink-2">{model.unavailableReason || 'This model is not available for automatic download.'}</p>}
       </div>
-      <div className="shrink-0 @xl:pt-1">{model.enabled ? <span className="inline-flex min-h-11 items-center gap-2 text-sm text-volt"><Check size={16} />Ready to use</span>
+      <div className="shrink-0 @xl:pt-1">{model.enabled ? <span className="inline-flex min-h-11 items-center gap-2 text-sm text-volt"><Check size={16} />{model.kind === 'utility' ? 'Downloaded' : 'Ready to use'}</span>
         : <button disabled={busy || (!model.installed && !model.downloadable)} onClick={() => void (model.installed ? activate(model) : download({ modelId: model.id }, model.id))} className={actionClass}>
           {submitting === model.id || (downloading && downloadState?.modelId === model.id) ? <LoaderCircle size={15} className="animate-spin" /> : model.installed ? null : <Download size={15} />}
           {model.installed ? 'Use model' : downloading && downloadState?.modelId === model.id ? 'Downloading…' : 'Download'}

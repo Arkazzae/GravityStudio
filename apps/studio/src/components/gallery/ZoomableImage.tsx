@@ -92,7 +92,7 @@ function ImageViewport({ src, alt, className, onError, referrerPolicy }: ImagePr
       onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
       onLostPointerCapture={() => { drag.current = null; setDragging(false); }}>
       <div className={styles.canvas} style={ready ? { width: Math.max(size.width, width), height: Math.max(size.height, height) } : undefined}>
-        <img src={src} alt={alt} referrerPolicy={referrerPolicy} draggable={false} decoding="async"
+        <img src={src} alt={alt} referrerPolicy={referrerPolicy} draggable={false} decoding="async" className="image-checkerboard"
           onError={event => { setFailed(true); onError?.(event); }}
           onLoad={event => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           style={ready ? { width, height } : { visibility: "hidden" }} />

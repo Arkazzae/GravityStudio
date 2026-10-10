@@ -1561,6 +1561,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const dockSelectors = {
     dock: '[data-workspace-scroll="dock"]', prompt: '#image-prompt',
     model: 'button[aria-label^="Model:"]', aspect: 'button[aria-label^="Aspect ratio:"]', quality: 'button[aria-label^="Quality:"]',
+    background: 'button[aria-label^="Background:"]',
     advanced: 'button[aria-label="Advanced settings"]', reset: 'button[aria-label="Reset settings to defaults"]',
     generate: 'button[title^="Submit to your generation queue"]',
     add: 'button[aria-label="Add reference image"]', browse: 'button[aria-label="Browse saved images"]',
@@ -1625,7 +1626,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
       for (const model of geometryModels) {
         await selectGeometryModel(model.name);
         const bounds = await geometry(dockSelectors);
-        const stable = Object.fromEntries(Object.entries(bounds).filter(([name]) => !['model', 'aspect', 'quality'].includes(name)));
+        const stable = Object.fromEntries(Object.entries(bounds).filter(([name]) => !['model', 'aspect', 'quality', 'background'].includes(name)));
         if (dockBaseline) sameGeometry(stable, dockBaseline, `${viewport.name} ${model.name}`);
         else dockBaseline = stable;
         const label = await browser.evaluate<{ name: string; title: string; clientWidth: number; scrollWidth: number; textWidth: number }>(`(() => {
@@ -1644,6 +1645,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         assert.ok(bounds.quality.width > 60 && bounds.quality.width < 120 && Math.abs(bounds.quality.height - 36) < .1, 'Quality fits its label at the same height as the other chips');
         assert.ok(Math.abs(bounds.quality.x - bounds.aspect.x - bounds.aspect.width - 6) < .1, 'Quality sits immediately to the right of the aspect ratio with a 6px gap');
         assert.ok(Math.abs(bounds.quality.y - bounds.aspect.y) < .1 && Math.abs(bounds.quality.y - bounds.model.y) < .1, 'Model, aspect ratio and Quality share one row');
+        assert.ok(bounds.background.width > 60 && bounds.background.width <= 156 && Math.abs(bounds.background.height - 36) < .1, 'Background uses a compact chip at the same height');
+        assert.ok(Math.abs(bounds.background.x - bounds.quality.x - bounds.quality.width - 6) < .1 && Math.abs(bounds.background.y - bounds.quality.y) < .1, 'Background immediately follows Quality in the same control group');
         if (viewport.mobile) {
           assert.equal(await browser.evaluate(`(() => {
             const model = document.querySelector('button[aria-label^="Model:"]'), aspect = document.querySelector('button[aria-label^="Aspect ratio:"]'), quality = document.querySelector('button[aria-label^="Quality:"]');
@@ -2240,6 +2243,159 @@ test('file drops route to references or Assets without claiming text or navigati
   }
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
+  assert.deepEqual(browser.errors, []);
+});
+
+test('Background preserves draft intent, submits each mode and reuses transparency across model capabilities', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort();
+  const origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'background-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => {
+    child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL');
+    await server.closeOperations(); await close(server); await fixture.close();
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Background frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await browser.send('Network.enable');
+  await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
+  const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
+  const png = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><circle cx="256" cy="256" r="144" fill="#d1fe17"/></svg>')).png().toBuffer();
+  const imageUrl = `data:image/png;base64,${png.toString('base64')}`;
+  const unavailable = 'Install BiRefNet from Models to use transparent backgrounds.';
+  // This fixture isolates composer behavior: model readiness and generated alpha
+  // output are synthetic, and POST /jobs never reaches the server or ComfyUI.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__backgroundRequests = JSON.parse(sessionStorage.getItem('background-fixture-requests') || '[]');
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.origin === location.origin && url.pathname === '/api/jobs' && method === 'POST') {
+        const body = JSON.parse(options.body);
+        window.__backgroundRequests.push(body);
+        sessionStorage.setItem('background-fixture-requests', JSON.stringify(window.__backgroundRequests));
+        const job = {id:'background-fixture-result', modelId:body.modelId, prompt:body.prompt, parameters:{width:body.width,height:body.height,steps:body.steps,cfg:body.cfg,seed:body.seed ?? 42,negativePrompt:body.negativePrompt,background:body.background},status:'succeeded',stage:'Complete',progress:1,createdAt:'2026-01-01T12:00:00.000Z',updatedAt:'2026-01-01T12:00:00.000Z',outputs:[{id:'background-output',url:${JSON.stringify(imageUrl)},width:512,height:512,mimeType:'image/png'}],error:null};
+        sessionStorage.setItem('background-fixture-job', JSON.stringify(job));
+        return Response.json(job);
+      }
+      const response = await originalFetch(input, options);
+      if (url.origin !== location.origin || method !== 'GET' || !response.ok) return response;
+      if (url.pathname === '/api/catalog') {
+        const catalog = await response.json();
+        catalog.models = catalog.models.filter(model => ['qwen-image-2.1','flux-2-klein-4b','wai-illustrious-v17'].includes(model.id)).map(model => ({...model,installed:true,ready:true,unavailableReason:'',missingReasons:[],capabilities:{...model.capabilities,background:{native:model.id === 'qwen-image-2.1',available:model.id !== 'wai-illustrious-v17',...(model.id === 'wai-illustrious-v17' ? {reason:${JSON.stringify(unavailable)}} : {})}}}));
+        return Response.json(catalog);
+      }
+      if (url.pathname === '/api/state') {
+        const state = await response.json(), job = JSON.parse(sessionStorage.getItem('background-fixture-job') || 'null');
+        return Response.json({...state,jobs:job ? [job] : []});
+      }
+      return response;
+    };
+  ` });
+  const background = 'button[aria-label^="Background:"]';
+  const generate = 'button[title^="Submit to your generation queue"]';
+  const reset = 'button[aria-label="Reset settings to defaults"]';
+  const draftKey = `gravity:image-draft:${fixture.owner.id}`;
+  async function selectModel(name: string) {
+    await browser.click('button[aria-label^="Model:"]');
+    const row = `Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).find(row => row.textContent.includes(${JSON.stringify(name)}))`;
+    await browser.until(`!!(${row}) && !(${row}).disabled && getComputedStyle(${row}).visibility === 'visible'`, `${name} is available`);
+    await browser.evaluate("Promise.all(document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+    await browser.clickText(await browser.evaluate<string>(`(${row}).textContent.trim()`));
+    await browser.until(`!!document.querySelector('button[aria-label=${JSON.stringify(`Model: ${name}`)}]') && !document.querySelector('[popover]:popover-open')`, `${name} selected`);
+  }
+  async function selectBackground(label: string) {
+    await browser.click(background);
+    await browser.click(`[popover]:popover-open [aria-label="Background ${label}"]`);
+    await browser.until(`!!document.querySelector('button[aria-label=${JSON.stringify(`Background: ${label}`)}]') && !document.querySelector('[popover]:popover-open')`, `Background ${label} selected`);
+  }
+  async function submit(expectedCount: number, mode: string, modelId: string) {
+    await browser.until(`!document.querySelector(${JSON.stringify(generate)}).disabled`, 'The selected background can be submitted');
+    await browser.click(generate);
+    await browser.until(`window.__backgroundRequests.length === ${expectedCount} && !document.querySelector(${JSON.stringify(background)}).disabled`, 'The request is captured and composer is ready again');
+    assert.deepEqual(await browser.evaluate('(() => { const body = window.__backgroundRequests.at(-1); return {background:body.background,modelId:body.modelId}; })()'), { background: mode, modelId }, 'The job payload preserves the selected background mode');
+  }
+  await browser.navigate(`${origin}/image`);
+  await browser.until(`!!document.querySelector(${JSON.stringify(background)}) && !document.querySelector(${JSON.stringify(background)}).disabled`, 'Background is available');
+  await selectModel('Qwen Image 2.1');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(background)}).getAttribute('aria-label')`), 'Background: Auto');
+  const prompt = 'A clean cutout of a ceramic teapot.';
+  await browser.fill('#image-prompt', prompt);
+  for (const width of [1440, 390, 320]) {
+    await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width === 1440 ? 960 : 844, deviceScaleFactor: 1, mobile: width < 768 });
+    await browser.evaluate("document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+    await browser.evaluate("document.querySelector('button[aria-label^=\"Model:\"]').parentElement.parentElement.scrollLeft = 0");
+    assert.equal(await browser.evaluate("(() => { const model = document.querySelector('button[aria-label^=\"Model:\"]'), row = model.parentElement.parentElement, bounds = row.getBoundingClientRect(); return ['Model:', 'Aspect ratio:', 'Quality:'].every(label => { const rect = document.querySelector('button[aria-label^=\"' + label + '\"]').getBoundingClientRect(); return rect.width > 0 && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1; }) && document.documentElement.scrollWidth <= innerWidth; })()"), true, `Model, Aspect and Quality stay visible at ${width}px`);
+    await browser.click(background);
+    await browser.until("document.activeElement?.getAttribute('role') === 'menuitem' && !!document.activeElement.closest('[popover]:popover-open') && getComputedStyle(document.activeElement).visibility === 'visible'", 'Background receives menu focus');
+    await browser.evaluate("Promise.all(document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+    assert.deepEqual(await browser.evaluate("[...document.querySelectorAll('[popover]:popover-open [role=menuitem]')].map(row => ({name:row.getAttribute('aria-label'),disabled:row.disabled}))"), [{ name: 'Background Auto', disabled: false }, { name: 'Background Opaque', disabled: false }, { name: 'Background Transparent', disabled: false }]);
+    assert.match(await browser.evaluate<string>("document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]').textContent"), /Native transparency/);
+    assert.equal(await browser.evaluate("(() => { const menu = document.querySelector('[popover]:popover-open'), rect = menu.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && menu.scrollWidth <= menu.clientWidth; })()"), true, `Background menu fits at ${width}px`);
+    await browser.screenshot(join(output, `background-qwen-${width}.png`));
+    await browser.key('End');
+    assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Background Transparent', 'Keyboard navigation reaches transparency');
+    await browser.key('Enter');
+    await browser.until("!!document.querySelector('button[aria-label=\"Background: Transparent\"]') && !document.querySelector('[popover]:popover-open')", 'The keyboard selects transparency');
+    assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), prompt, 'Background changes preserve the prompt');
+    await browser.click(reset);
+    await browser.until("!!document.querySelector('button[aria-label=\"Background: Auto\"]') && document.querySelector('button[aria-label=\"Reset settings to defaults\"]').disabled", 'Reset restores the default background');
+  }
+  await selectBackground('Transparent');
+  await browser.until(`JSON.parse(localStorage.getItem(${JSON.stringify(draftKey)})).background === 'transparent'`, 'Background is persisted in the draft');
+  await browser.send('Page.reload');
+  await browser.until("!!document.querySelector('button[aria-label=\"Background: Transparent\"]:not(:disabled)')", 'A page reload restores the selected background');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), prompt);
+  await submit(1, 'transparent', 'qwen-image-2.1');
+  await browser.until("!!document.querySelector('main figure img.image-checkerboard')", 'The transparent result uses a checkerboard in the gallery');
+  await selectBackground('Opaque');
+  await browser.fill('#image-prompt', 'A temporary replacement draft.');
+  await browser.click('button[aria-label="Open Qwen Image 2.1 output"]');
+  await browser.until("document.querySelector('#output-viewer[open] [aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'The alpha result opens');
+  assert.equal(await browser.evaluate("[...document.querySelectorAll('#output-viewer dl > div')].find(row => row.querySelector('dt').textContent === 'Background')?.querySelector('dd').textContent"), 'Transparent', 'Result details retain the background mode');
+  assert.match(await browser.evaluate<string>("getComputedStyle(document.querySelector('#output-viewer [aria-label=\"Image zoom and pan\"] img')).backgroundImage"), /conic-gradient/, 'The viewer shows alpha over the shared checkerboard');
+  await browser.screenshot(join(output, 'background-transparent-viewer-mobile.png'));
+  await browser.evaluate("[...document.querySelectorAll('#output-viewer button')].find(button => button.textContent.trim() === 'Use these settings').click()");
+  await browser.until("!document.querySelector('#output-viewer[open]') && !!document.querySelector('button[aria-label=\"Background: Transparent\"]')", 'Reuse restores transparency');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), prompt, 'Reuse restores the original prompt with its background');
+  await selectModel('FLUX.2 Klein 4B');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(background)}).getAttribute('aria-label')`), 'Background: Transparent', 'Switching models preserves the selected background');
+  await browser.click(background);
+  assert.match(await browser.evaluate<string>("document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]').textContent"), /Remove background after generation/);
+  await browser.key('Escape');
+  await submit(2, 'transparent', 'flux-2-klein-4b');
+  await selectModel('WAI Illustrious v17');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(background)}).getAttribute('aria-label')`), 'Background: Transparent', 'An unavailable model does not silently discard the requested mode');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generate)}).disabled`), true, 'Unavailable transparency blocks submission');
+  await browser.until(`document.querySelector('[data-workspace-scroll="dock"] [role=alert]')?.textContent.includes(${JSON.stringify(unavailable)})`, 'Missing removal support explains how to recover');
+  await browser.click(background);
+  assert.equal(await browser.evaluate("document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]').disabled"), true, 'Unavailable transparency is disabled');
+  assert.match(await browser.evaluate<string>("document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]').textContent"), /Install BiRefNet from Models/);
+  await browser.until("document.activeElement?.getAttribute('role') === 'menuitem' && !!document.activeElement.closest('[popover]:popover-open') && getComputedStyle(document.activeElement).visibility === 'visible'", 'The unavailable-background menu receives focus');
+  await browser.key('End');
+  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Background Opaque', 'Keyboard navigation skips the unavailable option');
+  await browser.key('Enter');
+  await submit(3, 'opaque', 'wai-illustrious-v17');
+  await browser.click(reset);
+  await browser.until("!!document.querySelector('button[aria-label=\"Background: Auto\"]')", 'Reset restores Auto after an opaque result');
+  await submit(4, 'auto', 'wai-illustrious-v17');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'UI readiness fixtures never create real generation jobs');
+  assert.equal(fixture.workers[0].state.submissions.length, 0, 'UI background checks never submit fake inference to ComfyUI');
   assert.deepEqual(browser.errors, []);
 });
 

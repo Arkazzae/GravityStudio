@@ -30,7 +30,7 @@ export function ImageReferenceInput({ browseRef, images, maxImages, uploading, o
       }} />
     <div className="flex flex-wrap items-center gap-2 pr-1 pt-1" role="group" aria-label="Selected reference images">
       {images.map((image, index) => <div key={image.id} className="relative size-10 shrink-0">
-        <img src={image.url} alt={`Reference ${index + 1}: ${image.name}`} title={image.name} draggable={false} className="size-full rounded-chip object-cover" />
+        <img src={image.url} alt={`Reference ${index + 1}: ${image.name}`} title={image.name} draggable={false} className="image-checkerboard size-full rounded-chip object-cover" />
         <span className="absolute bottom-0.5 left-0.5 rounded bg-black/80 px-1 text-[10px] leading-4 text-white">{index + 1}</span>
         <button type="button" aria-label={`Remove reference ${index + 1}`} title={`Remove ${image.name}`} disabled={uploading}
           onClick={() => onRemove(image.id)}

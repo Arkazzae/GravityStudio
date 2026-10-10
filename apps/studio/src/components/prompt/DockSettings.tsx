@@ -34,7 +34,7 @@ function NumberControl({ label, min, max, step = 1, value, onChange }: { label: 
 }
 
 export function DockSettings({ model, draft, busy, onChange, onReset }: { model?: StudioModel; draft: Draft; busy: boolean; onChange: (change: Partial<Draft>) => void; onReset: () => void }) {
-  const dirty = !!model && (draft.width !== model.defaults.width || draft.height !== model.defaults.height || draft.steps !== model.defaults.steps || draft.cfg !== model.defaults.cfg || draft.negativePrompt !== (model.defaults.negativePrompt || '') || !!draft.seed.trim() || draft.denoise !== .75);
+  const dirty = !!model && (draft.width !== model.defaults.width || draft.height !== model.defaults.height || draft.steps !== model.defaults.steps || draft.cfg !== model.defaults.cfg || draft.negativePrompt !== (model.defaults.negativePrompt || '') || !!draft.seed.trim() || draft.denoise !== .75 || (draft.background || 'auto') !== 'auto');
   const limits = model?.limits;
   const dimensions = model?.dimensions;
   const widthStep = limits?.width?.step ?? dimensions?.multiple ?? 16;
