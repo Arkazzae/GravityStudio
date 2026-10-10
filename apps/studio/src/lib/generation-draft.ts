@@ -56,7 +56,9 @@ export function generationOperation(model: StudioModel | undefined, draft: Pick<
 /** Editing redraws one source. Multi-image conditioning is enabled explicitly for families offering both modes. */
 export function referenceLimit(model: StudioModel | undefined, draft?: Pick<Draft, 'imageMode' | 'mask' | 'outpaint'>): number {
   const maximum = model?.capabilities?.maxImages ?? model?.limits?.maxImages ?? 0;
+  if (model?.operations && !model.operations.some(operation => operation === 'image-to-image' || operation === 'reference')) return 0;
   if (model?.capabilities?.imageInput === false) return 0;
+  if (draft?.imageMode === 'reference' && model?.operations && !model.operations.includes('reference')) return 0;
   if (draft?.imageMode === 'reference' && model?.capabilities?.editing?.reference.available === false) return 0;
   if (model?.operations?.includes('image-to-image') && (draft?.imageMode !== 'reference' || draft.mask || draft.outpaint)) return Math.min(1, maximum);
   return maximum;
@@ -82,6 +84,8 @@ export function draftCanvasSize(model: StudioModel | undefined, draft: Draft) {
 export function editingProblem(model: StudioModel | undefined, draft: Draft): string | null {
   const editing = model?.capabilities?.editing;
   const source = draft.images[0];
+  if (!source && (model?.capabilities?.requiresImage || model?.operations && !model.operations.includes('text-to-image'))) return 'This model requires a source image. Add an image before generating.';
+  if (source && model?.operations && !model.operations.some(operation => operation === 'image-to-image' || operation === 'reference')) return 'This model generates from text only. Remove its source images or choose an image-capable model.';
   if (draft.mask && draft.missingMaskId === draft.mask.id) return 'The selected mask was deleted. Open the reference and paint a new mask, or choose Clear edits.';
   if (draft.mask || draft.outpaint || draft.matchSource) {
     if (!source || draft.editSourceId !== source.id) return 'Choose the original source image again or clear its edits.';

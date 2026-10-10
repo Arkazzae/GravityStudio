@@ -87,6 +87,20 @@ test('SDXL accepts one edit source until reference mode is selected, while Qwen 
   assert.equal(referenceLimit({ ...qwen, capabilities: { ...qwen.capabilities, imageInput: false } }, draft), 0);
 });
 
+test('checkpoint variants require a source only when advertised and reject images for text-only models', () => {
+  const editOnly: StudioModel = { ...sdxl, operations: ['image-to-image'], capabilities: { ...sdxl.capabilities, requiresImage: true, maxImages: 1 } };
+  assert.match(editingProblem(editOnly, draft)!, /requires a source image/);
+  assert.equal(editingProblem(editOnly, { ...draft, images: [source] }), null);
+  assert.equal(referenceLimit(editOnly, draft), 1);
+  assert.equal(referenceLimit(editOnly, { ...draft, imageMode: 'reference' }), 0);
+  const legacyEditOnly: StudioModel = { ...sdxl, operations: ['reference'] };
+  assert.match(editingProblem(legacyEditOnly, draft)!, /requires a source image/);
+  const textOnly: StudioModel = { ...sdxl, operations: ['text-to-image'] };
+  assert.equal(referenceLimit(textOnly, draft), 0);
+  assert.equal(editingProblem(textOnly, draft), null);
+  assert.match(editingProblem(textOnly, { ...draft, images: [source] })!, /text only/);
+});
+
 test('Ideogram experimental reference locks the canvas but retains explicit sampling and prevents source edits', () => {
   const value: Draft = { ...draft, modelId: ideogram.id, images: [source], imageMode: 'reference', width: 2048, height: 2048, quality: 'high', steps: 48 };
   assert.deepEqual(draftCanvasSize(ideogram, value), { width: 1024, height: 1024 });

@@ -19,7 +19,7 @@ export interface StudioModel {
   qualityPresets?: Array<{ id: 'fast' | 'standard' | 'high'; pixels: number; minSide?: number; sampling?: { steps?: number; cfg?: number; sampler?: string; scheduler?: string } }>;
   defaults: { width: number; height: number; steps: number; cfg: number; negativePrompt?: string };
   limits?: { width?: ParameterRange; height?: ParameterRange; steps?: ParameterRange; cfg?: ParameterRange; maxImages?: number };
-  capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string }; ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string; modelId: 'seedvr2-7b'; maxDimension: 4096 }; editing?: { inpaint: FeatureAvailability; outpaint: FeatureAvailability; matchSource: FeatureAvailability; reference: FeatureAvailability; refiner: FeatureAvailability } };
+  capabilities?: { imageInput?: boolean; maxImages?: number; minImages?: number; requiresImage?: boolean; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string }; ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string; modelId: 'seedvr2-7b'; maxDimension: 4096 }; editing?: { inpaint: FeatureAvailability; outpaint: FeatureAvailability; matchSource: FeatureAvailability; reference: FeatureAvailability; refiner: FeatureAvailability } };
 }
 export interface Catalog { models: StudioModel[]; families: Array<{ id: string; name: string }> }
 export interface Hardware {
@@ -40,7 +40,19 @@ export type ModelAccessStatus = 'available' | 'gated' | 'unauthorized' | 'forbid
 export interface ModelAccessResult { modelId?: string; available: boolean; hasToken: boolean; checkedAt: string; repositories: Array<ModelRepository & { status: ModelAccessStatus; message: string }> }
 export interface LibraryModel { id: string; name: string; familyId: string; family: string; kind?: 'utility'; category?: 'upscale' | 'adapter'; description?: string; license?: string; licenseUrl?: string; repositories: ModelRepository[]; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
 export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; errorCode?: string; access?: { repository: ModelRepository; status: Exclude<ModelAccessStatus, 'available'>; message: string }; startedAt: string; updatedAt: string }
-export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null }
+export type ModelImportOperation = NonNullable<StudioModel['operations']>[number];
+export interface ModelImportPreset {
+  id: string; name: string; familyId: string; revision: string; operations: ModelImportOperation[];
+  primaryRole?: string; dependencyRoles?: string[];
+  artifacts: Array<{ role: string; filename: string; source?: string }>;
+  defaults?: Partial<{ width: number; height: number; steps: number; cfg: number; sampler: string; scheduler: string; negativePrompt: string; clipSkip: number }>;
+}
+export interface CheckpointImportRequest {
+  presetId: string; name: string; url: string; dependencies?: Array<{ role: string; url: string }>;
+  operations?: ModelImportOperation[]; defaults?: ModelImportPreset['defaults'];
+}
+export interface LegacyCheckpointImportRequest { url: string; name: string; familyId: 'sdxl' }
+export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null; presets?: ModelImportPreset[] }
 export interface InputImage { id: string; url: string; name: string; width: number; height: number; source?: { jobId: string; outputId: string } }
 export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string; background?: ImageBackground; quality?: 'fast' | 'standard' | 'high' | 'ultra'; sampler?: string; scheduler?: string; sourceWidth?: number; sourceHeight?: number; scale?: 2 | 4 }
 export interface Job {
