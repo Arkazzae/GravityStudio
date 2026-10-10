@@ -490,7 +490,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('button[aria-label="Close activity"]');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
-  const advertised = await browser.evaluate<{ defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { multiple: number; min: number; max: number; maxPixels: number }; capabilities: { negativePrompt: boolean } }>(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === ${JSON.stringify(modelId)}))`);
+  const advertised = await browser.evaluate<{ defaults: { width: number; height: number; steps: number; cfg: number }; qualityPresets: Array<{id: string; sampling?: {steps?: number; cfg?: number}}> ; dimensions: { multiple: number; min: number; max: number; maxPixels: number }; capabilities: { negativePrompt: boolean } }>(`fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models.find(model => model.id === ${JSON.stringify(modelId)}))`);
   assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Reset settings to defaults\"]').disabled"), true, 'Reset is disabled when generation settings match the selected model');
   assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('main button')).some(button => /^\\d+ steps$/.test(button.textContent.trim()))"), false, 'Sampling steps live in Advanced rather than a separate toolbar chip');
   await browser.click('button[aria-label="Model: Browser checkpoint"]');
@@ -605,7 +605,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("!!document.querySelector('button[aria-label=\"Quality: High\"]')"), true, 'Reset restores the SDXL model default quality');
   await openAdvanced();
   const resetValues = await browser.evaluate("({ width: Number(document.querySelector('input[aria-label=\"Width value\"]').value), height: Number(document.querySelector('input[aria-label=\"Height value\"]').value), steps: Number(document.querySelector('input[aria-label=\"Steps value\"]').value), cfg: Number(document.querySelector('input[aria-label=\"Guidance value\"]').value), seed: document.querySelector('input[aria-label=Seed]').value, negativePrompt: document.querySelector('[popover]:popover-open textarea').value, denoise: Number(document.querySelector('input[aria-label=\"Image strength value\"]').value) })");
-  assert.deepEqual(resetValues, { width: advertised.defaults.width, height: advertised.defaults.height, steps: advertised.defaults.steps, cfg: advertised.defaults.cfg, seed: '', negativePrompt: '', denoise: .75 });
+  const resetSampling = advertised.qualityPresets.find((preset: { id: string }) => preset.id === 'high')?.sampling;
+  assert.deepEqual(resetValues, { width: advertised.defaults.width, height: advertised.defaults.height, steps: resetSampling?.steps ?? advertised.defaults.steps, cfg: resetSampling?.cfg ?? advertised.defaults.cfg, seed: '', negativePrompt: '', denoise: .75 });
   await browser.fill('input[aria-label="Width value"]', '2048');
   assert.ok(await browser.evaluate<number>("Number(document.querySelector('input[type=range][aria-label=Height]').max)") * 2048 <= advertised.dimensions.maxPixels, 'Slider maximum respects the shared pixel budget');
   await browser.fill('input[aria-label="Height value"]', '2048');
@@ -753,10 +754,6 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('#reference-picker-dialog[open]') && !!document.querySelector('button[aria-label=\"Remove reference 1\"]')", 'Reference is uploaded');
   assert.equal(await browser.evaluate("document.querySelectorAll('#reference-picker-dialog button[aria-pressed=true]:not([data-favorite-action])').length"), 0, 'A successful reference import clears its picker selection');
   await browser.fill('#image-prompt', 'Keep the composition and turn morning into twilight');
-  await openAdvanced();
-  await browser.fill('input[aria-label="Steps value"]', '24');
-  await browser.fill('input[aria-label="Guidance value"]', '6.5');
-  await browser.key('Escape');
   await browser.evaluate("void (window.__gravityQualityReference = document.querySelector('button[aria-label=\"Remove reference 1\"]'))");
   await openQuality();
   await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Quality Standard\"]')", 'Quality offers the Standard resolution for the reference generation');
@@ -769,11 +766,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('button[aria-label=\"Quality: Standard\"]') && !document.querySelector('[popover]:popover-open')", 'Keyboard chooses Standard quality');
   assert.equal(await browser.evaluate("document.querySelector('button[aria-label=\"Remove reference 1\"]') === window.__gravityQualityReference"), true, 'Changing quality preserves the selected reference');
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep the composition and turn morning into twilight', 'Changing quality preserves the prompt');
+  await openAdvanced();
+  await browser.fill('input[aria-label="Steps value"]', '24');
+  await browser.fill('input[aria-label="Guidance value"]', '6.5');
+  await browser.key('Escape');
   await browser.clickText('Generate');
   await browser.until("document.querySelectorAll('button[aria-label=\"Open Browser checkpoint output\"]').length === 2", 'Reference generation completes');
   assert.equal(store.jobs(store.owner()!.id)[0].input.operation, 'image-to-image');
   const referenceGeneration = store.jobs(store.owner()!.id)[0];
-  assert.deepEqual({ width: referenceGeneration.parameters.width, height: referenceGeneration.parameters.height, steps: referenceGeneration.parameters.steps, cfg: referenceGeneration.parameters.cfg }, { ...referenceQualitySize, steps: 24, cfg: 6.5 }, 'The real generation API receives the selected quality dimensions without changing custom steps or guidance');
+  assert.deepEqual({ width: referenceGeneration.parameters.width, height: referenceGeneration.parameters.height, steps: referenceGeneration.parameters.steps, cfg: referenceGeneration.parameters.cfg }, { ...referenceQualitySize, steps: 24, cfg: 6.5 }, 'Advanced overrides apply after selecting the family quality profile');
   assert.ok(comfy.state.uploadBody.includes('filename='));
   const firstFigure = `figure:has(img[alt=${JSON.stringify(prompt)}])`;
   await browser.evaluate(`(() => {
@@ -1627,7 +1628,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         }
         if (url.pathname !== '/api/catalog') return response;
         const catalog = await response.json();
-        catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), installed: true, ready: model.id !== window.__gravityUnavailableModel, capabilities: { ...model.capabilities, ready: model.id !== window.__gravityUnavailableModel }, missingReasons: model.id === window.__gravityUnavailableModel ? ['Worker is offline'] : [], unavailableReason: model.id === window.__gravityUnavailableModel ? 'Worker is offline' : '' } : model);
+        catalog.models = catalog.models.map(model => fixtures.has(model.id) ? { ...model, name: fixtures.get(model.id), installed: true, ready: model.id !== window.__gravityUnavailableModel, capabilities: { ...model.capabilities, ready: model.id !== window.__gravityUnavailableModel, imageInput: true }, missingReasons: model.id === window.__gravityUnavailableModel ? ['Worker is offline'] : [], unavailableReason: model.id === window.__gravityUnavailableModel ? 'Worker is offline' : '' } : model);
         return new Response(JSON.stringify(catalog), { status: response.status, headers: { 'Content-Type': 'application/json' } });
       };
       document.dispatchEvent(new Event('visibilitychange'));
@@ -1637,7 +1638,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).some(row => row.textContent.includes('FLUX.2 Klein 9B'))"), false, 'Uninstalled models remain absent alongside installed offline models');
     await browser.key('Escape');
     await browser.evaluate("delete window.__gravityUnavailableModel; document.dispatchEvent(new Event('visibilitychange'));");
-    const qualityCatalog = await browser.evaluate<Array<{ id: string; defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { min: number; max: number; multiple: number; maxPixels: number }; qualityPresets: Array<{ id: string; pixels: number }> }>>("fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models)");
+    const qualityCatalog = await browser.evaluate<Array<{ id: string; defaults: { width: number; height: number; steps: number; cfg: number }; dimensions: { min: number; max: number; multiple: number; maxPixels: number }; qualityPresets: Array<{ id: string; pixels: number; sampling?: { steps?: number; cfg?: number } }> }>>("fetch('/api/catalog').then(response => response.json()).then(catalog => catalog.models)");
     for (const viewport of [{ name: 'desktop', width: 1440, height: 960, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
       await browser.send('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.mobile });
       let dockBaseline: Geometry | undefined;
@@ -1680,7 +1681,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
         for (const action of ['add', 'browse']) { assert.ok(Math.abs(bounds[action].width - 40) < .1); assert.ok(Math.abs(bounds[action].height - 40) < .1); }
         assert.equal(await browser.evaluate(`document.querySelector('#image-prompt') === window.__gravityGeometryPrompt && document.querySelector('#image-prompt').value === ${JSON.stringify(geometryPrompt)}`), true, 'Model changes preserve the same prompt element and text');
-        const noReferences = ['krea', 'ideogram'].includes(model.short);
+        const noReferences = false; // All exposed family recipes now support an image-input workflow.
         for (const selector of [dockSelectors.add, dockSelectors.browse, 'input[aria-label="Upload reference images"]']) {
           assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), noReferences, `${model.name} advertises its reference capability`);
         }
@@ -1723,7 +1724,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
           await openAdvanced();
           const qualityValues = await browser.evaluate<{ width: number; height: number; steps: number; cfg: number }>("Object.fromEntries(['Width', 'Height', 'Steps', 'Guidance'].map(label => [label === 'Guidance' ? 'cfg' : label.toLowerCase(), Number(document.querySelector('[popover]:popover-open input[aria-label=\"' + label + ' value\"]').value)]))");
           assert.ok(Math.abs(qualityValues.width / qualityValues.height / (16 / 9) - 1) <= .02, `${model.name}: selected quality dimensions retain the widescreen shape`);
-          assert.deepEqual({ steps: qualityValues.steps, cfg: qualityValues.cfg }, { steps: qualityModel.defaults.steps, cfg: qualityModel.defaults.cfg }, `${model.name}: quality leaves the sampler settings unchanged`);
+          const fastSampling = qualityModel.qualityPresets.find(preset => preset.id === 'fast')?.sampling;
+          assert.deepEqual({ steps: qualityValues.steps, cfg: qualityValues.cfg }, { steps: fastSampling?.steps ?? qualityModel.defaults.steps, cfg: fastSampling?.cfg ?? qualityModel.defaults.cfg }, `${model.name}: quality applies the family's sampling profile`);
           assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), geometryPrompt, 'Quality and aspect choices preserve the prompt');
           await browser.key('Escape');
           await browser.click(dockSelectors.reset);
@@ -1840,7 +1842,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('#output-viewer[open]')", 'Reopen an output to reuse its settings');
   await clickScopedText('#output-viewer', 'Use these settings');
   await browser.until("!document.querySelector('#output-viewer[open]') && document.activeElement === document.querySelector('#image-prompt')", 'Reusing settings closes the viewer and focuses the composer');
-  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), store.jobs(store.owner()!.id).find(job => job.outputs.length)!.prompt, 'Reuse restores the selected output prompt');
+  const reusedPrompt = store.jobs(store.owner()!.id).find(job => job.outputs.length)!.prompt;
+  await browser.until(`document.querySelector('#image-prompt').value === ${JSON.stringify(reusedPrompt)}`, 'Reuse restores the selected output prompt after resolving its saved references');
   const deletionUrl = await browser.evaluate<string>(`document.querySelector(${JSON.stringify(`${firstFigure} > img`)}).getAttribute('src')`);
   const preservedImages = await browser.evaluate<string[]>(`Array.from(document.querySelectorAll('main figure > img')).map(image => image.getAttribute('src')).filter(url => url !== ${JSON.stringify(deletionUrl)})`);
   assert.equal(preservedImages.length, 1, 'Delete regression starts with two saved images');
@@ -2837,7 +2840,7 @@ test('Ultra preserves High sampling, 4K intent and readiness through draft, rese
   await browser.key('Enter');
   await browser.until(`!document.querySelector(${JSON.stringify(generate)}).disabled && !document.querySelector('[popover]:popover-open')`, 'High recovers without an upscaler');
   await browser.click(generate); await browser.until('window.__ultraRequests.length === 2', 'Native request captured');
-  assert.equal(await browser.evaluate("Object.hasOwn(window.__ultraRequests[1], 'quality')"), false, 'Native quality sends no Ultra instruction');
+  assert.equal(await browser.evaluate("window.__ultraRequests[1].quality"), 'high', 'Native quality selects its family sampling profile');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0);
   assert.equal(fixture.workers[0].state.submissions.length, 0);
   assert.deepEqual(browser.errors, []);

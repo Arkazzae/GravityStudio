@@ -14,7 +14,7 @@
     "build": "pnpm --dir apps/studio build",
     "typecheck": "tsc --noEmit && pnpm --dir apps/studio typecheck",
     "test": "node --test --test-isolation=none tests/**/*.test.ts",
-    "test:browser": "node --test --test-isolation=none tests/browser/studio.browser.ts",
+    "test:browser": "node --test --test-isolation=none tests/browser/*.browser.ts",
     "check": "pnpm typecheck && pnpm test",
     "doctor": "node scripts/doctor.ts",
     "runtime": "node scripts/runtime.ts",
