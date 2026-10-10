@@ -3,10 +3,10 @@ import { createReadStream } from "node:fs";
 import { link, lstat, mkdir, open, readFile, realpath, statfs, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ApiError } from "../../packages/contracts/index.ts";
-import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, UPSCALER_MODELS, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest } from "../../packages/inference/index.ts";
+import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, UPSCALER_MODELS, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest, type GenerationExtensionManifest, type FamilyId } from "../../packages/inference/index.ts";
 import type { Engine } from "./engine.ts";
 import { ModelAccessError, checkDownloadUrl, checkModelFileAccess, huggingFaceFile, modelAccessResponse, modelRepositories, modelRepository, type ModelAccessResult, type ModelDownloadAccess, type ModelRepositoryAccess } from "./model-access.ts";
-import { modelRegistry, saveImportedModel } from "./registry.ts";
+import { modelRegistry, saveImportedModel, generationExtensionRegistry, saveImportedExtension } from "./registry.ts";
 import { defaultModelConfiguration, settingsView } from "./settings.ts";
 import type { Store } from "./store.ts";
 
@@ -23,17 +23,20 @@ const now = () => new Date().toISOString();
 interface UtilityModel {
   id: string;
   name: string;
-  category: "background-removal" | "upscale";
+  category: "background-removal" | "upscale" | "adapter";
   description: string;
   license?: string;
   licenseUrl?: string;
   artifacts: ModelArtifact[];
+  extension?: GenerationExtensionManifest;
 }
-const utilityModels: UtilityModel[] = [
+const utilityModels = (store: Store): UtilityModel[] => [
   { id: "birefnet", name: "BiRefNet", category: "background-removal", artifacts: [{ ...BIREFNET_ARTIFACT }],
-    description: "Remove backgrounds after generation with any image model. Qwen Image 2.1 uses its native transparency instead.", license: "MIT" },
+    description: "Remove backgrounds from imported images or generated outputs. Also available as a finishing step for models without native transparency.", license: "MIT" },
   ...UPSCALER_MODELS.map(model => ({ id: model.id, name: model.name, category: "upscale" as const, description: model.description,
     license: model.license, licenseUrl: model.licenseUrl, artifacts: model.artifacts.map(artifact => ({ ...artifact })) })),
+  ...generationExtensionRegistry(store).map(extension => ({ id: extension.id, name: extension.name, category: "adapter" as const, description: extension.description,
+    license: extension.license, licenseUrl: extension.licenseUrl, artifacts: extension.artifacts.map(artifact => ({ ...artifact })), extension })),
 ];
 const downloadError = (code: string, message: string, status = 400) => new ApiError(status, code, message);
 
@@ -116,11 +119,11 @@ export class ModelLibrary {
         installed: artifacts.every(artifact => artifact.installed), enabled: settings.modelConfigurations.some(configuration => configuration.modelId === model.id && configuration.enabled), downloadable,
         ...(!downloadable ? { unavailableReason: "This catalog model has no Hugging Face download source. Add its checkpoint to the shared model folder to use it." } : {}), artifacts };
     }));
-    const tools = await Promise.all(utilityModels.map(async model => {
+    const tools = await Promise.all(utilityModels(this.store).map(async model => {
       const artifacts = await Promise.all(model.artifacts.map(async artifact => ({ role: artifact.role, filename: artifact.filename, installed: await regularFile(join(this.modelsDirectory, artifact.folder, artifact.filename)) })));
       const installed = artifacts.every(artifact => artifact.installed);
-      return { id: model.id, name: model.name, familyId: model.category, family: model.category === "upscale" ? "Upscaling" : "Background removal", kind: "utility" as const,
-        category: model.category, description: model.description, license: model.license, licenseUrl: model.licenseUrl, source: "catalog" as const,
+      return { id: model.id, name: model.name, familyId: model.category, family: model.category === "adapter" ? "Generation adapters" : model.category === "upscale" ? "Upscaling" : "Background removal", kind: "utility" as const,
+        category: model.category, description: model.description, license: model.license, licenseUrl: model.licenseUrl, source: model.id.startsWith("hf-lora-") ? "huggingface" as const : "catalog" as const,
         repositories: modelRepositories(model.artifacts.map(artifact => artifact.source)), installed, enabled: installed, downloadable: true, artifacts };
     }));
     return { models: [...models, ...tools], download: this.current ? { ...this.current } : null };
@@ -132,7 +135,7 @@ export class ModelLibrary {
     let modelId: string | undefined;
     let sources: string[];
     if (typeof value.modelId === "string") {
-      const model = utilityModels.find(model => model.id === value.modelId) ?? getModel(value.modelId, modelRegistry(this.store));
+      const model = utilityModels(this.store).find(model => model.id === value.modelId) ?? getModel(value.modelId, modelRegistry(this.store));
       modelId = model.id;
       sources = model.artifacts.map(artifact => huggingFaceFile(artifact.source));
     } else sources = [huggingFaceFile(value.url)];
@@ -158,7 +161,20 @@ export class ModelLibrary {
     if (!object(value)) throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a Hugging Face checkpoint link.");
     let model: ModelManifest | UtilityModel;
     if (typeof value.modelId === "string" && Object.keys(value).length === 1) {
-      model = utilityModels.find(model => model.id === value.modelId) ?? getModel(value.modelId, modelRegistry(this.store));
+      model = utilityModels(this.store).find(model => model.id === value.modelId) ?? getModel(value.modelId, modelRegistry(this.store));
+    } else if (value.kind === "lora") {
+      if (Object.keys(value).some(key => !["kind", "url", "name", "familyId"].includes(key)) || typeof value.familyId !== "string" || !["sdxl", "flux-2-klein-4b", "flux-2-klein-9b", "qwen-image-2.1", "krea-2"].includes(value.familyId) || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name)) throw downloadError("INVALID_MODEL_REQUEST", "Give the LoRA a name and select its compatible model family.");
+      const source = huggingFaceFile(value.url);
+      const fingerprint = createHash("sha256").update(`${value.familyId}:${source}`).digest("hex").slice(0, 16);
+      const id = `hf-lora-${fingerprint}`;
+      const filename = decodeURIComponent(basename(new URL(source).pathname));
+      const existing = generationExtensionRegistry(this.store).find(item => item.id === id);
+      const extension: GenerationExtensionManifest = existing ? { ...existing, name: value.name.trim() } : {
+        id, name: value.name.trim(), revision: "1", kind: "lora", category: "image", description: "An imported LoRA for the selected image family.", familyIds: [value.familyId as FamilyId],
+        artifacts: [{ role: "lora", folder: "loras", filename: `${id}/${filename}`, source }], memory: { ramBytes: 2 * GiB, vramBytes: GiB },
+      };
+      saveImportedExtension(this.store, extension);
+      model = { id, name: extension.name, category: "adapter", description: extension.description, artifacts: extension.artifacts, extension };
     } else {
       if (Object.keys(value).some(key => !["url", "name", "familyId"].includes(key)) || value.familyId !== "sdxl" || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name)) throw downloadError("INVALID_MODEL_REQUEST", "Give this SDXL / Illustrious checkpoint a name of up to 120 characters.");
       const source = huggingFaceFile(value.url);
@@ -312,6 +328,12 @@ export class ModelLibrary {
     for (const artifact of model.artifacts) {
       await this.downloadFile(artifact, digest => {
         if ("familyId" in model && !DEFAULT_MODELS.some(item => item.id === model.id)) { artifact.sha256 = digest; model.revision = digest.slice(0, 16); saveImportedModel(this.store, model); }
+        else if (!("familyId" in model) && model.extension?.id.startsWith("hf-lora-")) {
+          artifact.sha256 = digest;
+          model.extension.artifacts = model.artifacts;
+          model.extension.revision = digest.slice(0, 16);
+          saveImportedExtension(this.store, model.extension);
+        }
       });
       this.update({ completedFiles: this.current!.completedFiles + 1 });
     }
@@ -319,7 +341,7 @@ export class ModelLibrary {
     if (!("familyId" in model)) {
       this.engine.invalidateWorkers();
       await this.engine.refreshWorkers(true);
-      this.update({ status: "succeeded", stage: model.category === "upscale" ? "Downloaded. Upscaling is available on compatible image workers." : "Downloaded. Transparent background is available on compatible image workers." });
+      this.update({ status: "succeeded", stage: model.category === "adapter" ? "Downloaded. The adapter is available on compatible image workers." : model.category === "upscale" ? "Downloaded. Upscaling is available on compatible image workers." : "Downloaded. Transparent background is available on compatible image workers." });
       return;
     }
     try {

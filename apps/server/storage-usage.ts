@@ -2,7 +2,7 @@ import { lstat, opendir, realpath, statfs } from "node:fs/promises";
 import type { BigIntStats, BigIntStatsFs, Dir } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { setImmediate as yieldTurn } from "node:timers/promises";
-import { BIREFNET_ARTIFACT, UPSCALER_MODELS } from "../../packages/inference/index.ts";
+import { BIREFNET_ARTIFACT, UPSCALER_MODELS, GENERATION_EXTENSIONS } from "../../packages/inference/index.ts";
 import type { StorageCategoryId, StorageCategoryUsage, StorageMeasurementStatus, StorageUsage } from "../../packages/contracts/storage.ts";
 import type { Store } from "./store.ts";
 
@@ -23,11 +23,11 @@ interface StorageUsageOptions {
 }
 const categoryLabels: Record<StorageCategoryId, string> = {
   "image-models": "Image models and encoders", "language-models": "Language models (MiMo)",
-  tools: "Upscalers and background removal", database: "Database and journals", images: "Local images and uploads",
+  tools: "Adapters, upscalers and background removal", database: "Database and journals", images: "Local images and uploads",
   runtime: "Worker files and temporary data", other: "Other Studio files",
 };
 const modelCategories: StorageCategoryId[] = ["image-models", "language-models", "tools"];
-const utilityPaths = new Set([BIREFNET_ARTIFACT, ...UPSCALER_MODELS.flatMap(model => model.artifacts)].map(artifact => `${artifact.folder}/${artifact.filename}`));
+const utilityPaths = new Set([BIREFNET_ARTIFACT, ...UPSCALER_MODELS.flatMap(model => model.artifacts), ...GENERATION_EXTENSIONS.flatMap(model => model.artifacts)].map(artifact => `${artifact.folder}/${artifact.filename}`));
 const weightFile = /\.(?:safetensors|gguf|pth|pt|ckpt|onnx|bin)(?:\.(?:part|[a-f0-9-]+\.partial))?$/i;
 const bytes = (value: bigint): number | null => value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null;
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -76,7 +76,7 @@ export class StorageUsageService {
 
   private modelCategory(path: string): StorageCategoryId {
     if (path === "text" || path.startsWith("text/")) return "language-models";
-    if (/^(upscale_models|background_removal)(\/|$)/.test(path) || utilityPaths.has(path.replace(/\.part$/, ""))) return "tools";
+    if (/^(upscale_models|background_removal|loras|clip_vision)(\/|$)/.test(path) || utilityPaths.has(path.replace(/\.part$/, ""))) return "tools";
     return "image-models";
   }
   private category(path: string, models: boolean): StorageCategoryId {

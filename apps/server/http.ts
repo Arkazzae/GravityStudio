@@ -382,6 +382,13 @@ export async function createStudioServer(options: ServerOptions) {
         return json(response, await engine.releaseWorkerMemory(workerId));
       }
       if (path === "/api/catalog" && method === "GET") return json(response, await engine.catalog());
+      if (path === "/api/generation-tools" && method === "GET") return json(response, await engine.generationTools(new URL(request.url!, "http://localhost").searchParams.get("modelId") ?? undefined));
+      if (path === "/api/background-removal" && method === "GET") return json(response, await engine.backgroundRemoval());
+      if (path === "/api/background-removal" && method === "POST") {
+        const key = request.headers["idempotency-key"];
+        if (typeof key !== "string") throw new ApiError(400, "REQUEST_KEY_REQUIRED", "Supply an Idempotency-Key so retries cannot create duplicate cutouts.");
+        return json(response, { job: await engine.submitBackgroundRemoval(user.id, await readAuthorizedJson(), key) }, 202);
+      }
       if (path === "/api/upscalers" && method === "GET") return json(response, await engine.upscalers());
       if (path === "/api/upscale" && method === "POST") {
         const key = request.headers["idempotency-key"];

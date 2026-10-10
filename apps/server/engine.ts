@@ -2,15 +2,19 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ApiError, isUpscaleInput, type GenerationInput, type UpscaleInput, type UpscalerCard, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
+import { ApiError, isUpscaleInput, isImageToolInput, isBackgroundRemovalInput, type BackgroundRemovalInput, type GenerationInput, type UpscaleInput, type UpscalerCard, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
 import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type GenerationSnapshot, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
 import { inputBytes, outputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
-import { modelRegistry } from "./registry.ts";
+import { modelRegistry, generationExtensionRegistry } from "./registry.ts";
+import type { GenerationRequest, GenerationExtensionManifest, ModelManifest } from "../../packages/inference/types.ts";
 import { BIREFNET_MEMORY } from "../../packages/inference/index.ts";
+import { BACKGROUND_REMOVAL_MODEL, compileBackgroundRemoval } from "../../packages/inference/background-removal.ts";
+import { isBackgroundRemovalSnapshot } from "../../packages/inference/types.ts";
+import { rebindGenerationInputs } from "../../packages/inference/compiler.ts";
 import { requireWorkTime, WorkTimeService } from "./work-time.ts";
 
 interface WorkerState {
@@ -39,19 +43,26 @@ const workerIdentity = (worker: WorkerSettings) => canonical({ id: worker.id, ba
 const modelIdentity = (snapshot: ExecutionSnapshot) => canonical({
   recipe: { familyId: snapshot.recipe.familyId, revision: snapshot.recipe.revision },
   model: { familyId: snapshot.model.familyId, revision: snapshot.model.revision, artifacts: [...snapshot.model.artifacts, ...(snapshot.auxiliaryArtifacts ?? [])].sort((a, b) => `${a.folder}/${a.filename}`.localeCompare(`${b.folder}/${b.filename}`)) },
-  ...(!isUpscaleSnapshot(snapshot) && snapshot.postprocess ? { postprocess: snapshot.postprocess.model } : {}),
+  ...(!isUpscaleSnapshot(snapshot) && !isBackgroundRemovalSnapshot(snapshot) && snapshot.postprocess ? { postprocess: snapshot.postprocess.model } : {}),
 });
 function generationMemory(snapshot: GenerationSnapshot, configuration: ModelConfiguration) {
   const base = { ...FAMILY_RECIPES[snapshot.model.familyId].defaults, ...snapshot.model.defaults };
-  const scale = Math.max(1, snapshot.parameters.width * snapshot.parameters.height / (base.width * base.height));
+  const scale = Math.max(1, (snapshot.parameters.samplingWidth ?? snapshot.parameters.width) * (snapshot.parameters.samplingHeight ?? snapshot.parameters.height) / (base.width * base.height));
   const cutout = snapshot.auxiliaryArtifacts?.some(artifact => artifact.role === "background-removal") ? BIREFNET_MEMORY : { ramBytes: 0, vramBytes: 0 };
-  const generation = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale) + cutout.ramBytes, vramBytes: Math.ceil(configuration.memory.vramBytes * scale) + cutout.vramBytes };
+  const extensions = (snapshot.extensions ?? []).reduce((sum, item) => ({ ramBytes: sum.ramBytes + item.memory.ramBytes, vramBytes: sum.vramBytes + item.memory.vramBytes }), { ramBytes: 0, vramBytes: 0 });
+  const generation = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale) + cutout.ramBytes + extensions.ramBytes, vramBytes: Math.ceil(configuration.memory.vramBytes * scale) + cutout.vramBytes + extensions.vramBytes };
   if (!snapshot.postprocess) return generation;
   // Comfy's normal memory mode offloads previous models before the next sampler
   // and stores intermediate tensors on CPU. Keep both stages' RAM reservations;
   // the shared GPU needs the larger stage, not simultaneous model allocations.
   return { ramBytes: generation.ramBytes + snapshot.postprocess.model.memory.ramBytes,
     vramBytes: Math.max(generation.vramBytes, snapshot.postprocess.model.memory.vramBytes) };
+}
+function extensionsFor(store: Store, request: Pick<GenerationRequest, "loras" | "refiner" | "operation">, model: ModelManifest): GenerationExtensionManifest[] {
+  const loras = request.loras ?? [];
+  if (!Array.isArray(loras) || loras.length > 4 || loras.some(item => !item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some(key => !["id", "strength"].includes(key)) || typeof item.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/.test(item.id) || typeof item.strength !== "number" || !Number.isFinite(item.strength) || item.strength < 0 || item.strength > 2) || new Set(loras.map(item => item.id)).size !== loras.length) throw new ApiError(400, "INVALID_LORAS", "Choose up to four compatible LoRAs with strengths from 0 to 2.");
+  const ids = [...loras.map(item => item.id), ...(request.refiner ? ["sdxl-refiner-1.0"] : []), ...(request.operation === "reference" && model.familyId === "sdxl" ? ["sdxl-clip-vision"] : []), ...(request.operation === "reference" && model.familyId === "krea-2" ? ["krea2-style-reference"] : [])];
+  return generationExtensionRegistry(store).filter(item => ids.includes(item.id));
 }
 type Admission = { kind: "ready" } | { kind: "wait" | "reject"; reason: string; reclaimable?: boolean; ramPressure?: boolean };
 
@@ -224,6 +235,70 @@ export class Engine {
     void this.tick();
     return publicJob(job);
   }
+  async backgroundRemoval() {
+    await this.refreshWorkers();
+    const model = BACKGROUND_REMOVAL_MODEL;
+    const snapshot = compileBackgroundRemoval({ sourceWidth: 512, sourceHeight: 512, image: { filename: "capability.png", subfolder: "", type: "input" } });
+    const ready = this.upscaleWorkers(snapshot).length > 0;
+    const installed = await localArtifactsInstalled(this.store.directory, model.artifacts) || this.store.settings().workers.some(worker => {
+      const state = this.workers.get(worker.id);
+      return state?.identity === workerIdentity(worker) && state.discovery && model.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
+    });
+    return { modelId: model.id, ready, installed, maxDimension: 8192, maxPixels: 16_777_216,
+      missingReasons: ready ? [] : [installed ? "Connect a compatible worker with BiRefNet." : "Download BiRefNet in Settings → Models → Tools."] };
+  }
+  async generationTools(modelId?: string) {
+    await this.refreshWorkers();
+    const settings = settingsView(this.store), models = modelRegistry(this.store);
+    if (modelId !== undefined && !models.some(model => model.id === modelId)) throw new ApiError(404, "MODEL_NOT_FOUND", "Choose an image model from the catalog.");
+    const tools = await Promise.all(generationExtensionRegistry(this.store).map(async tool => {
+      const candidates = models.filter(model => tool.familyIds.includes(model.familyId) && (modelId === undefined || model.id === modelId));
+      let ready = false;
+      for (const model of candidates) {
+        const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
+        if (!configuration.enabled) continue;
+        const request: GenerationRequest = { modelId: model.id, prompt: "Capability check", seed: 0,
+          ...(tool.kind === "lora" ? { loras: [{ id: tool.id, strength: 1 }] } : tool.kind === "refiner" ? { refiner: true } : {
+            operation: "reference", images: [{ filename: "capability.png", subfolder: "", type: "input" }], sourceSize: { width: 1024, height: 1024 },
+          }) };
+        try {
+          const snapshot = compileGeneration(request, configuredModel(configuration, this.store), undefined, [tool]);
+          if (this.availableWorkers(configuration, snapshot).length) { ready = true; break; }
+        } catch (error) { if (!(error instanceof InferenceError)) throw error; }
+      }
+      const installed = await localArtifactsInstalled(this.store.directory, tool.artifacts) || settings.workers.some(worker => {
+        const state = this.workers.get(worker.id);
+        return state?.identity === workerIdentity(worker) && state.discovery && tool.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
+      });
+      return { ...tool, installed, ready, missingReasons: ready ? [] : [!candidates.length ? "This adapter does not support the selected model family." : !installed ? "Download this adapter in Settings → Models → Tools." : "Enable a compatible image model and assign a worker with all required files and nodes."] };
+    }));
+    return { tools };
+  }
+  async submitBackgroundRemoval(userId: string, value: unknown, key: string) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(field => !["source", "operation", "modelId"].includes(field))) throw new ApiError(400, "INVALID_BACKGROUND_REMOVAL", "Choose an image to remove its background.");
+    if (!/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) throw new ApiError(400, "INVALID_REQUEST_KEY", "Supply an Idempotency-Key between 8 and 128 characters.");
+    const raw = value as Partial<BackgroundRemovalInput>;
+    if (raw.operation !== undefined && raw.operation !== "remove-background" || raw.modelId !== undefined && raw.modelId !== "birefnet") throw new ApiError(400, "INVALID_BACKGROUND_REMOVAL", "Choose the BiRefNet background removal tool.");
+    const source = raw.source;
+    const uuid = (id: unknown): id is string => typeof id === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id);
+    if (!source || typeof source !== "object" || Array.isArray(source) || !(source.type === "input" && Object.keys(source).length === 2 && uuid(source.inputId) || source.type === "output" && Object.keys(source).length === 3 && uuid(source.jobId) && typeof source.outputId === "string" && /^[a-f0-9]{32}$/.test(source.outputId))) throw new ApiError(400, "INVALID_IMAGE_SOURCE", "Choose an imported image or saved output owned by this account.");
+    const input: BackgroundRemovalInput = { operation: "remove-background", modelId: "birefnet", source: structuredClone(source) };
+    const requestHash = createHash("sha256").update(canonical(input)).digest("hex");
+    const old = this.store.idempotentJob(userId, key, requestHash);
+    if (old) return publicJob(old);
+    requireWorkTime(this.store.db, userId);
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
+    const original = source.type === "input" ? this.store.input(source.inputId, userId) : this.store.output(source.jobId, source.outputId, userId);
+    const snapshot = compileBackgroundRemoval({ sourceWidth: original.width!, sourceHeight: original.height!, image: { filename: "source.png", subfolder: "", type: "input" } });
+    await this.refreshWorkers();
+    const workers = this.upscaleWorkers(snapshot);
+    if (!workers.length) throw new ApiError(409, "BACKGROUND_REMOVAL_UNAVAILABLE", "Download BiRefNet in Settings → Models → Tools and connect a compatible worker.");
+    const placements = workers.map(worker => ({ worker: structuredClone(worker), memory: { ...BACKGROUND_REMOVAL_MODEL.memory } }));
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
+    const job = this.store.createJob(userId, input, snapshot, placements, "BiRefNet", { ...snapshot.parameters }, key, requestHash);
+    void this.tick();
+    return publicJob(job);
+  }
   async catalog() {
     await this.refreshWorkers();
     const settings = settingsView(this.store);
@@ -257,13 +332,37 @@ export class Engine {
       const transparentAvailable = (await Promise.all(this.availableWorkers(configuration, transparentUltra).map(worker => fits(worker, transparentMemory)))).some(Boolean);
       const ultra = { available: fittingWorkers.length > 0, transparentAvailable, modelId: "seedvr2-7b" as const, maxDimension: 4096 as const,
         ...(!fittingWorkers.length ? { reason: !ultraWorkers.length ? "Download SeedVR2 7B in Models → Tools and connect a compatible worker for this image model." : `SeedVR2 7B needs ${(ultraMemory.ramBytes / 1024 ** 3).toFixed(1)} GiB RAM and ${(ultraMemory.vramBytes / 1024 ** 3).toFixed(1)} GiB VRAM, plus the configured reserve. No connected worker has enough measured capacity.` } : {}) };
+      const image = { filename: "capability.png", subfolder: "", type: "input" as const };
+      const editOperation = family.operations.includes("image-to-image") ? "image-to-image" : "reference";
+      const feature = async (extra: Partial<GenerationRequest>) => {
+        const request: GenerationRequest = { modelId: model.id, prompt: "Capability check", seed: 0, ...extra };
+        try {
+          const candidate = compileGeneration(request, resolved, undefined, extensionsFor(this.store, request, resolved));
+          const workers = configuration.enabled ? this.availableWorkers(configuration, candidate) : [];
+          const budget = generationMemory(candidate, configuration);
+          const ready = (await Promise.all(workers.map(worker => fits(worker, budget)))).some(Boolean);
+          return { available: ready, ...(!ready ? { reason: workers.length ? "This workflow exceeds the configured memory budget on the assigned GPUs." : "Download the required tools and connect an assigned worker supporting this workflow." } : {}) };
+        } catch (error) {
+          if (!(error instanceof InferenceError || error instanceof ApiError)) throw error;
+          return { available: false, reason: error.message };
+        }
+      };
+      const source = { operation: editOperation, images: [image], sourceSize: { width: 1024, height: 1024 } } as const;
+      const editing = {
+        inpaint: await feature({ ...source, images: [image], mask: { ...image, filename: "mask.png" } }),
+        outpaint: await feature({ ...source, images: [image], sourceSize: { width: 768, height: 768 }, outpaint: { left: 128, right: 128, top: 128, bottom: 128 } }),
+        matchSource: await feature({ ...source, images: [image], matchSource: true }),
+        reference: { ...await feature({ operation: "reference", images: [image], sourceSize: source.sourceSize }), ...(model.familyId === "ideogram-4" ? { experimental: true } : {}) },
+        refiner: await feature({ refiner: true }),
+      };
+      const imageInput = family.maxReferences > 0 && (editing.reference.available || (await feature({ ...source, images: [image] })).available);
       const installed = await localArtifactsInstalled(this.store.directory, resolved.artifacts) || settings.workers.some(worker => {
         const state = this.workers.get(worker.id);
         return state?.identity === workerIdentity(worker) && !!state.discovery && resolved.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
       });
       return { ...card, installed, unavailableReason: card.missingReasons.join(" "),
         limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
-        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background, ultra },
+        capabilities: { ...card.capabilities, imageInput, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background, ultra, editing },
       };
     }));
     return { models, families: Object.values(FAMILY_RECIPES).map(({ id, name }) => ({ id, name })) };
@@ -271,7 +370,7 @@ export class Engine {
   async submit(userId: string, value: unknown, key: string) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(400, "INVALID_JOB", "Provide generation settings.");
     if (!/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) throw new ApiError(400, "INVALID_REQUEST_KEY", "Supply an Idempotency-Key between 8 and 128 characters.");
-    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images", "background", "quality"]);
+    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images", "background", "quality", "maskId", "outpaint", "matchSource", "refiner", "referenceStrength", "loras"]);
     if (Object.keys(value).some(field => !allowed.has(field))) throw new ApiError(400, "INVALID_JOB", "The request contains an unsupported generation parameter.");
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
@@ -280,14 +379,21 @@ export class Engine {
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const input = structuredClone(value) as GenerationInput;
     if (input.images !== undefined && (!Array.isArray(input.images) || input.images.some(id => typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)))) throw new ApiError(400, "INVALID_INPUTS", "Choose reference images uploaded to this studio.");
-    for (const id of input.images ?? []) this.store.input(id, userId);
+    const sources = (input.images ?? []).map(id => this.store.input(id, userId));
+    if (input.maskId !== undefined && (typeof input.maskId !== "string" || !/^[a-f0-9-]{36}$/.test(input.maskId))) throw new ApiError(400, "INVALID_MASK", "Choose a mask uploaded to this studio.");
+    const maskInput = input.maskId === undefined ? undefined : this.store.input(input.maskId, userId);
+    if (maskInput && (!sources[0] || maskInput.width !== sources[0].width || maskInput.height !== sources[0].height)) throw new ApiError(400, "INVALID_MASK_SIZE", "The mask must match the first reference image's dimensions.");
     const configuration = settingsView(this.store).modelConfigurations.find(item => item.modelId === input.modelId);
     if (!configuration?.enabled) throw new ApiError(400, "MODEL_DISABLED", "Enable this model in Hardware settings before generating.");
     const model = configuredModel(configuration, this.store);
     const operation = input.operation ?? ((input.images?.length ?? 0) ? FAMILY_RECIPES[model.familyId].operations.includes("image-to-image") ? "image-to-image" : "reference" : "text-to-image");
-    const snapshot = compileGeneration({ ...input, operation, images: (input.images ?? []).map(id => ({ filename: `${id}.png`, subfolder: "", type: "input" as const })) }, model);
+    const { maskId, ...generation } = input;
+    const snapshot = compileGeneration({ ...generation, operation, images: (input.images ?? []).map(id => ({ filename: `${id}.png`, subfolder: "", type: "input" as const })),
+      ...(maskInput ? { mask: { filename: `${maskInput.id}.png`, subfolder: "", type: "input" as const } } : {}),
+      ...(sources[0] ? { sourceSize: { width: sources[0].width, height: sources[0].height } } : {}),
+    }, model, undefined, extensionsFor(this.store, { ...input, operation }, model));
     input.seed = snapshot.parameters.seed; input.operation = operation;
-    if (snapshot.parameters.quality === "ultra") { input.width = snapshot.parameters.width; input.height = snapshot.parameters.height; }
+    input.width = snapshot.parameters.width; input.height = snapshot.parameters.height;
     await this.refreshWorkers();
     const workers = this.availableWorkers(configuration, snapshot);
     if (!workers.length) {
@@ -631,27 +737,46 @@ export class Engine {
     let snapshot = job.snapshot as ExecutionSnapshot;
     const capability = checkCapabilities(snapshot, discovery);
     if (!capability.available) throw new ApiError(409, "MODEL_UNAVAILABLE", capability.issues[0].message);
-    if (isUpscaleSnapshot(snapshot)) {
-      if (!isUpscaleInput(job.input)) throw new Error("The upscale source is missing from the saved job.");
+    if (isUpscaleSnapshot(snapshot) || isBackgroundRemovalSnapshot(snapshot)) {
+      if (!isImageToolInput(job.input)) throw new Error("The tool source is missing from the saved job.");
       this.store.patchJob(id, { stage: "Uploading source image" });
       const source = job.input.source;
       const original = source.type === "input" ? this.store.input(source.inputId, job.userId) : this.store.output(source.jobId, source.outputId, job.userId);
       const bytes = source.type === "input" ? await inputBytes(this.store, source.inputId, job.userId) : await outputBytes(this.store, source.jobId, source.outputId, job.userId);
       const extension = original.mimeType === "image/jpeg" ? "jpg" : original.mimeType === "image/webp" ? "webp" : "png";
       const image = await client.uploadImage(bytes, { filename: `source.${extension}`, mediaType: original.mimeType, jobId: id });
-      const { scale, sourceWidth, sourceHeight, seed } = snapshot.parameters;
-      snapshot = compileUpscale({ modelId: snapshot.model.id, scale, sourceWidth, sourceHeight, seed, image }, snapshot.model);
+      if (isBackgroundRemovalSnapshot(snapshot)) {
+        if (!isBackgroundRemovalInput(job.input)) throw new Error("The saved tool does not match its execution snapshot.");
+        const { sourceWidth, sourceHeight } = snapshot.parameters;
+        snapshot = compileBackgroundRemoval({ sourceWidth, sourceHeight, image }, snapshot.model);
+      } else {
+        if (!isUpscaleInput(job.input)) throw new Error("The saved tool does not match its execution snapshot.");
+        const { scale, sourceWidth, sourceHeight, seed } = snapshot.parameters;
+        snapshot = compileUpscale({ modelId: snapshot.model.id, scale, sourceWidth, sourceHeight, seed, image }, snapshot.model);
+      }
       this.store.saveExecution(id, snapshot);
     } else {
-      if (isUpscaleInput(job.input)) throw new Error("The saved job has an incompatible execution snapshot.");
+      if (isImageToolInput(job.input)) throw new Error("The saved job has an incompatible execution snapshot.");
+      const uploaded = new Map<string, Awaited<ReturnType<ComfyClient["uploadImage"]>>>();
+      const upload = async (inputId: string) => {
+        const cached = uploaded.get(inputId);
+        if (cached) return cached;
+        const bytes = await inputBytes(this.store, inputId, job.userId);
+        const image = await client.uploadImage(bytes, { filename: `${inputId}.png`, mediaType: "image/png", jobId: id });
+        uploaded.set(inputId, image);
+        return image;
+      };
       const inputs = [];
       for (const inputId of job.input.images ?? []) {
         this.store.patchJob(id, { stage: "Uploading reference images" });
-        const bytes = await inputBytes(this.store, inputId, job.userId);
-        inputs.push(await client.uploadImage(bytes, { filename: `${inputId}.png`, mediaType: "image/png", jobId: id }));
+        inputs.push(await upload(inputId));
       }
-      if (inputs.length) {
-        snapshot = compileGeneration({ ...job.input, images: inputs }, snapshot.model, snapshot.postprocess?.model);
+      let mask;
+      if (job.input.maskId) {
+        mask = await upload(job.input.maskId);
+      }
+      if (inputs.length || mask) {
+        snapshot = rebindGenerationInputs(snapshot, inputs, mask);
         this.store.saveExecution(id, snapshot);
       }
     }
@@ -686,7 +811,7 @@ export class Engine {
             try {
               const output = await client.fetchOutput(job.promptId!, reference, snapshot);
               if (terminal.has(this.store.job(job.id).status)) return;
-              outputs.push(await saveOutput(this.store, job.id, index, output.bytes, isUpscaleSnapshot(snapshot) ? snapshot.parameters : snapshot.postprocess));
+              outputs.push(await saveOutput(this.store, job.id, index, output.bytes, isUpscaleSnapshot(snapshot) || isBackgroundRemovalSnapshot(snapshot) ? snapshot.parameters : snapshot.postprocess));
             }
             catch (error) {
               const invalid = error instanceof ApiError && error.code === "INVALID_OUTPUT" || error instanceof InferenceError && ["INVALID_OUTPUT", "RESPONSE_TOO_LARGE"].includes(error.code);

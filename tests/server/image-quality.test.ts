@@ -58,7 +58,8 @@ test("Krea accepts native 2048-square output while manual dimension and request-
   assert.equal(snapshot.parameters.steps, 8);
   assert.throws(() => compileGeneration({ ...request, width: 2064 }), { code: "INVALID_INPUT" });
   assert.throws(() => compileGeneration({ ...request, width: 2047 }), { code: "INVALID_INPUT" });
-  assert.throws(() => compileGeneration({ ...request, quality: "high" } as never), { code: "INVALID_INPUT" });
+  assert.equal(compileGeneration({ ...request, quality: "high" }).parameters.width, 2048);
+  assert.throws(() => compileGeneration({ ...request, quality: "unknown" } as never), { code: "INVALID_INPUT" });
   const manual = compileGeneration({ modelId: "sdxl-base", prompt: "A ceramic cup", seed: 1, width: 256, height: 256 });
   assert.equal(manual.parameters.width, 256);
 });

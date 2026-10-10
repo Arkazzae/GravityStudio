@@ -362,9 +362,14 @@ test("generation requires an idempotency key and logout invalidates the session"
 
 test("upscale endpoints authenticate clients and require an idempotency key", async t => {
   const api = await fixture(t);
+  for (const path of ["/generation-tools", "/background-removal"]) assert.equal((await api.request(path)).status, 401);
+  assert.equal((await api.request("/background-removal", "POST", {})).status, 401);
   assert.equal((await api.request("/upscalers")).status, 401);
   assert.equal((await api.request("/upscale", "POST", {})).status, 401);
   await api.setup();
+  assert.equal((await api.request("/background-removal", "POST", {})).status, 400);
+  assert.equal((await fetch(`${api.url}/api/background-removal`, { method: "POST", headers: { Cookie: api.cookie(), "Content-Type": "application/json", "Idempotency-Key": "cutout-cross-origin" }, body: "{}" })).status, 403);
+  assert.equal((await api.request("/generation-tools?modelId=missing")).status, 404);
   const models = await (await api.request("/upscalers")).json();
   assert.equal(models.models.length, 3);
   assert(models.models.every((model: { ready: boolean; installed: boolean }) => !model.ready && !model.installed));
@@ -399,7 +404,7 @@ test("MCP authenticates every request and exposes generation tools without serve
   const listed = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   assert.equal(listed.status, 200);
   const names = (await message(listed)).result.tools.map((tool: { name: string }) => tool.name).sort();
-  assert.deepEqual(names, ["gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list", "gravity_upscale_submit", "gravity_upscalers_list"]);
+  assert.deepEqual(names, ["gravity_background_removal_status", "gravity_background_remove", "gravity_generation_tools_list", "gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list", "gravity_upscale_submit", "gravity_upscalers_list"]);
   const result = await message(await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "gravity_jobs_list", arguments: {} } }));
   assert.deepEqual(result.result.structuredContent.data, { jobs: [] });
   const rejected = await message(await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "gravity_job_submit", arguments: { request: { modelId: "sdxl-base", prompt: "mountain" }, idempotencyKey: "mcp-request-first" } } }));
@@ -409,6 +414,10 @@ test("MCP authenticates every request and exposes generation tools without serve
   assert.equal(upscalers.result.structuredContent.data.models.length, 3);
   const invalidUpscale = await message(await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "gravity_upscale_submit", arguments: { request: { operation: "upscale", modelId: "nomos2-hq", scale: 2, source: { type: "input", inputId: "00000000-0000-4000-8000-000000000000" } }, idempotencyKey: "mcp-upscale-test" } } }));
   assert.equal(JSON.parse(invalidUpscale.result.content[0].text).error.code, "INPUT_NOT_FOUND");
+  const tenReferences = await message(await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "gravity_job_submit", arguments: { request: { modelId: "qwen-image-2.1", prompt: "Combine the references", sampler: "euler", scheduler: "simple", images: Array(10).fill("00000000-0000-4000-8000-000000000000") }, idempotencyKey: "mcp-ten-references" } } }));
+  assert.equal(JSON.parse(tenReferences.result.content[0].text).error.code, "INPUT_NOT_FOUND", "Ten references pass the transport schema and reach ownership checks");
+  const cutout = await message(await rpc({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "gravity_background_removal_status", arguments: {} } }));
+  assert.equal(cutout.result.structuredContent.data.ready, false);
   await api.request(`/tokens/${created.id}`, "DELETE");
   assert.equal((await rpc(init)).status, 401);
 });

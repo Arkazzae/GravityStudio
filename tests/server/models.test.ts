@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../../apps/server/engine.ts";
 import { ModelLibrary, huggingFaceFile } from "../../apps/server/models.ts";
-import { modelRegistry, saveImportedModel } from "../../apps/server/registry.ts";
+import { modelRegistry, saveImportedModel, generationExtensionRegistry } from "../../apps/server/registry.ts";
 import { configuredModel, settingsView, validateSettings } from "../../apps/server/settings.ts";
 import { Store } from "../../apps/server/store.ts";
 import { CredentialVault } from "../../apps/server/credentials.ts";
@@ -49,7 +49,7 @@ test("an existing studio discovers Qwen's download and capabilities without enab
   assert.equal(card.familyId, "qwen-image-2.1");
   assert.equal(card.ready, false);
   assert.deepEqual(card.operations, ["text-to-image", "reference"]);
-  assert.equal(card.capabilities.imageInput, true);
+  assert.equal(card.capabilities.imageInput, false, "Reference controls stay unavailable until an assigned worker is ready");
   assert.equal(card.capabilities.maxImages, 10);
   assert.equal(card.limits.maxImages, 10);
   assert.equal(card.capabilities.negativePrompt, true);
@@ -95,9 +95,9 @@ test("an existing studio discovers Ideogram's four artifacts without enabling it
   const card = (await new Engine(store).catalog()).models.find(model => model.id === "ideogram-4-fp8")!;
   assert.equal(card.familyId, "ideogram-4");
   assert.equal(card.ready, false);
-  assert.deepEqual(card.operations, ["text-to-image"]);
+  assert.deepEqual(card.operations, ["text-to-image", "image-to-image", "reference"]);
   assert.equal(card.capabilities.imageInput, false);
-  assert.equal(card.capabilities.maxImages, 0);
+  assert.equal(card.capabilities.maxImages, 1);
   assert.equal(card.capabilities.negativePrompt, false);
   assert.match(card.license!, /Non-Commercial/);
   const view = await library.view();
@@ -416,4 +416,35 @@ test("catalog-only sources do not advertise a Hugging Face download and stale op
   const recovered = new ModelLibrary(store, noWorkers); t.after(() => recovered.close());
   assert.equal((await recovered.view()).download?.status, "failed");
   assert.match((await recovered.view()).download!.error!, /server restarted/);
+});
+
+test("LoRA imports pin their digest, stay outside the image picker and survive restart", async t => {
+  const { directory, store, library } = await fixture(t);
+  const job = library.start({ ...importRequest, kind: "lora" });
+  await library.waitForIdle();
+  assert.equal((await library.view()).download?.status, "succeeded");
+  const extension = generationExtensionRegistry(store).find(item => item.id === job.modelId)!;
+  assert.deepEqual(extension.familyIds, ["sdxl"]);
+  assert.equal(extension.artifacts[0].sha256, sha256);
+  assert.equal(extension.artifacts[0].folder, "loras");
+  assert.equal(modelRegistry(store).some(model => model.id === extension.id), false);
+  assert.equal(settingsView(store).modelConfigurations.some(model => model.modelId === extension.id), false);
+  const card = (await library.view()).models.find(item => item.id === extension.id)!;
+  assert.equal(card.installed, true); assert.equal(card.source, "huggingface");
+  const reopened = new Store(directory);
+  try { assert.deepEqual(generationExtensionRegistry(reopened).find(item => item.id === extension.id), extension); }
+  finally { reopened.close(); }
+  assert.deepEqual(await readFile(join(directory, "models", "loras", extension.artifacts[0].filename)), bytes);
+});
+
+test("LoRA imports reject unsupported families and malformed files without reporting installed", async t => {
+  const { store, library } = await fixture(t, { fetch: async () => response(Buffer.from("invalid-safetensors")) });
+  for (const familyId of ["ideogram-4", "unknown", "../../checkpoints"]) assert.throws(() => library.start({ ...importRequest, kind: "lora", familyId }), { code: "INVALID_MODEL_REQUEST" });
+  const before = generationExtensionRegistry(store).length;
+  const job = library.start({ ...importRequest, kind: "lora", familyId: "qwen-image-2.1" });
+  await library.waitForIdle();
+  const view = await library.view();
+  assert.equal(view.download?.status, "failed");
+  assert.equal(view.models.find(item => item.id === job.modelId)?.installed, false);
+  assert.equal(generationExtensionRegistry(store).length, before + 1, "The failed import remains retryable without acquiring an image model configuration");
 });
