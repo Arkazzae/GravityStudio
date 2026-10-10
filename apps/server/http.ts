@@ -7,7 +7,7 @@ import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
 import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
-import { deleteInput, deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverMediaDeletions, saveInput } from "./media.ts";
+import { deleteInput, deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverMediaDeletions, saveInput, saveInputFromOutput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
 import { mcpResponse } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
@@ -422,6 +422,10 @@ export async function createStudioServer(options: ServerOptions) {
         const body = await readAuthorizedJson(1024);
         if (body.acknowledge !== true || Object.keys(body).some(key => key !== "acknowledge")) throw new ApiError(400, "ACKNOWLEDGEMENT_REQUIRED", "Acknowledge closing this unknown generation with { acknowledge: true }.");
         return json(response, { job: await engine.resolve(user.id, resolveRoute[1]) });
+      }
+      if (path === "/api/inputs/from-output" && method === "POST") {
+        const body = await readAuthorizedJson(1024);
+        return json(response, await mediaOperation(() => saveInputFromOutput(store, user.id, body)), 201);
       }
       if (path === "/api/inputs") {
         if (method === "GET") return json(response, { inputs: store.inputs(user.id) });

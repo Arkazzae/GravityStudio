@@ -218,17 +218,22 @@ export class Store {
     // active must keep its metadata so later account deletion can erase the blob.
     const admitted = this.inputUploads.has(input.userId) && this.db.prepare("SELECT 1 FROM users WHERE id=? AND status IN ('active','suspended')").get(input.userId);
     if (!admitted) requireActiveUser(this.db, input.userId);
+    if (input.source) this.outputForReference(input.source.jobId, input.source.outputId, input.userId);
     this.db.prepare("INSERT INTO inputs VALUES(?,?,?)").run(input.id, input.userId, json(input));
+  }
+  inputForOutput(jobId: string, outputId: string, userId: string): PublicInput | undefined {
+    const row = this.db.prepare("SELECT body FROM inputs WHERE user_id=? AND json_extract(body,'$.source.jobId')=? AND json_extract(body,'$.source.outputId')=? LIMIT 1").get(userId, jobId, outputId) as { body: string } | undefined;
+    if (!row) return;
+    const input = JSON.parse(row.body) as StoredInput;
+    if (this.db.prepare("SELECT 1 FROM input_deletions WHERE input_id=?").get(input.id)) throw new ApiError(409, "INPUT_DELETION_PENDING", "This reference image is being deleted. Try again when deletion finishes.");
+    return publicInput(input);
   }
   input(id: string, userId: string): StoredInput {
     const row = this.db.prepare("SELECT body FROM inputs WHERE id=? AND user_id=?").get(id, userId) as { body: string } | undefined;
     if (!row) throw new ApiError(404, "INPUT_NOT_FOUND", "This reference image does not exist.");
     return JSON.parse(row.body);
   }
-  inputs(userId: string): PublicInput[] { return (this.db.prepare("SELECT body FROM inputs WHERE user_id=?").all(userId) as { body: string }[]).map(row => {
-    const { id, url, name, width, height, mimeType } = JSON.parse(row.body) as StoredInput;
-    return { id, url, name, width, height, mimeType };
-  }); }
+  inputs(userId: string): PublicInput[] { return (this.db.prepare("SELECT body FROM inputs WHERE user_id=?").all(userId) as { body: string }[]).map(row => publicInput(JSON.parse(row.body) as StoredInput)); }
   beginInputDeletion(id: string, userId: string): StoredInput {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -259,6 +264,11 @@ export class Store {
     const row = this.db.prepare("SELECT body FROM outputs WHERE id=? AND job_id=?").get(id, jobId) as { body: string } | undefined;
     if (!row) throw new ApiError(404, "OUTPUT_NOT_FOUND", "This image does not exist.");
     return JSON.parse(row.body);
+  }
+  outputForReference(jobId: string, id: string, userId: string): StoredOutput {
+    const output = this.output(jobId, id, userId);
+    if (this.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(id)) throw new ApiError(409, "OUTPUT_DELETION_PENDING", "This image is being deleted. Choose another image.");
+    return output;
   }
   setOutputFavorite(jobId: string, id: string, userId: string, favorite: boolean): StoredJob {
     this.output(jobId, id, userId);
@@ -292,6 +302,10 @@ export class Store {
       return this.job(jobId, userId);
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
+}
+function publicInput(input: StoredInput): PublicInput {
+  const { id, url, name, width, height, mimeType, source } = input;
+  return { id, url, name, width, height, mimeType, ...(source ? { source: { jobId: source.jobId, outputId: source.outputId } } : {}) };
 }
 export function publicJob(job: StoredJob): PublicJob {
   const { userId: _user, snapshot: _snapshot, placements: _placements, promptId: _prompt, submissionStarted: _submitted, ...result } = job;

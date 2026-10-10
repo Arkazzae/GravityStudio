@@ -9,6 +9,7 @@ import type { StoredObject } from "./object-store.ts";
 export const MAX_INPUT_BYTES = 20 * 1024 ** 2;
 export const MAX_OUTPUT_BYTES = 64 * 1024 ** 2;
 const MAX_PIXELS = 80_000_000;
+const outputReferences = new WeakMap<Store, Map<string, Promise<PublicInput>>>();
 const storageUnavailable = () => new ApiError(503, "MEDIA_STORAGE_UNAVAILABLE", "This image could not be read from its original storage. Check the storage connection and try again.");
 function objectStorage(store: Store, object: StoredObject, location: string, bytes: number, sha256?: string) {
   if (!store.objectStore || !object || object.backend !== 's3' || object.storeId !== store.objectStore.id ||
@@ -28,8 +29,28 @@ export async function saveInput(store: Store, userId: string, bytes: Buffer, sup
   try { return await storeInput(store, userId, bytes, suppliedName); }
   finally { finish(); }
 }
-async function storeInput(store: Store, userId: string, bytes: Buffer, suppliedName: string): Promise<PublicInput> {
-  if (!bytes.length || bytes.length > MAX_INPUT_BYTES) throw new ApiError(413, "INPUT_TOO_LARGE", "Choose a reference image smaller than 20 MiB.");
+export async function saveInputFromOutput(store: Store, userId: string, value: unknown): Promise<PublicInput> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 2 || !("jobId" in value) || !("outputId" in value) || typeof value.jobId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.jobId) || typeof value.outputId !== "string" || !/^[a-f0-9]{32}$/.test(value.outputId)) throw new ApiError(400, "INVALID_REFERENCE_SOURCE", "Choose a saved image owned by this account.");
+  const source = { jobId: value.jobId, outputId: value.outputId };
+  const finish = store.beginInputUpload(userId);
+  try {
+    store.outputForReference(source.jobId, source.outputId, userId);
+    const existing = store.inputForOutput(source.jobId, source.outputId, userId);
+    if (existing) return existing;
+    let pending = outputReferences.get(store);
+    if (!pending) { pending = new Map(); outputReferences.set(store, pending); }
+    const key = `${userId}:${source.jobId}:${source.outputId}`;
+    const running = pending.get(key);
+    if (running) return await running;
+    const operation = outputBytes(store, source.jobId, source.outputId, userId).then(bytes => storeInput(store, userId, bytes, `reference-${source.outputId}.png`, source));
+    pending.set(key, operation);
+    try { return await operation; }
+    finally { pending.delete(key); }
+  } finally { finish(); }
+}
+async function storeInput(store: Store, userId: string, bytes: Buffer, suppliedName: string, source?: PublicInput["source"]): Promise<PublicInput> {
+  const maxBytes = source ? MAX_OUTPUT_BYTES : MAX_INPUT_BYTES;
+  if (!bytes.length || bytes.length > maxBytes) throw new ApiError(413, "INPUT_TOO_LARGE", source ? "This saved image exceeds the 64 MiB size limit." : "Choose a reference image smaller than 20 MiB.");
   let data: Buffer, width: number, height: number;
   try {
     const source = sharp(bytes, { limitInputPixels: MAX_PIXELS, animated: false });
@@ -40,7 +61,7 @@ async function storeInput(store: Store, userId: string, bytes: Buffer, suppliedN
   } catch { throw new ApiError(400, "INVALID_IMAGE", "Use a valid PNG, JPEG or WebP image up to 80 megapixels."); }
   if (data.length > MAX_OUTPUT_BYTES) throw new ApiError(413, "INPUT_TOO_LARGE", "This reference is too large after decoding. Resize it before uploading.");
   const id = randomUUID();
-  const input: PublicInput = { id, name: suppliedName.replace(/[\x00-\x1f/\\]/g, "_").slice(0, 160) || "reference.png", url: `/api/inputs/${id}`, width, height, mimeType: "image/png" };
+  const input: PublicInput = { id, name: suppliedName.replace(/[\x00-\x1f/\\]/g, "_").slice(0, 160) || "reference.png", url: `/api/inputs/${id}`, width, height, mimeType: "image/png", ...(source ? { source } : {}) };
   let location: { path?: string; object?: StoredObject };
   if (store.objectStore) location = { object: await store.objectStore.put(`inputs/${id}`, data, input.mimeType) };
   else {
