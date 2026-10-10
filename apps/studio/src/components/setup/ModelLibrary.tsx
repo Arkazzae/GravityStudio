@@ -189,14 +189,14 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
           {model.licenseUrl && <a href={model.licenseUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 underline underline-offset-3 hover:text-ink"><ExternalLink size={13} />License</a>}
         </div>}
         {!model.downloadable && !model.installed && <p className="mt-2 break-words text-xs leading-relaxed text-ink-2">{model.unavailableReason || 'This model is not available for automatic download.'}</p>}
-        {access[model.id] && <AccessReport result={access[model.id]} onConfigureToken={() => configureToken(model.name)} />}
+        {!model.installed && access[model.id] && <AccessReport result={access[model.id]} onConfigureToken={() => configureToken(model.name)} />}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2 @xl:flex-col @xl:items-stretch @xl:pt-1">{model.enabled || model.kind === 'utility' && model.installed ? <span className="inline-flex min-h-11 items-center gap-2 text-sm text-volt"><Check size={16} />{model.kind === 'utility' ? 'Downloaded' : 'Ready to use'}</span>
         : <button disabled={busy || (!model.installed && !model.downloadable)} onClick={() => void (model.installed ? activate(model) : download({ modelId: model.id }, model.id))} className={actionClass}>
           {submitting === model.id && action !== 'check' || (downloading && downloadState?.modelId === model.id) ? <LoaderCircle size={15} className="animate-spin" /> : model.installed ? null : <Download size={15} />}
           {submitting === model.id && action === 'download-check' ? 'Checking access…' : model.installed ? 'Use model' : downloading && downloadState?.modelId === model.id ? 'Downloading…' : 'Download'}
         </button>}
-        {!!model.repositories?.length && <button type="button" disabled={busy} onClick={() => void checkAccess({ modelId: model.id }, model.id)} className={actionClass}>
+        {!model.installed && !!model.repositories?.length && <button type="button" disabled={busy} onClick={() => void checkAccess({ modelId: model.id }, model.id)} className={actionClass}>
           {submitting === model.id && action === 'check' ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}{submitting === model.id && action === 'check' ? 'Checking…' : 'Check access'}
         </button>}
       </div>
