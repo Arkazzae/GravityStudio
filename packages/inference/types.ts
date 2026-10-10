@@ -57,11 +57,38 @@ export interface ModelManifest {
   revision: string;
   artifacts: ModelArtifact[];
   defaults?: Partial<SamplingDefaults>;
+  /** The reviewed recipe template this checkpoint was materialized from. */
+  preset?: { id: string; revision: string };
+  /** Checkpoint-specific quality tuning; absent on legacy manifests. */
+  qualityPresets?: ImageQualityPreset[];
   /** A variant may narrow, but cannot add to, its family's operations. */
   operations?: Operation[];
   description?: string;
   license?: string;
   licenseUrl?: string;
+}
+
+/** Provider URLs are resolved and validated by the application before materialization. */
+export interface CheckpointImportRequest {
+  presetId: string;
+  name: string;
+  url: string;
+  dependencies?: { role: ArtifactRole; url: string }[];
+  operations?: Operation[];
+  defaults?: Partial<SamplingDefaults>;
+}
+
+export interface ModelPreset {
+  id: string;
+  name: string;
+  revision: string;
+  familyId: FamilyId;
+  primaryRole: ArtifactRole;
+  dependencyRoles: ArtifactRole[];
+  artifacts: ModelArtifact[];
+  operations: Operation[];
+  defaults: SamplingDefaults;
+  qualityPresets: ImageQualityPreset[];
 }
 
 export interface FamilyRecipe {

@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { BIREFNET_ARTIFACT, FAMILY_RECIPES, getModel, isRelativeFile, validateModel } from "./catalog.ts";
+import { BIREFNET_ARTIFACT, FAMILY_RECIPES, effectiveModelOperations, effectiveModelQualityPresets, getModel, isRelativeFile, resolveModelOperation, validateModel } from "./catalog.ts";
 import { fitImageSize, sourceCanvasSize, ultraOutputSize } from "../contracts/image-size.ts";
 import { appendUltraGraph, getUpscaler } from "./upscale.ts";
 import { compileIdeogramPrompt, parseIdeogramPrompt } from "./ideogram-prompt.ts";
@@ -80,7 +80,7 @@ export function highImageSize(model: ModelManifest, width: number, height: numbe
 
 export function qualityImageSize(model: ModelManifest, width: number, height: number, quality: "fast" | "standard" | "high"): { width: number; height: number } {
   const family = FAMILY_RECIPES[model.familyId];
-  const preset = family.qualityPresets.find(item => item.id === quality)!;
+  const preset = effectiveModelQualityPresets(model).find(item => item.id === quality)!;
   const dimensions = { ...family.dimensions, min: Math.max(family.dimensions.min, preset.minSide ?? 0) };
   const defaults = { ...family.defaults, ...model.defaults };
   const sizeModel = { defaults, dimensions };
@@ -107,7 +107,7 @@ function parametersFor(request: GenerationRequest, model: ModelManifest): Resolv
   check(typeof request.prompt === "string" && request.prompt.trim().length > 0 && request.prompt.length <= 16_000, "Write a prompt of 1–16,000 characters.");
   check(request.quality === undefined || ["fast", "standard", "high", "ultra"].includes(request.quality), "Choose Fast, Standard, High or Ultra quality.");
   const quality = request.quality === "ultra" ? "high" : request.quality;
-  const sampling = family.qualityPresets.find(item => item.id === quality)?.sampling;
+  const sampling = effectiveModelQualityPresets(model).find(item => item.id === quality)?.sampling;
   const p: ResolvedParameters = {
     ...defaults,
     prompt: request.prompt,
@@ -361,9 +361,9 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
   validateModel(model);
   check(request.modelId === model.id, "The request and model manifest do not match.");
   const family = FAMILY_RECIPES[model.familyId];
-  const operation = request.operation ?? "text-to-image";
-  check((model.operations ?? family.operations).includes(operation), "This model does not support the selected operation.");
   const images = request.images ?? [];
+  const operation = resolveModelOperation(model, request.operation, Array.isArray(images) ? images.length : 0);
+  check(effectiveModelOperations(model).includes(operation), "This model does not support the selected operation.");
   check(Array.isArray(images) && images.length <= family.maxReferences, "Too many images for this recipe.");
   images.forEach(validateInputImage);
   if (request.mask !== undefined) validateInputImage(request.mask);

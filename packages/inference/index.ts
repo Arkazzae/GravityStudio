@@ -7,3 +7,4 @@ export * from "./upscale.ts";
 export * from "./background-removal.ts";
 export * from "./ideogram-prompt.ts";
 export * from "./generation-extensions.ts";
+export * from "./model-presets.ts";

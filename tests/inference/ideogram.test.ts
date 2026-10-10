@@ -77,7 +77,7 @@ test("Ideogram applies supported size, steps and guidance edits without raising 
   for (const change of [
     { width: 1025 }, { width: 2304 }, { width: 2048, height: 256 },
     { negativePrompt: "blur" }, { scheduler: "normal" }, { clipSkip: 2 }, { denoise: 0.5 },
-    { images: [{ filename: "a.png", subfolder: "", type: "input" }] },
+    { operation: "text-to-image", images: [{ filename: "a.png", subfolder: "", type: "input" }] },
     { operation: "reference" }, { operation: "image-to-image" },
   ] satisfies Partial<GenerationRequest>[]) assert.throws(() => compileGeneration({ ...request, ...change }), { code: "INVALID_INPUT" });
 });

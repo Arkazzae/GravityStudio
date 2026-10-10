@@ -1,5 +1,6 @@
 import { InferenceError } from "./types.ts";
-import type { ArtifactRole, FamilyId, FamilyRecipe, ModelArtifact, ModelManifest, SamplingDefaults } from "./types.ts";
+import { fitImageSize } from "../contracts/image-size.ts";
+import type { ArtifactRole, FamilyId, FamilyRecipe, ImageQualityPreset, ModelArtifact, ModelManifest, Operation, SamplingDefaults } from "./types.ts";
 
 export const BIREFNET_ARTIFACT: Readonly<ModelArtifact> = Object.freeze({
   role: "background-removal", folder: "background_removal", filename: "birefnet.safetensors",
@@ -129,13 +130,34 @@ const artifactFolders: Record<ArtifactRole, string> = {
 };
 const allowedDefaults = new Set(Object.keys(base));
 
+export function effectiveModelOperations(model: Pick<ModelManifest, "familyId" | "operations">): Operation[] {
+  return [...(model.operations ?? FAMILY_RECIPES[model.familyId].operations)];
+}
+
+/** Preserve checkpoint sampling overrides when choosing an output quality. */
+export function effectiveModelQualityPresets(model: Pick<ModelManifest, "familyId" | "defaults" | "qualityPresets">): ImageQualityPreset[] {
+  const tuning = Object.fromEntries(Object.entries(model.defaults ?? {}).filter(([key]) => ["steps", "cfg", "sampler", "scheduler"].includes(key)));
+  return (model.qualityPresets ?? FAMILY_RECIPES[model.familyId].qualityPresets).map(preset => ({
+    ...structuredClone(preset), sampling: model.qualityPresets ? { ...tuning, ...preset.sampling } : { ...preset.sampling, ...tuning },
+  }));
+}
+
+/** Choose an input variant only among operations explicitly allowed by the checkpoint. */
+export function resolveModelOperation(model: Pick<ModelManifest, "familyId" | "operations">, operation?: Operation, imageCount = 0): Operation {
+  const operations = effectiveModelOperations(model);
+  if (operation !== undefined) return operation;
+  if (imageCount > 0) return operations.includes("image-to-image") ? "image-to-image" : operations.includes("reference") ? "reference" : "text-to-image";
+  return operations.includes("text-to-image") ? "text-to-image" : operations[0];
+}
+
 export function validateModel(manifest: ModelManifest): void {
   const fail = (message: string): never => { throw new InferenceError("INVALID_MODEL", message); };
   if (!manifest || typeof manifest !== "object") fail("A model manifest must be an object.");
-  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license", "licenseUrl"].includes(key))) fail("The model manifest has an unknown field.");
+  if (Object.keys(manifest).some(key => !["id", "name", "familyId", "revision", "artifacts", "defaults", "operations", "description", "license", "licenseUrl", "preset", "qualityPresets"].includes(key))) fail("The model manifest has an unknown field.");
   if (typeof manifest.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(manifest.id)) fail("Model IDs use lowercase letters, numbers, dots, hyphens or underscores.");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 160) fail("Set a model name of at most 160 characters.");
   if (typeof manifest.revision !== "string" || !/^[a-zA-Z0-9._-]{1,96}$/.test(manifest.revision)) fail("Set a stable model revision.");
+  if (manifest.preset !== undefined && (!manifest.preset || typeof manifest.preset !== "object" || Array.isArray(manifest.preset) || Object.keys(manifest.preset).length !== 2 || Object.keys(manifest.preset).some(key => !["id", "revision"].includes(key)) || typeof manifest.preset.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(manifest.preset.id) || typeof manifest.preset.revision !== "string" || !/^[a-zA-Z0-9._-]{1,96}$/.test(manifest.preset.revision))) fail("Set a valid reviewed preset identity and revision.");
   for (const value of [manifest.description, manifest.license]) if (value !== undefined && (typeof value !== "string" || value.length > 4000)) fail("Model descriptions and licenses must be bounded text.");
   if (manifest.licenseUrl !== undefined) {
     try {
@@ -166,6 +188,33 @@ export function validateModel(manifest: ModelManifest): void {
       const expected = typeof base[key as keyof SamplingDefaults];
       if (typeof value !== expected || typeof value === "number" && !Number.isFinite(value) || typeof value === "string" && value.length > 16_000) fail(`Invalid model default: ${key}.`);
     }
+    const defaults = { ...family.defaults, ...manifest.defaults };
+    if ([defaults.width, defaults.height].some(value => !Number.isInteger(value) || value < family.dimensions.min || value > family.dimensions.max || value % family.dimensions.multiple !== 0) || defaults.width * defaults.height > family.dimensions.maxPixels) fail("Model defaults must fit the recipe's canvas limits.");
+    if (!Number.isInteger(defaults.steps) || defaults.steps < 1 || defaults.steps > 100 || defaults.cfg < 0 || defaults.cfg > 30 || !Number.isInteger(defaults.clipSkip) || defaults.clipSkip < 1 || defaults.clipSkip > 12 || manifest.familyId !== "sdxl" && defaults.clipSkip !== 1) fail("Invalid model default sampling bounds.");
+    if ([defaults.sampler, defaults.scheduler].some(value => !/^[a-z0-9][a-z0-9_+.-]{0,95}$/i.test(value))) fail("Invalid model default sampling method.");
+    const native = manifest.familyId.startsWith("flux-2-klein") || manifest.familyId === "ideogram-4";
+    if (native !== (defaults.scheduler === "native") || native && defaults.negativePrompt) fail("Model defaults must preserve the recipe's scheduler and conditioning.");
+  }
+  const defaults = { ...family.defaults, ...manifest.defaults };
+  if (manifest.familyId === "ideogram-4" && Math.max(defaults.width, defaults.height) / Math.min(defaults.width, defaults.height) > 6) fail("Ideogram 4 defaults support aspect ratios from 1:6 to 6:1.");
+  if (manifest.qualityPresets !== undefined) {
+    if (!Array.isArray(manifest.qualityPresets) || manifest.qualityPresets.length !== 3 || new Set(manifest.qualityPresets.map(preset => preset?.id)).size !== 3) fail("Define Fast, Standard and High quality exactly once.");
+    for (const preset of manifest.qualityPresets) {
+      if (!preset || typeof preset !== "object" || Object.keys(preset).some(key => !["id", "pixels", "minSide", "sampling"].includes(key)) || !["fast", "standard", "high"].includes(preset.id) || !Number.isSafeInteger(preset.pixels) || preset.pixels < family.dimensions.min ** 2 || preset.pixels > family.dimensions.maxPixels) fail("Invalid model quality preset.");
+      if (preset.minSide !== undefined && (!Number.isSafeInteger(preset.minSide) || preset.minSide < family.dimensions.min || preset.minSide > family.dimensions.max)) fail("Invalid quality minimum side.");
+      if (preset.sampling !== undefined) {
+        if (!preset.sampling || typeof preset.sampling !== "object" || Array.isArray(preset.sampling) || Object.keys(preset.sampling).some(key => !["steps", "cfg", "sampler", "scheduler"].includes(key))) fail("Invalid quality sampling overrides.");
+        for (const [key, value] of Object.entries(preset.sampling)) {
+          if (key === "steps" ? !Number.isInteger(value) || Number(value) < 1 || Number(value) > 100 : key === "cfg" ? typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 30 : typeof value !== "string" || !/^[a-z0-9][a-z0-9_+.-]{0,95}$/i.test(value)) fail("Invalid quality sampling override.");
+        }
+      }
+      const native = manifest.familyId.startsWith("flux-2-klein") || manifest.familyId === "ideogram-4";
+      if (native !== ((preset.sampling?.scheduler ?? defaults.scheduler) === "native")) fail("Quality sampling must preserve the recipe's scheduler.");
+    }
+  }
+  for (const preset of effectiveModelQualityPresets(manifest)) {
+    const dimensions = { ...family.dimensions, min: Math.max(family.dimensions.min, preset.minSide ?? 0) };
+    if (!fitImageSize({ defaults, dimensions }, defaults.width / defaults.height, preset.pixels)) fail("Model defaults must fit every quality preset's canvas grid.");
   }
 }
 
