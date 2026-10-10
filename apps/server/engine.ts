@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ApiError, isUpscaleInput, isImageToolInput, isBackgroundRemovalInput, type BackgroundRemovalInput, type GenerationInput, type UpscaleInput, type UpscalerCard, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
-import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type GenerationSnapshot, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
+import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, modelProbeRequest, resolveModelOperation, type GenerationSnapshot, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
 import { inputBytes, outputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
@@ -257,12 +257,13 @@ export class Engine {
       for (const model of candidates) {
         const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
         if (!configuration.enabled) continue;
-        const request: GenerationRequest = { modelId: model.id, prompt: "Capability check", seed: 0,
+        const resolved = configuredModel(configuration, this.store);
+        const request = modelProbeRequest(resolved, {
           ...(tool.kind === "lora" ? { loras: [{ id: tool.id, strength: 1 }] } : tool.kind === "refiner" ? { refiner: true } : {
             operation: "reference", images: [{ filename: "capability.png", subfolder: "", type: "input" }], sourceSize: { width: 1024, height: 1024 },
-          }) };
+          }) });
         try {
-          const snapshot = compileGeneration(request, configuredModel(configuration, this.store), undefined, [tool]);
+          const snapshot = compileGeneration(request, resolved, undefined, extensionsFor(this.store, request, resolved));
           if (this.availableWorkers(configuration, snapshot).length) { ready = true; break; }
         } catch (error) { if (!(error instanceof InferenceError)) throw error; }
       }
@@ -312,31 +313,35 @@ export class Engine {
     const models = await Promise.all(modelRegistry(this.store).map(async model => {
       const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
       const resolved = configuredModel(configuration, this.store);
-      const snapshot = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0 }, resolved);
+      const probe = (extra: Partial<GenerationRequest> = {}) => {
+        const request = modelProbeRequest(resolved, extra);
+        return compileGeneration(request, resolved, undefined, extensionsFor(this.store, request, resolved));
+      };
+      const snapshot = probe();
       const available = this.availableWorkers(configuration, snapshot);
       const card = modelCard(resolved, configuration, available.map(worker => worker.id));
       const family = FAMILY_RECIPES[model.familyId];
-      const transparent = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, background: "transparent" }, resolved);
+      const transparent = probe({ background: "transparent" });
       const transparentWorkers = this.availableWorkers(configuration, transparent);
       const background = { native: !!family.nativeTransparency, available: transparentWorkers.length > 0,
         ...(!transparentWorkers.length ? { reason: !available.length ? "Connect a ready worker for this model." : "Download BiRefNet in Models and use a worker with background removal support." } : {}) };
-      const ultraSnapshot = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, quality: "ultra" }, resolved);
+      const ultraSnapshot = probe({ quality: "ultra" });
       const ultraWorkers = this.availableWorkers(configuration, ultraSnapshot);
       // Catalog has no selected aspect ratio: only the fixed restoration stage
       // has a shape-independent capacity requirement. Admission checks the full
       // frozen generation + restoration budget for the submitted canvas.
       const ultraMemory = ultraSnapshot.postprocess!.model.memory;
       const fittingWorkers = (await Promise.all(ultraWorkers.map(async worker => await fits(worker, ultraMemory) ? worker : null))).filter(worker => worker !== null);
-      const transparentUltra = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, quality: "ultra", background: "transparent" }, resolved);
+      const transparentUltra = probe({ quality: "ultra", background: "transparent" });
       const transparentMemory = ultraMemory;
       const transparentAvailable = (await Promise.all(this.availableWorkers(configuration, transparentUltra).map(worker => fits(worker, transparentMemory)))).some(Boolean);
       const ultra = { available: fittingWorkers.length > 0, transparentAvailable, modelId: "seedvr2-7b" as const, maxDimension: 4096 as const,
         ...(!fittingWorkers.length ? { reason: !ultraWorkers.length ? "Download SeedVR2 7B in Models → Tools and connect a compatible worker for this image model." : `SeedVR2 7B needs ${(ultraMemory.ramBytes / 1024 ** 3).toFixed(1)} GiB RAM and ${(ultraMemory.vramBytes / 1024 ** 3).toFixed(1)} GiB VRAM, plus the configured reserve. No connected worker has enough measured capacity.` } : {}) };
       const image = { filename: "capability.png", subfolder: "", type: "input" as const };
-      const editOperation = family.operations.includes("image-to-image") ? "image-to-image" : "reference";
+      const editOperation = card.operations.includes("image-to-image") ? "image-to-image" : "reference";
       const feature = async (extra: Partial<GenerationRequest>) => {
-        const request: GenerationRequest = { modelId: model.id, prompt: "Capability check", seed: 0, ...extra };
         try {
+          const request = modelProbeRequest(resolved, extra);
           const candidate = compileGeneration(request, resolved, undefined, extensionsFor(this.store, request, resolved));
           const workers = configuration.enabled ? this.availableWorkers(configuration, candidate) : [];
           const budget = generationMemory(candidate, configuration);
@@ -361,7 +366,7 @@ export class Engine {
         return state?.identity === workerIdentity(worker) && !!state.discovery && resolved.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
       });
       return { ...card, installed, unavailableReason: card.missingReasons.join(" "),
-        limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
+        limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: card.capabilities.maxImages },
         capabilities: { ...card.capabilities, imageInput, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background, ultra, editing },
       };
     }));
@@ -386,7 +391,7 @@ export class Engine {
     const configuration = settingsView(this.store).modelConfigurations.find(item => item.modelId === input.modelId);
     if (!configuration?.enabled) throw new ApiError(400, "MODEL_DISABLED", "Enable this model in Hardware settings before generating.");
     const model = configuredModel(configuration, this.store);
-    const operation = input.operation ?? ((input.images?.length ?? 0) ? FAMILY_RECIPES[model.familyId].operations.includes("image-to-image") ? "image-to-image" : "reference" : "text-to-image");
+    const operation = resolveModelOperation(model, input.operation, input.images?.length ?? 0);
     const { maskId, ...generation } = input;
     const snapshot = compileGeneration({ ...generation, operation, images: (input.images ?? []).map(id => ({ filename: `${id}.png`, subfolder: "", type: "input" as const })),
       ...(maskInput ? { mask: { filename: `${maskInput.id}.png`, subfolder: "", type: "input" as const } } : {}),

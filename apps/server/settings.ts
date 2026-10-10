@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { ApiError, type ModelConfiguration, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
-import { DEFAULT_MODELS, FAMILY_RECIPES, getModel, isRelativeFile } from "../../packages/inference/catalog.ts";
+import { DEFAULT_MODELS, FAMILY_RECIPES, effectiveModelOperations, effectiveModelQualityPresets, getModel, isRelativeFile } from "../../packages/inference/catalog.ts";
 import type { ModelManifest } from "../../packages/inference/types.ts";
 import type { HardwareInventory } from "../../packages/hardware/src/types.ts";
 import { DEFAULT_SETTINGS, type Store } from "./store.ts";
@@ -36,8 +36,8 @@ export function configuredModel(configuration: ModelConfiguration, store?: Store
   const model = getModel(configuration.modelId, store ? modelRegistry(store) : DEFAULT_MODELS);
   model.artifacts = model.artifacts.map(artifact => {
     const filename = configuration.artifacts[artifact.role] || artifact.filename;
-    // A user-selected checkpoint is not verified against the catalog file hash.
-    const { sha256: _sha, ...base } = artifact;
+    // A different local file does not inherit the catalog file's provenance.
+    const { sha256: _sha, source: _source, ...base } = artifact;
     return filename === artifact.filename ? { ...artifact } : { ...base, filename };
   });
   return model;
@@ -97,12 +97,15 @@ export function validateSettings(value: unknown, hardware: HardwareInventory, mo
 }
 export function modelCard(model: ModelManifest, configuration: ModelConfiguration, availableWorkerIds: string[]) {
   const family = FAMILY_RECIPES[model.familyId];
+  const operations = effectiveModelOperations(model);
+  const maxImages = operations.includes("reference") ? family.maxReferences : operations.includes("image-to-image") ? 1 : 0;
+  const requiresImage = !operations.includes("text-to-image");
   const ready = configuration.enabled && configuration.workerIds.some(workerId => availableWorkerIds.includes(workerId));
   return {
     ...model, family: family.name, familyId: family.id,
-    defaults: { ...family.defaults, ...model.defaults }, operations: model.operations ?? family.operations,
-    dimensions: family.dimensions, qualityPresets: family.qualityPresets, requiredArtifactRoles: family.artifacts,
-    ready, capabilities: { ready, maxImages: family.maxReferences, reference: family.maxReferences > 0 },
+    defaults: { ...family.defaults, ...model.defaults }, operations,
+    dimensions: family.dimensions, qualityPresets: effectiveModelQualityPresets(model), requiredArtifactRoles: family.artifacts,
+    ready, capabilities: { ready, maxImages, minImages: requiresImage ? 1 : 0, requiresImage, reference: operations.includes("reference") },
     missingReasons: configuration.enabled ? ready ? [] : ["Start the image engine with the required model files."] : ["Add this model from the model library."],
   };
 }

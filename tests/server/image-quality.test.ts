@@ -22,8 +22,9 @@ test("catalog resolution presets are inherited by imported checkpoints without r
   const catalog = await engine.catalog();
   const original = catalog.models.find(model => model.id === "sdxl-base")!;
   const card = catalog.models.find(model => model.id === imported.id)!;
-  assert.deepEqual(card.qualityPresets, original.qualityPresets);
-  assert.deepEqual(card.qualityPresets, FAMILY_RECIPES.sdxl.qualityPresets);
+  assert.deepEqual(card.qualityPresets.map(({ sampling: _sampling, ...preset }) => preset), original.qualityPresets.map(({ sampling: _sampling, ...preset }) => preset));
+  assert.deepEqual(card.qualityPresets.map(preset => preset.sampling), card.qualityPresets.map(() => imported.defaults));
+  assert.deepEqual(original.qualityPresets, FAMILY_RECIPES.sdxl.qualityPresets);
   assert.deepEqual(card.qualityPresets.map(preset => preset.id), ["fast", "standard", "high"]);
   assert.equal(new Set(card.qualityPresets.map(preset => preset.pixels)).size, 3);
   assert.ok(card.qualityPresets.every(preset => preset.minSide === 512));
