@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, errorMessage, type Job } from './api';
+import { api, errorMessage, isConnectionError, type Job } from './api';
 
 export const favoriteKey = (jobId: string, outputId: string) => `${jobId}:${outputId}`;
 type Failure = { job: Job; output: Job['outputs'][number]; message: string };
@@ -9,6 +9,7 @@ export function useFavorites(ownerId: string | null, onSessionExpired: () => voi
   const [jobs, setJobs] = useState<Job[]>([]);
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   const [failure, setFailure] = useState<Failure | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const owner = useRef(ownerId);
@@ -25,16 +26,18 @@ export function useFavorites(ownerId: string | null, onSessionExpired: () => voi
     try {
       const result = await api<{ jobs: Job[] }>('/favorites', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]) });
       if (owner.current !== ownerId || controller.signal.aborted || revision !== version.current) return;
-      setJobs(result.jobs); setReady(true); setLoadError('');
+      setJobs(result.jobs); setReady(true); setLoadError(''); setConnectionError('');
     } catch (error) {
       if (owner.current !== ownerId || controller.signal.aborted || revision !== version.current) return;
-      setLoadError(errorMessage(error));
+      const unavailable = isConnectionError(error);
+      setLoadError(unavailable ? '' : errorMessage(error));
+      setConnectionError(unavailable ? errorMessage(error) : '');
       if ((error as { status?: number }).status === 401) onSessionExpired();
     } finally { if (reading.current === controller) reading.current = null; }
   }, [ownerId, onSessionExpired]);
 
   useEffect(() => {
-    setJobs([]); setReady(false); setLoadError(''); setFailure(null); setPending(new Set());
+    setJobs([]); setReady(false); setLoadError(''); setConnectionError(''); setFailure(null); setPending(new Set());
     if (!ownerId) return;
     void refresh();
     const wake = () => { if (document.visibilityState === 'visible') void refresh(); };
@@ -93,7 +96,7 @@ export function useFavorites(ownerId: string | null, onSessionExpired: () => voi
   }, [refresh]);
 
   const keys = useMemo(() => new Set(jobs.flatMap(job => job.outputs.map(output => favoriteKey(job.id, output.id)))), [jobs]);
-  return { jobs, ready, loading: !ready && !loadError, keys, pending, toggle, forgetOutput,
+  return { jobs, ready, loading: !ready && !loadError && !connectionError, keys, pending, toggle, forgetOutput, refresh, connectionError,
     error: failure?.message || loadError,
     retry: () => { if (failure) void toggle(failure.job, failure.output); else void refresh(); },
   };

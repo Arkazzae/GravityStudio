@@ -49,4 +49,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return value as T;
 }
 export function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'Something went wrong. Please try again.'; }
+export function isConnectionError(error: unknown) {
+  return error instanceof TypeError || error instanceof Error && error.name === 'TimeoutError' || error instanceof ApiError && [408, 502, 503, 504].includes(error.status);
+}
 export function bytes(value: number | null | undefined) { return value == null ? 'Unavailable' : `${(value / 1024 ** 3).toFixed(1)} GB`; }

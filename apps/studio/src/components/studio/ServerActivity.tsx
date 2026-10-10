@@ -15,7 +15,7 @@ const known = (value: number | null | undefined): value is number => value != nu
 const residentPhases = new Set(['loaded', 'loading', 'running', 'stopping', 'failed']);
 type ActivityWorker = StudioState['workers'][number];
 
-export function ServerActivity({ state, connected, onRefresh }: { state: StudioState | null; connected: boolean; onRefresh: () => void | Promise<void> }) {
+export function ServerActivity({ state, connected, connectionError = '', onRefresh }: { state: StudioState | null; connected: boolean; connectionError?: string; onRefresh: () => void | Promise<void> }) {
   const { open, close, triggerProps, popoverProps } = useAnchoredPopover({ width: 368, side: 'bottom', align: 'end' });
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -62,9 +62,9 @@ export function ServerActivity({ state, connected, onRefresh }: { state: StudioS
   const unavailableWorkers = enabledWorkers.filter(worker => worker.connected === false);
   const hasResidentText = !!localText?.gpuId && residentPhases.has(localText.phase) && !textError;
   const textActive = open && hasResidentText && (localText?.phase === 'loading' || localText?.phase === 'running');
-  const status = !connected ? 'offline' : interrupted.length || unavailableWorkers.length ? 'attention' : running.length || textActive ? 'running' : pending.length ? 'queued' : 'idle';
+  const status = !connected ? 'offline' : connectionError || interrupted.length || unavailableWorkers.length ? 'attention' : running.length || textActive ? 'running' : pending.length ? 'queued' : 'idle';
   const moving = connected && (pending.length > 0 || !!textActive);
-  const summary = !connected ? 'Server disconnected' : pending.length ? `${running.length} generating · ${pending.length - running.length} queued` : textActive ? 'Assistant working' : interrupted.length ? `${interrupted.length} interrupted job${interrupted.length === 1 ? '' : 's'}` : unavailableWorkers.length ? 'Worker connection needs attention' : enabledWorkers.length ? 'Ready to generate' : 'No workers configured';
+  const summary = !connected ? 'Server disconnected' : connectionError ? 'Server connection needs attention' : pending.length ? `${running.length} generating · ${pending.length - running.length} queued` : textActive ? 'Assistant working' : interrupted.length ? `${interrupted.length} interrupted job${interrupted.length === 1 ? '' : 's'}` : unavailableWorkers.length ? 'Worker connection needs attention' : enabledWorkers.length ? 'Ready to generate' : 'No workers configured';
   const label = `Server activity: ${summary}${connected && pending.length && interrupted.length ? ` · ${interrupted.length} interrupted` : ''}`;
   const gpus = connected ? state?.hardware?.gpus || [] : [];
   const workersOn = (id: string) => enabledWorkers.filter(worker => worker.location === 'local' && worker.deviceIds.includes(id));
@@ -122,6 +122,7 @@ export function ServerActivity({ state, connected, onRefresh }: { state: StudioS
         <button type="button" aria-label="Close activity" title="Close activity" onClick={close} className={styles.icon}><X /></button>
       </div>
       <div className={styles.content}>
+        {connectionError && <p role="status" className={styles.warning}>{connectionError}</p>}
         {connected ? <>
           {!!pending.length && <section aria-label="Your generations" className={styles.generations}>
             <h3>Your generations<span>{pending.length}</span></h3>

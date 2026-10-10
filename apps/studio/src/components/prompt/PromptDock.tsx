@@ -118,7 +118,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
           <PromptAssistant draft={draft} setDraft={setDraft} model={model} connected={connected} submitting={busy || uploading} sessionIdentity={sessionIdentity} onBusyChange={setAssistantBusy} onSessionExpired={onSessionExpired} onOpenSettings={onOpenAssistantSettings} />
           <DockSettings model={model} draft={draft} busy={busy} onChange={update} onReset={() => { if (model) setDraft(modelDraft(draft, model)); }} />
         </div></div>
-        {error || sizeError ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError}</p> : !connected ? <p role="status" className="px-1 text-xs text-ink-2">Waiting for the studio server. Your prompt is kept here.</p> : !model?.ready ? <p className="px-1 text-xs text-ink-2">Choose a model in Models. Manage your GPUs in Settings.</p> : null}
+        {error || sizeError ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError}</p> : connected && !model?.ready ? <p className="px-1 text-xs text-ink-2">Choose a model in Models. Manage your GPUs in Settings.</p> : null}
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>

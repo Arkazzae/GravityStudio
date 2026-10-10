@@ -229,7 +229,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.click('[data-server-activity]');
     await browser.until(`!!document.querySelector(${JSON.stringify(activityScope)})`, 'Server activity opens');
   }
-  async function activityFrame(name: 'idle' | 'active') {
+  async function activityFrame(name: 'idle' | 'active' | 'offline') {
     for (const mobile of [false, true]) {
       await browser.send('Emulation.setDeviceMetricsOverride', { width: mobile ? 390 : 1440, height: mobile ? 844 : 960, deviceScaleFactor: 1, mobile });
       await browser.evaluate(`Promise.all([document.fonts.ready, ...document.querySelector(${JSON.stringify(activityScope)}).getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))`);
@@ -445,16 +445,31 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const ramMeter = await browser.evaluate<{ now: number; max: number }>(`(() => { const meter = document.querySelector(${JSON.stringify(`${activityScope} [role="meter"][aria-label="System RAM used"]`)}); return {now:Number(meter.getAttribute('aria-valuenow')),max:Number(meter.getAttribute('aria-valuemax'))}; })()`);
   assert.equal(ramMeter.now / ramMeter.max, 24 / 96, 'RAM reports used memory as total minus available');
   await activityFrame('idle');
-  await browser.evaluate("window.__gravityActivityFetch = window.fetch; window.fetch = async function(input, init) { const url = typeof input === 'string' ? input : input.url; if (url === '/api/state') throw new TypeError('Activity connection interrupted'); return window.__gravityActivityFetch.call(this, input, init); }");
+  await browser.evaluate("window.__gravityActivityFetch = window.fetch; window.__gravityOfflineReads = {}; window.fetch = async function(input, init) { const url = typeof input === 'string' ? input : input.url; if (['/api/state', '/api/catalog', '/api/favorites'].includes(url)) { window.__gravityOfflineReads[url] = (window.__gravityOfflineReads[url] || 0) + 1; throw new TypeError('Studio connection interrupted'); } return window.__gravityActivityFetch.call(this, input, init); }");
   try {
     await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
     await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'offline'", 'Refresh reports a disconnected Studio');
+    await browser.until("['/api/state', '/api/catalog', '/api/favorites'].every(path => window.__gravityOfflineReads[path] > 0)", 'All passive data requests observe the outage');
     assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(activityScope)}).querySelectorAll('[role="meter"]').length`), 0, 'A disconnected panel does not present stale GPU or RAM readings');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(activityScope)}).textContent.includes('Studio connection interrupted')`), true, 'Connection details appear in the activity panel');
+    assert.equal(await browser.evaluate("!!document.querySelector('header + [role=alert], main [role=alert]') || document.querySelector('main').textContent.includes('Waiting for the studio server')"), false, 'Passive connection failures add no banners to the workspace or composer');
+    await activityFrame('offline');
   } finally {
     await browser.evaluate('window.fetch = window.__gravityActivityFetch; delete window.__gravityActivityFetch');
   }
   await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
   await browser.until(`document.querySelector('[data-server-activity]')?.dataset.state === 'idle' && document.querySelector(${JSON.stringify(activityScope)}).querySelectorAll('[role="meter"]').length === 3`, 'Refresh restores live hardware readings');
+  await browser.evaluate("window.__gravityActivityFetch = window.fetch; window.fetch = async function(input, init) { const url = typeof input === 'string' ? input : input.url; if (url === '/api/catalog') return new Response(JSON.stringify({error:{message:'Studio server unavailable'}}), {status:503, headers:{'Content-Type':'application/json'}}); return window.__gravityActivityFetch.call(this, input, init); }");
+  try {
+    await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
+    await browser.until(`document.querySelector(${JSON.stringify(activityScope)}).textContent.includes('Studio server unavailable')`, 'An unavailable catalog is reported by the activity panel');
+    assert.equal(await browser.evaluate("document.querySelector('[data-server-activity]').dataset.state"), 'attention', 'A partial outage is distinct from a disconnected server');
+    assert.equal(await browser.evaluate("!!document.querySelector('header + [role=alert], main [role=alert]')"), false, 'A catalog outage does not create a duplicate banner');
+  } finally {
+    await browser.evaluate('window.fetch = window.__gravityActivityFetch; delete window.__gravityActivityFetch');
+  }
+  await browser.click(`${activityScope} button[aria-label="Refresh activity"]`);
+  await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Retry clears the partial outage');
   await browser.click('button[aria-label="Close activity"]');
   const prompt = 'A cinematic forest in the morning mist';
   await browser.fill('#image-prompt', prompt);
