@@ -124,6 +124,7 @@ export function MenuOption({
   icon,
   label,
   note,
+  noteClassName,
   badge,
   active,
   disabled,
@@ -133,6 +134,7 @@ export function MenuOption({
   icon?: React.ReactNode;
   label: React.ReactNode;
   note?: React.ReactNode;
+  noteClassName?: string;
   badge?: React.ReactNode;
   active?: boolean;
 }) {
@@ -150,7 +152,7 @@ export function MenuOption({
           <span className="truncate text-[13px] text-ink">{label}</span>
           {badge}
         </span>
-        {note ? <span className="mt-px block text-[11.5px] leading-snug text-ink-3">{note}</span> : null}
+        {note ? <span className={cn("mt-px block text-[11.5px] leading-snug text-ink-3", noteClassName)}>{note}</span> : null}
       </span>
     </MenuItem>
   );

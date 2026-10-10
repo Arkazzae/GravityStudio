@@ -24,10 +24,10 @@ export function ImageQualityMenu({ model, draft, onChange }: { model?: StudioMod
     {close => <><MenuLabel>Quality</MenuLabel>{model && imageQualityPresets(model).map(preset => {
       const size = imageSizeForQuality(model, preset.id, draft.aspect || 'custom', draft);
       const isDefault = size?.width === model.defaults.width && size?.height === model.defaults.height;
-      return <MenuOption key={preset.id} active={selected === preset.id} disabled={!size} aria-label={`Quality ${labels[preset.id]}`} icon={<Gauge />} label={labels[preset.id]}
+      return <MenuOption key={preset.id} active={selected === preset.id} disabled={!size} aria-label={`Quality ${labels[preset.id]}`} icon={<Gauge />} label={labels[preset.id]} noteClassName="text-ink-2"
         note={size ? `${size.width} × ${size.height}${isDefault ? ' · Model default' : ''}` : 'Not available for this aspect ratio'}
         onClick={() => { if (size) onChange({ ...size, quality: preset.id }); close(); }} />;
-    })}{selected === 'custom' && <MenuOption active disabled aria-label="Quality Custom" icon={<Gauge />} label="Custom" note={`${draft.width} × ${draft.height}`} />}
+    })}{selected === 'custom' && <MenuOption active disabled className="opacity-100" aria-label="Quality Custom" icon={<Gauge />} label="Custom" noteClassName="text-ink-2" note={`${draft.width} × ${draft.height}`} />}
       <MenuNote className="mt-1 border-t border-line pt-2 text-ink-2">Changes resolution. Steps and guidance stay as set.</MenuNote>
     </>}
   </Dropdown>;

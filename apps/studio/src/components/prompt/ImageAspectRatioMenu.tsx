@@ -21,7 +21,7 @@ export function ImageAspectRatioMenu({ model, draft, onChange }: { model?: Studi
     {close => <><MenuLabel>Aspect ratio</MenuLabel>{IMAGE_ASPECT_RATIOS.map(aspect => {
       const size = model ? quality === 'custom' ? imageSizeForRatio(model, aspect, draft.width * draft.height) : imageSizeForQuality(model, quality, aspect) : null;
       const [x, y] = aspect === 'auto' ? [0, 0] : aspect.split(':').map(Number);
-      return <MenuOption key={aspect} active={selected === aspect} disabled={!size} aria-label={`Aspect ratio ${aspect === 'auto' ? 'Auto' : aspect}`} icon={<RatioIcon ratio={aspect === 'auto' ? null : x / y} />} label={aspect === 'auto' ? 'Auto' : aspect}
+      return <MenuOption key={aspect} active={selected === aspect} disabled={!size} aria-label={`Aspect ratio ${aspect === 'auto' ? 'Auto' : aspect}`} icon={<RatioIcon ratio={aspect === 'auto' ? null : x / y} />} label={aspect === 'auto' ? 'Auto' : aspect} noteClassName="text-ink-2"
         note={size ? `${aspect === 'auto' ? 'Default shape · ' : ''}${size.width} × ${size.height}` : 'Not available for this model'}
         onClick={() => { if (size) onChange({ ...size, aspect, quality }); close(); }} />;
     })}</>}
