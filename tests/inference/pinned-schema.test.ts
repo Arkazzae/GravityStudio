@@ -12,8 +12,8 @@ test("all supported model operations use sockets present in pinned ComfyUI v0.39
   assert.equal(signatures.commit, "b0b743566f65daafc423b4fea8a2fbda94b3384a");
   const definitions = signatures.nodes as Record<string, Signature>;
   for (const model of DEFAULT_MODELS) {
-    for (const operation of model.operations ?? FAMILY_RECIPES[model.familyId].operations) {
-      const snapshot = compileGeneration({ modelId: model.id, operation, prompt: "A ceramic cup", seed: 42, images: operation === "text-to-image" ? [] : [{ filename: "reference.png", subfolder: "grav/input", type: "input" }] }, model);
+    for (const operation of model.operations ?? FAMILY_RECIPES[model.familyId].operations) for (const background of ["auto", "opaque", "transparent"] as const) {
+      const snapshot = compileGeneration({ modelId: model.id, operation, background, prompt: "A ceramic cup", seed: 42, images: operation === "text-to-image" ? [] : [{ filename: "reference.png", subfolder: "grav/input", type: "input" }] }, model);
       for (const [id, node] of Object.entries(snapshot.graph)) {
         const definition = definitions[node.class_type];
         assert(definition, `${model.id}/${operation}: ${node.class_type} is absent from the pinned runtime`);

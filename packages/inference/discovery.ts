@@ -116,7 +116,7 @@ function validateGraph(graph: WorkflowGraph, info: Record<string, NodeInfo>): Ca
 export function checkCapabilities(snapshot: ExecutionSnapshot, discovery: ComfyDiscovery): CapabilityCheck {
   verifySnapshot(snapshot);
   const issues = validateGraph(snapshot.graph, discovery.objectInfo);
-  for (const artifact of snapshot.model.artifacts) {
+  for (const artifact of [...snapshot.model.artifacts, ...snapshot.auxiliaryArtifacts ?? []]) {
     if (!discovery.models[artifact.folder]?.includes(artifact.filename)) {
       issues.push({ code: "MISSING_MODEL", message: `Missing ${artifact.folder}/${artifact.filename}.` });
     }

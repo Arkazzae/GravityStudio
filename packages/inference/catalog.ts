@@ -1,5 +1,13 @@
 import { InferenceError } from "./types.ts";
-import type { ArtifactRole, FamilyId, FamilyRecipe, ModelManifest, SamplingDefaults } from "./types.ts";
+import type { ArtifactRole, FamilyId, FamilyRecipe, ModelArtifact, ModelManifest, SamplingDefaults } from "./types.ts";
+
+export const BIREFNET_ARTIFACT: Readonly<ModelArtifact> = Object.freeze({
+  role: "background-removal", folder: "background_removal", filename: "birefnet.safetensors",
+  sha256: "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
+  source: "https://huggingface.co/Comfy-Org/BiRefNet/resolve/5a1bd8ae750548f8cd42e3c8afa854fd3eba0fb1/background_removal/birefnet.safetensors",
+});
+/** Conservative reservation for the core 1024-pixel BiRefNet pass; not a measured peak. */
+export const BIREFNET_MEMORY = Object.freeze({ ramBytes: 4 * 1024 ** 3, vramBytes: 2 * 1024 ** 3 });
 
 const base: SamplingDefaults = {
   width: 1024, height: 1024, steps: 30, cfg: 7,
@@ -36,6 +44,7 @@ export const FAMILY_RECIPES: Readonly<Record<FamilyId, FamilyRecipe>> = {
   },
   "qwen-image-2.1": {
     id: "qwen-image-2.1", name: "Qwen Image 2.1", revision: "2",
+    nativeTransparency: true,
     operations: ["text-to-image", "reference"], artifacts: ["diffusion", "text-encoder", "vae"],
     defaults: { ...base, steps: 25, cfg: 1, scheduler: "simple" },
     dimensions: { multiple: 32, min: 256, max: 4096, maxPixels: 4_400_000 }, maxReferences: 10,
@@ -111,6 +120,7 @@ export function isRelativeFile(value: unknown): value is string {
 
 const artifactFolders: Record<ArtifactRole, string> = {
   checkpoint: "checkpoints", diffusion: "diffusion_models", "diffusion-unconditional": "diffusion_models", "text-encoder": "text_encoders", vae: "vae",
+  "background-removal": "background_removal",
 };
 const allowedDefaults = new Set(Object.keys(base));
 

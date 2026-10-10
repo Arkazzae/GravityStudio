@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { FAMILY_RECIPES, getModel, isRelativeFile, validateModel } from "./catalog.ts";
+import { BIREFNET_ARTIFACT, FAMILY_RECIPES, getModel, isRelativeFile, validateModel } from "./catalog.ts";
 import { InferenceError } from "./types.ts";
 import type { ArtifactRole, ExecutionSnapshot, GenerationRequest, GraphLink, InputImage, ModelManifest, ResolvedParameters, WorkflowGraph } from "./types.ts";
 
@@ -25,7 +25,7 @@ function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new InferenceError("INVALID_INPUT", message);
 }
 
-const requestKeys = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "seed", "steps", "cfg", "sampler", "scheduler", "clipSkip", "denoise", "images"]);
+const requestKeys = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "seed", "steps", "cfg", "sampler", "scheduler", "clipSkip", "denoise", "images", "background"]);
 
 export function validateInputImage(image: InputImage): void {
   check(image && typeof image === "object" && Object.keys(image).every(key => ["filename", "subfolder", "type"].includes(key)), "Invalid input image reference.");
@@ -50,8 +50,10 @@ function parametersFor(request: GenerationRequest, model: ModelManifest): Resolv
     cfg: request.cfg ?? defaults.cfg, sampler: request.sampler ?? defaults.sampler,
     scheduler: request.scheduler ?? defaults.scheduler, clipSkip: request.clipSkip ?? defaults.clipSkip,
     denoise: request.denoise ?? (request.operation === "image-to-image" ? 0.65 : 1),
+    background: request.background ?? "auto",
   };
   const { min, max, multiple, maxPixels } = family.dimensions;
+  check(["auto", "opaque", "transparent"].includes(p.background), "Choose an automatic, opaque or transparent background.");
   for (const value of [p.width, p.height]) check(Number.isInteger(value) && value >= min && value <= max && value % multiple === 0, `Dimensions must be multiples of ${multiple}, from ${min} to ${max}.`);
   check(p.width * p.height <= maxPixels, `This recipe supports at most ${maxPixels.toLocaleString("en")} pixels.`);
   check(Number.isSafeInteger(p.seed) && p.seed >= 0, "Seed must be a nonnegative safe integer.");
@@ -140,12 +142,15 @@ function qwenImage21Graph(model: ModelManifest, p: ResolvedParameters, images: I
   const resizeOutput = images.length > 0 && (p.width / 16) * (p.height / 16) % 2048 === 0;
   const width = p.width + (resizeOutput ? 32 : 0), height = p.height + (resizeOutput ? 32 : 0);
   check(width * height <= FAMILY_RECIPES[model.familyId].dimensions.maxPixels, "The reference canvas exceeds this recipe's sampling pixel budget.");
+  const prompt = p.background === "transparent"
+    ? `This is an RGBA image with transparency. ${p.prompt} The image has alpha channel and the background is transparent.`
+    : p.background === "opaque" ? `This is an opaque RGB image with a complete background. ${p.prompt} The image is fully opaque with no transparent areas or alpha channel.` : p.prompt;
   const graph: WorkflowGraph = {
     model: { class_type: "UNETLoader", inputs: { unet_name: artifact(model, "diffusion"), weight_dtype: "default" } },
     cache: { class_type: "QwenImage21Cache", inputs: { model: ["model", 0], device: "auto", dtype: "default" } },
     clip: { class_type: "CLIPLoader", inputs: { clip_name: artifact(model, "text-encoder"), type: "qwen_image", device: "default" } },
     vae: { class_type: "VAELoader", inputs: { vae_name: artifact(model, "vae") } },
-    conditioning: { class_type: "TextEncodeQwenImage21", inputs: { clip: ["clip", 0], prompt: p.prompt, negative_prompt: p.negativePrompt, resolution: images.length ? 992 : 1024 } },
+    conditioning: { class_type: "TextEncodeQwenImage21", inputs: { clip: ["clip", 0], prompt, negative_prompt: p.negativePrompt, resolution: images.length ? 992 : 1024 } },
     // Reference encoding keeps aspect ratio and a separate, bounded pixel budget.
     latent: { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
   };
@@ -203,11 +208,31 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
   images.forEach(validateInputImage);
   check(operation === "text-to-image" ? images.length === 0 : images.length > 0, operation === "text-to-image" ? "Text-to-image does not accept input images." : "This operation needs an input image.");
   const parameters = parametersFor({ ...request, operation }, model);
+  const graph = model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : model.familyId === "qwen-image-2.1" ? qwenImage21Graph(model, parameters, images) : model.familyId === "ideogram-4" ? ideogram4Graph(model, parameters) : sampledGraph(model, parameters, images);
+  const cutout = parameters.background === "transparent" && !family.nativeTransparency;
+  const image = graph.output.inputs.images as GraphLink;
+  if (cutout) {
+    graph.background_model = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: BIREFNET_ARTIFACT.filename } };
+    graph.background_mask = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["background_model", 0], image } };
+    // BiRefNet produces foreground opacity; JoinImageWithAlpha accepts the inverse mask.
+    graph.background_invert = { class_type: "InvertMask", inputs: { mask: ["background_mask", 0] } };
+    graph.background_rgba = { class_type: "JoinImageWithAlpha", inputs: { image, alpha: ["background_invert", 0] } };
+    graph.output.inputs.images = ["background_rgba", 0];
+  } else if (parameters.background === "opaque" && family.nativeTransparency) {
+    // Composite after Qwen's output resize. Both composite images have three
+    // channels, so even a generated RGBA canvas becomes a genuinely opaque PNG.
+    graph.background_split = { class_type: "SplitImageWithAlpha", inputs: { image } };
+    graph.background_opacity = { class_type: "InvertMask", inputs: { mask: ["background_split", 1] } };
+    graph.background_white = { class_type: "EmptyImage", inputs: { width: parameters.width, height: parameters.height, batch_size: 1, color: 0xffffff } };
+    graph.background_opaque = { class_type: "ImageCompositeMasked", inputs: { destination: ["background_white", 0], source: ["background_split", 0], mask: ["background_opacity", 0], x: 0, y: 0, resize_source: false } };
+    graph.output.inputs.images = ["background_opaque", 0];
+  }
   const content: Omit<ExecutionSnapshot, "hash"> = {
     schemaVersion: 1,
     recipe: { familyId: family.id, revision: family.revision, operation },
     model: structuredClone(model), parameters, inputs: structuredClone(images),
-    graph: model.familyId.startsWith("flux-2-klein") ? kleinGraph(model, parameters, images) : model.familyId === "qwen-image-2.1" ? qwenImage21Graph(model, parameters, images) : model.familyId === "ideogram-4" ? ideogram4Graph(model, parameters) : sampledGraph(model, parameters, images),
+    graph,
+    ...(cutout ? { auxiliaryArtifacts: [structuredClone(BIREFNET_ARTIFACT)] } : {}),
     outputs: [{ node: "output", field: "images" }],
   };
   return { ...content, hash: snapshotHash(content) };

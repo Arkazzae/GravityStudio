@@ -1,7 +1,8 @@
 export type FamilyId = "sdxl" | "flux-2-klein-4b" | "flux-2-klein-9b" | "krea-2" | "qwen-image-2.1" | "ideogram-4";
 export type Operation = "text-to-image" | "image-to-image" | "reference";
-export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae";
-export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae";
+export type BackgroundMode = "auto" | "opaque" | "transparent";
+export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae" | "background-removal";
+export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "background_removal";
 
 export interface ModelArtifact {
   role: ArtifactRole;
@@ -54,6 +55,7 @@ export interface FamilyRecipe {
   defaults: Readonly<SamplingDefaults>;
   dimensions: { multiple: number; min: number; max: number; maxPixels: number };
   qualityPresets: readonly ImageQualityPreset[];
+  nativeTransparency?: true;
   maxReferences: number;
 }
 
@@ -77,6 +79,7 @@ export interface GenerationRequest {
   scheduler?: string;
   clipSkip?: number;
   denoise?: number;
+  background?: BackgroundMode;
   /** Worker-side image references, supplied by the trusted application. */
   images?: InputImage[];
 }
@@ -85,6 +88,7 @@ export interface ResolvedParameters extends SamplingDefaults {
   prompt: string;
   seed: number;
   denoise: number;
+  background: BackgroundMode;
 }
 
 export type GraphLink = [string, number];
@@ -101,6 +105,8 @@ export interface ExecutionSnapshot {
   model: ModelManifest;
   parameters: ResolvedParameters;
   inputs: InputImage[];
+  /** Optional postprocessing weights, separate from the image model's required files. */
+  auxiliaryArtifacts?: ModelArtifact[];
   graph: WorkflowGraph;
   outputs: { node: string; field: "images" }[];
   hash: string;

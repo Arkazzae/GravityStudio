@@ -1,0 +1,30 @@
+{
+  "LoadBackgroundRemovalModel": {
+    "input": { "required": { "bg_removal_name": ["COMBO", { "options": ["birefnet.safetensors"] }] } },
+    "output": ["BACKGROUND_REMOVAL"]
+  },
+  "RemoveBackground": {
+    "input": { "required": { "bg_removal_model": ["BACKGROUND_REMOVAL"], "image": ["IMAGE"] } },
+    "output": ["MASK"]
+  },
+  "InvertMask": {
+    "input": { "required": { "mask": ["MASK"] } },
+    "output": ["MASK"]
+  },
+  "JoinImageWithAlpha": {
+    "input": { "required": { "image": ["IMAGE"], "alpha": ["MASK"] } },
+    "output": ["IMAGE"]
+  },
+  "SplitImageWithAlpha": {
+    "input": { "required": { "image": ["IMAGE"] } },
+    "output": ["IMAGE", "MASK"]
+  },
+  "EmptyImage": {
+    "input": { "required": { "width": ["INT", { "min": 1, "max": 16384 }], "height": ["INT", { "min": 1, "max": 16384 }], "batch_size": ["INT", { "min": 1, "max": 4096 }], "color": ["INT", { "min": 0, "max": 16777215 }] } },
+    "output": ["IMAGE"]
+  },
+  "ImageCompositeMasked": {
+    "input": { "required": { "destination": ["IMAGE"], "source": ["IMAGE"], "x": ["INT"], "y": ["INT"], "resize_source": ["BOOLEAN"] }, "optional": { "mask": ["MASK"] } },
+    "output": ["IMAGE"]
+  }
+}
