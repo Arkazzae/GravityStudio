@@ -1,9 +1,9 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Boxes, HardDrive, LayoutGrid, Library, LoaderCircle, LogOut, Rows3, Settings, UserRound } from '@/components/ui/icons';
+import { Boxes, HardDrive, LayoutGrid, Library, Rows3, Settings } from '@/components/ui/icons';
 import { Logo } from '@/components/layout/Logo';
-import { Popover } from '@/components/ui/Popover';
+import { AccountButton } from '@/components/account/AccountButton';
 import { IconChip } from '@/components/ui/Chip';
 import { AuthPanel } from '@/components/setup/AuthPanel';
 import { SettingsWorkspace, type SettingsSection } from '@/components/setup/SettingsWorkspace';
@@ -111,8 +111,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const showModels = panel === 'models';
   async function signOut() {
     setSigningOut(true);
-    try { await api('/logout', { method: 'POST', body: '{}' }); setDraft(initialDraft); sessionExpired(); }
-    catch (error) { setError(errorMessage(error)); }
+    try { await api('/logout', { method: 'POST', body: '{}', signal: AbortSignal.timeout(30_000) }); setDraft(initialDraft); sessionExpired(); }
     finally { setSigningOut(false); }
   }
   function reuse(job: Job) {
@@ -142,7 +141,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
       <IconChip ref={assetsTrigger} onClick={() => openPanel('assets')} active={panel === 'assets'} aria-label="Assets" title="Assets" aria-haspopup="dialog" aria-expanded={panel === 'assets'} aria-controls={panel === 'assets' ? "assets-browser-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Library aria-hidden="true" /></IconChip>
       <IconChip ref={modelsTrigger} onClick={() => openPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>
       <IconChip ref={settingsTrigger} onClick={() => openPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>
-      <Popover label="Account" side="bottom" align="end" width={220} trigger={({ open, triggerProps }) => <IconChip {...triggerProps} active={open} aria-label="Account"><UserRound /></IconChip>}>{() => <button disabled={signingOut} onClick={() => void signOut()} className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm hover:bg-chip disabled:opacity-50">{signingOut ? <LoaderCircle className="size-4 animate-spin" /> : <LogOut size={16} />}{signingOut ? 'Signing out…' : 'Sign out'}</button>}</Popover>
+      {bootstrap.user && <AccountButton user={bootstrap.user} signingOut={signingOut} onSignOut={signOut} onSessionExpired={sessionExpired} appBusy={pending.length > 0 || dockBusy || assetsBusy} alertSettings={notifications} onNotice={(title, body) => pushNotice({ kind: 'success', title, body })} />}
     </header>
     {error && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-y border-[#e8997038] bg-[#67412c33] px-4 py-2 text-xs text-[#ffc3aa]"><span>{error}</span><button className="shrink-0 underline underline-offset-3" onClick={() => { void refresh(); void refreshCatalog(); }}>Try again</button></div>}
     <main className="relative flex min-h-0 flex-1 flex-col">

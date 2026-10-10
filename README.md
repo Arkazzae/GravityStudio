@@ -14,6 +14,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
+- A slide-out Account panel with a saved display name, avatar colors and workspace name.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
 - Live GPU memory and runtime activity, optional completion sounds and desktop notifications, and an installable PWA with manual updates.
@@ -34,6 +35,8 @@ pnpm start
 Open **http://127.0.0.1:4321**. Create the owner account using the key in `storage/setup.key`. The key is generated on first startup and is never sent to the browser automatically.
 
 For development, use `pnpm dev` instead of the build/start commands. The web application and API run as two processes; neither needs its own container. Stop both with Ctrl+C.
+
+Open the avatar in the top bar to edit **Account**. Display name, avatar color and workspace name are saved on the server and follow the owner across devices; the login username stays the same. The workspace name is a personal label and does not create another workspace. The panel also provides completion preferences, app installation and updates, and sign out. Sound and desktop notification preferences apply immediately and stay in the current browser; **Cancel** discards only profile edits.
 
 ### Install the app and enable notifications
 

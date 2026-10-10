@@ -1,4 +1,6 @@
 export interface Bootstrap { configured: boolean; authenticated: boolean; setupRequired?: boolean; setupKeyRequired?: boolean; user?: { id: string; username: string } }
+export type AvatarThemeId = 'studio' | 'lime' | 'mint' | 'blue' | 'violet' | 'rose';
+export interface AccountProfile { revision: number; displayName: string; workspaceName: string; avatarTheme: AvatarThemeId }
 export interface ParameterRange { min: number; max: number; step?: number; default: number }
 export interface StudioModel {
   id: string; name: string; family: string; description?: string; ready: boolean; installed: boolean;
