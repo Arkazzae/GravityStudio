@@ -3,12 +3,13 @@ import { createReadStream } from "node:fs";
 import { link, lstat, mkdir, open, readFile, realpath, statfs, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ApiError } from "../../packages/contracts/index.ts";
-import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, UPSCALER_MODELS, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest, type GenerationExtensionManifest, type FamilyId } from "../../packages/inference/index.ts";
+import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, UPSCALER_MODELS, canonicalJson, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest, type GenerationExtensionManifest, type FamilyId } from "../../packages/inference/index.ts";
 import type { Engine } from "./engine.ts";
 import { ModelAccessError, checkDownloadUrl, checkModelFileAccess, huggingFaceFile, modelAccessResponse, modelRepositories, modelRepository, type ModelAccessResult, type ModelDownloadAccess, type ModelRepositoryAccess } from "./model-access.ts";
 import { modelRegistry, saveImportedModel, generationExtensionRegistry, saveImportedExtension } from "./registry.ts";
 import { defaultModelConfiguration, settingsView } from "./settings.ts";
 import type { Store } from "./store.ts";
+import { createCheckpointManifest, getModelPresets, modelManifestRevision, modelProbeRequest } from "../../packages/inference/model-presets.ts";
 
 export { huggingFaceFile } from "./model-access.ts";
 export type { ModelAccessResult, ModelAccessStatus, ModelDownloadAccess, ModelRepository, ModelRepositoryAccess } from "./model-access.ts";
@@ -39,6 +40,34 @@ const utilityModels = (store: Store): UtilityModel[] => [
     license: extension.license, licenseUrl: extension.licenseUrl, artifacts: extension.artifacts.map(artifact => ({ ...artifact })), extension })),
 ];
 const downloadError = (code: string, message: string, status = 400) => new ApiError(status, code, message);
+
+function checkpointImport(value: Record<string, unknown>): ModelManifest {
+  if (Object.keys(value).some(key => !["presetId", "url", "name", "dependencies", "operations", "defaults"].includes(key)) || typeof value.presetId !== "string" || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name)) throw downloadError("INVALID_MODEL_REQUEST", "Choose a checkpoint preset and give the checkpoint a name of up to 120 characters.");
+  const template = DEFAULT_MODELS.find(model => model.id === value.presetId);
+  if (!template) throw downloadError("INVALID_MODEL_REQUEST", "Choose a reviewed checkpoint preset from the model library.");
+  if (value.defaults !== undefined && !object(value.defaults)) throw downloadError("INVALID_MODEL_REQUEST", "Checkpoint sampling defaults must be an object.");
+  const primaryRole = template.familyId === "sdxl" ? "checkpoint" : "diffusion";
+  if (value.dependencies !== undefined && (!Array.isArray(value.dependencies) || value.dependencies.length > template.artifacts.length - 1)) throw downloadError("INVALID_MODEL_REQUEST", "Choose only the preset's supported dependency files.");
+  const dependencies = (value.dependencies ?? []) as unknown[];
+  const sources = [{ role: primaryRole, source: huggingFaceFile(value.url) }, ...dependencies.map(item => {
+    if (!object(item) || Object.keys(item).length !== 2 || typeof item.role !== "string" || !Object.hasOwn(item, "url") || item.role === primaryRole || !template.artifacts.some(artifact => artifact.role === item.role)) throw downloadError("INVALID_MODEL_REQUEST", "Override only supported text encoder, VAE or secondary diffusion files.");
+    return { role: item.role, source: huggingFaceFile(item.url) };
+  })];
+  if (new Set(sources.map(item => item.role)).size !== sources.length) throw downloadError("INVALID_MODEL_REQUEST", "Each checkpoint file role can be supplied only once.");
+  const fingerprint = createHash("sha256").update(canonicalJson({ presetId: value.presetId, presetRevision: template.revision, sources: [...sources].sort((a, b) => a.role.localeCompare(b.role)), ...(value.operations !== undefined ? { operations: value.operations } : {}), ...(value.defaults !== undefined ? { defaults: value.defaults } : {}) })).digest("hex").slice(0, 16);
+  const id = `hf-${fingerprint}`;
+  const replacements = sources.map(({ role, source }) => {
+    const inherited = template.artifacts.find(artifact => artifact.role === role)!;
+    const filename = decodeURIComponent(basename(new URL(source).pathname));
+    return { role: inherited.role, folder: inherited.folder, filename: `${id}/${role}/${filename}`, source };
+  });
+  try {
+    return createCheckpointManifest({ id, name: value.name.trim(), artifacts: replacements,
+      ...(value.operations !== undefined ? { operations: value.operations as ModelManifest["operations"] } : {}),
+      ...(value.defaults !== undefined ? { defaults: value.defaults as ModelManifest["defaults"] } : {}),
+    }, template);
+  } catch { throw downloadError("INVALID_MODEL_REQUEST", "The checkpoint's operations or sampling defaults do not fit the selected preset."); }
+}
 
 export interface ModelDownload {
   id: string; modelId: string; modelName: string;
@@ -126,19 +155,23 @@ export class ModelLibrary {
         category: model.category, description: model.description, license: model.license, licenseUrl: model.licenseUrl, source: model.id.startsWith("hf-lora-") ? "huggingface" as const : "catalog" as const,
         repositories: modelRepositories(model.artifacts.map(artifact => artifact.source)), installed, enabled: installed, downloadable: true, artifacts };
     }));
-    return { models: [...models, ...tools], download: this.current ? { ...this.current } : null };
+    return { models: [...models, ...tools], presets: getModelPresets(), download: this.current ? { ...this.current } : null };
   }
 
   async checkAccess(value: unknown, signal?: AbortSignal): Promise<ModelAccessResult> {
     if (this.controller.signal.aborted) throw downloadError("STUDIO_STOPPING", "The studio is restarting. Try again shortly.", 503);
-    if (!object(value) || Object.keys(value).length !== 1 || !(typeof value.modelId === "string" || typeof value.url === "string")) throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a Hugging Face checkpoint link.");
+    if (!object(value)) throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a Hugging Face checkpoint link.");
     let modelId: string | undefined;
     let sources: string[];
-    if (typeof value.modelId === "string") {
+    if (typeof value.modelId === "string" && Object.keys(value).length === 1) {
       const model = utilityModels(this.store).find(model => model.id === value.modelId) ?? getModel(value.modelId, modelRegistry(this.store));
       modelId = model.id;
       sources = model.artifacts.map(artifact => huggingFaceFile(artifact.source));
-    } else sources = [huggingFaceFile(value.url)];
+    } else if (Object.hasOwn(value, "presetId")) {
+      const model = checkpointImport(value);
+      sources = model.artifacts.map(artifact => huggingFaceFile(artifact.source));
+    } else if (typeof value.url === "string" && Object.keys(value).length === 1) sources = [huggingFaceFile(value.url)];
+    else throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a checkpoint import with its preset.");
     const cancelled = AbortSignal.any([this.controller.signal, ...(signal ? [signal] : [])]);
     const checkCancelled = () => { if (cancelled.aborted) throw downloadError("MODEL_ACCESS_CANCELLED", "The model access check was cancelled. Try again.", 499); };
     checkCancelled();
@@ -175,6 +208,11 @@ export class ModelLibrary {
       };
       saveImportedExtension(this.store, extension);
       model = { id, name: extension.name, category: "adapter", description: extension.description, artifacts: extension.artifacts, extension };
+    } else if (Object.hasOwn(value, "presetId")) {
+      model = checkpointImport(value);
+      const existing = modelRegistry(this.store).find(item => item.id === model.id);
+      if (existing) model = { ...existing, name: model.name };
+      saveImportedModel(this.store, model);
     } else {
       if (Object.keys(value).some(key => !["url", "name", "familyId"].includes(key)) || value.familyId !== "sdxl" || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name)) throw downloadError("INVALID_MODEL_REQUEST", "Give this SDXL / Illustrious checkpoint a name of up to 120 characters.");
       const source = huggingFaceFile(value.url);
@@ -327,7 +365,7 @@ export class ModelLibrary {
   private async download(model: ModelManifest | UtilityModel) {
     for (const artifact of model.artifacts) {
       await this.downloadFile(artifact, digest => {
-        if ("familyId" in model && !DEFAULT_MODELS.some(item => item.id === model.id)) { artifact.sha256 = digest; model.revision = digest.slice(0, 16); saveImportedModel(this.store, model); }
+        if ("familyId" in model && !DEFAULT_MODELS.some(item => item.id === model.id)) { artifact.sha256 = digest; saveImportedModel(this.store, model); }
         else if (!("familyId" in model) && model.extension?.id.startsWith("hf-lora-")) {
           artifact.sha256 = digest;
           model.extension.artifacts = model.artifacts;
@@ -336,6 +374,10 @@ export class ModelLibrary {
         }
       });
       this.update({ completedFiles: this.current!.completedFiles + 1 });
+    }
+    if ("familyId" in model && !DEFAULT_MODELS.some(item => item.id === model.id)) {
+      model.revision = modelManifestRevision(model);
+      saveImportedModel(this.store, model);
     }
     this.update({ status: "activating", stage: "Checking the image engine" });
     if (!("familyId" in model)) {
@@ -364,7 +406,12 @@ export class ModelLibrary {
     if (!object(value) || Object.keys(value).length !== 1 || typeof value.modelId !== "string") throw downloadError("INVALID_MODEL_REQUEST", "Choose the model to activate.");
     const model = getModel(value.modelId, modelRegistry(this.store));
     if (!(await Promise.all(model.artifacts.map(artifact => regularFile(join(this.modelsDirectory, artifact.folder, artifact.filename))))).every(Boolean)) throw downloadError("MODEL_FILES_MISSING", "Download this model's files before activating it.");
-    for (const artifact of model.artifacts) await this.verifyFile(await this.target(artifact), artifact);
+    const imported = !DEFAULT_MODELS.some(item => item.id === model.id);
+    for (const artifact of model.artifacts) {
+      const digest = await this.verifyFile(await this.target(artifact), artifact);
+      if (imported) artifact.sha256 = digest;
+    }
+    if (imported) { model.revision = modelManifestRevision(model); saveImportedModel(this.store, model); }
     let managed: { id: string; baseUrl: string }[] = [];
     try { const plan = JSON.parse(await readFile(join(this.store.directory, "runtime", "plan.json"), "utf8")); if (Array.isArray(plan.workers)) managed = plan.workers; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw downloadError("MODEL_WORKER_UNAVAILABLE", "Set up the image engine before activating this model.", 409); }
@@ -376,7 +423,7 @@ export class ModelLibrary {
     const configuration = { ...current, enabled: true, artifacts: Object.fromEntries(model.artifacts.map(artifact => [artifact.role, artifact.filename])), workerIds: manual ? [...current.workerIds] : [...new Set([...unmanagedIds, ...workers.map(worker => worker.id)])] };
     this.engine.invalidateWorkers();
     await this.engine.refreshWorkers(true);
-    const snapshot = compileGeneration({ modelId: model.id, prompt: "Model availability check", seed: 0 }, model);
+    const snapshot = compileGeneration(modelProbeRequest(model), model);
     const checkedIds = this.engine.availableWorkers({ ...configuration, workerIds: configuration.workerIds.filter(id => workers.some(worker => worker.id === id)) }, snapshot).map(worker => worker.id);
     if (!checkedIds.length) throw downloadError("MODEL_WORKER_UNAVAILABLE", "The model is downloaded. Start the image engine and activate it when a selected GPU worker can see its files.", 409);
     // Merge into the latest revision so a hardware setting saved during discovery is preserved.

@@ -12,6 +12,7 @@ import { Store } from "../../apps/server/store.ts";
 import { CredentialVault } from "../../apps/server/credentials.ts";
 import type { ModelManifest } from "../../packages/inference/index.ts";
 import { getModel } from "../../packages/inference/index.ts";
+import { modelManifestRevision } from "../../packages/inference/model-presets.ts";
 import { engineFixture, GiB, inventory } from "./helpers/engine-fixture.ts";
 
 const source = "https://huggingface.co/example/checkpoints/blob/main/portrait.safetensors";
@@ -447,4 +448,151 @@ test("LoRA imports reject unsupported families and malformed files without repor
   assert.equal(view.download?.status, "failed");
   assert.equal(view.models.find(item => item.id === job.modelId)?.installed, false);
   assert.equal(generationExtensionRegistry(store).length, before + 1, "The failed import remains retryable without acquiring an image model configuration");
+});
+
+const presetImport = {
+  presetId: "krea-2-turbo", name: "Ceramic checkpoint", url: "https://huggingface.co/example/ceramic/blob/main/model.safetensors",
+  dependencies: [
+    { role: "text-encoder", url: "https://huggingface.co/example/encoder/blob/main/encoder.safetensors" },
+    { role: "vae", url: "https://huggingface.co/example/vae/blob/main/vae.safetensors" },
+  ],
+};
+
+test("checkpoint preset access checks all inherited sources without importing or downloading files", async t => {
+  const calls: string[] = [];
+  const { store, library } = await fixture(t, { fetch: async (input, init) => {
+    calls.push(String(input)); assert.equal(init?.method, "HEAD");
+    return new Response(null, { status: String(input).includes("text_encoders") ? 403 : 200 });
+  } });
+  const before = modelRegistry(store);
+  const result = await library.checkAccess({ presetId: presetImport.presetId, name: presetImport.name, url: presetImport.url });
+  assert.equal(result.available, false);
+  const template = getModel(presetImport.presetId);
+  assert.deepEqual(calls, [huggingFaceFile(presetImport.url), ...template.artifacts.slice(1).map(artifact => huggingFaceFile(artifact.source))]);
+  assert.equal(result.repositories.length, 2);
+  assert.deepEqual(modelRegistry(store), before);
+  assert.equal((await library.view()).download, null);
+  const preset = (await library.view()).presets.find(item => item.id === template.id)!;
+  assert.equal(preset.familyId, template.familyId);
+  assert.equal(preset.revision, template.revision);
+  assert.deepEqual(preset.artifacts.map(artifact => artifact.role), template.artifacts.map(artifact => artifact.role));
+});
+
+test("checkpoint presets install complete override packages, pin every digest and reuse verified files", async t => {
+  const encoder = Buffer.from(bytes), vae = Buffer.from(bytes);
+  encoder[encoder.length - 1] = 1; vae[vae.length - 1] = 2;
+  const payloads = new Map([
+    [huggingFaceFile(presetImport.url), bytes],
+    [huggingFaceFile(presetImport.dependencies[0].url), encoder],
+    [huggingFaceFile(presetImport.dependencies[1].url), vae],
+  ]);
+  const calls: string[] = [];
+  const { store, library, directory } = await fixture(t, { fetch: async input => {
+    const url = String(input); calls.push(url);
+    assert.ok(payloads.has(url), "Only the requested primary and dependency sources are downloaded");
+    return response(payloads.get(url)!);
+  } });
+  const request = { ...presetImport, operations: ["text-to-image"], defaults: { steps: 12, cfg: 1.5 } };
+  const started = library.start(request); await library.waitForIdle();
+  assert.equal((await library.view()).download?.status, "succeeded");
+  const model = modelRegistry(store).find(item => item.id === started.modelId)!;
+  assert.equal(model.familyId, "krea-2");
+  assert.deepEqual(model.preset, { id: presetImport.presetId, revision: getModel(presetImport.presetId).revision });
+  assert.deepEqual(model.operations, ["text-to-image"]);
+  assert.equal(model.defaults!.steps, 12); assert.equal(model.defaults!.cfg, 1.5);
+  for (const artifact of model.artifacts) {
+    const payload = payloads.get(artifact.source!)!;
+    assert.equal(artifact.sha256, createHash("sha256").update(payload).digest("hex"));
+    assert.deepEqual(await readFile(join(directory, "models", artifact.folder, artifact.filename)), payload);
+  }
+  assert.equal(model.revision, modelManifestRevision(model));
+  assert.notEqual(model.revision, model.artifacts.at(-1)!.sha256!.slice(0, 16), "Package identity is not its last downloaded file");
+  assert.equal((await library.view()).models.find(item => item.id === model.id)!.enabled, false);
+  const retry = library.start({ ...request, name: "Renamed checkpoint", dependencies: [...request.dependencies].reverse() });
+  await library.waitForIdle();
+  assert.equal(retry.modelId, model.id, "Dependency order and display name do not create duplicate packages");
+  assert.equal(calls.length, 3, "A retry reuses every verified package file");
+  const reopened = new Store(directory);
+  try {
+    const restored = modelRegistry(reopened).find(item => item.id === model.id)!;
+    assert.equal(restored.revision, modelManifestRevision(restored));
+    assert.equal(restored.name, "Renamed checkpoint");
+    assert.deepEqual(restored.artifacts, model.artifacts);
+  } finally { reopened.close(); }
+});
+
+test("failed inherited dependency verification leaves a checkpoint package disabled and retryable", async t => {
+  const { store, library } = await fixture(t);
+  const started = library.start({ presetId: presetImport.presetId, name: presetImport.name, url: presetImport.url });
+  await library.waitForIdle();
+  const view = await library.view();
+  assert.equal(view.download?.status, "failed");
+  assert.equal(view.download?.errorCode, "MODEL_CHECKSUM_MISMATCH");
+  assert.equal(view.download?.completedFiles, 1);
+  const model = modelRegistry(store).find(item => item.id === started.modelId)!;
+  assert.equal(model.artifacts[0].sha256, sha256, "The primary file's digest is retained for a retry");
+  assert.deepEqual(model.artifacts.slice(1), getModel(presetImport.presetId).artifacts.slice(1), "Untouched dependencies retain their pinned sources and identities");
+  assert.equal(view.models.find(item => item.id === model.id)!.installed, false);
+  assert.equal(view.models.find(item => item.id === model.id)!.enabled, false);
+  await assert.rejects(library.activate({ modelId: model.id }), { code: "MODEL_FILES_MISSING" });
+});
+
+test("checkpoint presets reject unsupported roles, duplicate dependencies and widened operations before import", async t => {
+  const { store, library } = await fixture(t, { fetch: async () => assert.fail("Invalid imports must not contact a provider") });
+  const before = modelRegistry(store);
+  const variants = [
+    { ...presetImport, presetId: "unknown" },
+    { ...presetImport, dependencies: [{ role: "checkpoint", url: presetImport.url }] },
+    { ...presetImport, dependencies: [{ role: "diffusion", url: presetImport.url }] },
+    { ...presetImport, dependencies: [presetImport.dependencies[0], presetImport.dependencies[0]] },
+    { ...presetImport, operations: ["image-to-image"] },
+    { ...presetImport, operations: [] },
+    { ...presetImport, defaults: { steps: 0 } },
+    { ...presetImport, defaults: { unsupported: 1 } },
+    { ...presetImport, defaults: null },
+    { ...presetImport, defaults: [] },
+  ];
+  for (const request of variants) {
+    assert.throws(() => library.start(request), { code: "INVALID_MODEL_REQUEST" });
+    await assert.rejects(library.checkAccess(request), { code: "INVALID_MODEL_REQUEST" });
+  }
+  assert.deepEqual(modelRegistry(store), before);
+  assert.equal((await library.view()).download, null);
+});
+
+test("Ideogram preset overrides preserve both diffusion roles and permit a secondary model source", async t => {
+  const { store, library } = await fixture(t);
+  const started = library.start({
+    presetId: "ideogram-4-fp8", name: "Dual checkpoint", url: presetImport.url,
+    dependencies: [
+      { role: "diffusion-unconditional", url: "https://huggingface.co/example/ceramic/blob/main/negative.safetensors" },
+      ...presetImport.dependencies,
+    ],
+  });
+  await library.waitForIdle();
+  const model = modelRegistry(store).find(item => item.id === started.modelId)!;
+  assert.equal((await library.view()).download?.status, "succeeded");
+  assert.deepEqual(model.artifacts.map(artifact => artifact.role), ["diffusion", "diffusion-unconditional", "text-encoder", "vae"]);
+  assert.ok(model.artifacts.every(artifact => artifact.sha256 === sha256));
+  assert.match(model.artifacts[1].source!, /negative\.safetensors$/);
+  assert.equal(model.revision, modelManifestRevision(model));
+});
+
+test("an image-only checkpoint activates using its supported operation", async t => {
+  const f = await engineFixture({ location: "local" }); t.after(f.close);
+  const library = new ModelLibrary(f.store, f.engine, { fetch: async () => response() }); t.after(() => library.close());
+  await mkdir(join(f.directory, "runtime"));
+  await writeFile(join(f.directory, "runtime", "plan.json"), JSON.stringify({ workers: f.store.settings().workers }));
+  const started = library.start({ presetId: "sdxl-base", name: "Image editing checkpoint", url: source, operations: ["image-to-image"] });
+  await library.waitForIdle();
+  const model = modelRegistry(f.store).find(item => item.id === started.modelId)!;
+  const worker = f.workers[0];
+  worker.state.info.CheckpointLoaderSimple.input!.required!.ckpt_name = [[model.artifacts[0].filename]];
+  const previous = worker.state.responseOverride;
+  worker.state.responseOverride = path => path === "/models/checkpoints" ? { body: JSON.stringify([model.artifacts[0].filename]) } : previous?.(path);
+  await library.activate({ modelId: model.id });
+  const configuration = f.store.settings().modelConfigurations.find(item => item.modelId === model.id)!;
+  assert.equal(configuration.enabled, true);
+  assert.deepEqual(configuration.workerIds, ["worker-0"]);
+  assert.deepEqual(model.operations, ["image-to-image"]);
 });

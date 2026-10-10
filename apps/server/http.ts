@@ -410,12 +410,12 @@ export async function createStudioServer(options: ServerOptions) {
         const abort = () => { if (!response.writableEnded) controller.abort(); };
         response.once("close", abort);
         try {
-          const result = await models.checkAccess(await readAuthorizedJson(8192), controller.signal);
+          const result = await models.checkAccess(await readAuthorizedJson(32 * 1024), controller.signal);
           if (!controller.signal.aborted) return json(response, result);
           return;
         } finally { response.off("close", abort); }
       }
-      if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readAuthorizedJson(8192); requireRuntimeIdle(); return json(response, models.start(body), 202); }
+      if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readAuthorizedJson(32 * 1024); requireRuntimeIdle(); return json(response, models.start(body), 202); }
       if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readAuthorizedJson(1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
       if (path === "/api/mcp") {
         if (method !== "POST") { response.setHeader("Allow", "POST"); throw new ApiError(405, "METHOD_NOT_ALLOWED", "This stateless MCP endpoint accepts POST requests."); }
