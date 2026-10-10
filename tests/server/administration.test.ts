@@ -177,7 +177,7 @@ test("HTTP protects all global administration from users and bearer tokens while
   async function request(path: string, method = "GET", body?: unknown, cookie = memberCookie, extra = {}) {
     return fetch(base + "/api" + path, { method, headers: { Origin: origin, Cookie: cookie, ...extra, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   }
-  for (const path of ["/admin/users", "/admin/invitations", "/admin/work-time", "/admin/mail", "/integrations", "/settings", "/runtime", "/models/library", "/hardware", "/text/models"]) assert.equal((await request(path)).status, 403, path);
+  for (const path of ["/admin/users", "/admin/invitations", "/admin/work-time", "/admin/mail", "/admin/storage", "/integrations", "/settings", "/runtime", "/models/library", "/hardware", "/text/models"]) assert.equal((await request(path)).status, 403, path);
   for (const path of ["/models/download", "/models/access", "/models/activate", "/runtime", "/workers/probe", "/workers/any/unload", "/text/local", "/text/local/unload", "/admin/mail/test", "/admin/invitations"]) assert.equal((await request(path, "POST", {})).status, 403, path);
   for (const path of ["/settings", "/integrations/gemini", "/text/assistant", "/text/connection", "/text/local", "/admin/mail"]) assert.equal((await request(path, "PUT", {})).status, 403, path);
   assert.equal(sends, 0);
@@ -188,6 +188,13 @@ test("HTTP protects all global administration from users and bearer tokens while
   assert.equal((await request("/jobs", "GET", undefined, "", { Authorization: `Bearer ${userToken.token}` })).status, 200);
   f.store.saveApiToken(f.owner.id, "Admin client", digest("admin-api-token"));
   assert.equal((await request("/admin/users", "GET", undefined, "", { Authorization: "Bearer admin-api-token" })).status, 403);
+  assert.equal((await request("/admin/storage", "GET", undefined, "", { Authorization: "Bearer admin-api-token" })).status, 403);
+  const storage = await request("/admin/storage", "GET", undefined, ownerCookie);
+  assert.equal(storage.status, 200);
+  const usage = await storage.json();
+  assert.equal(usage.volume.status, "available"); assert.ok(usage.volume.totalBytes > 0);
+  assert.equal(usage.objectStorage.configured, false);
+  assert.equal(JSON.stringify(usage).includes(f.directory), false);
   const invitationResponse = await request("/admin/invitations", "POST", { ...invitationInput, email: "new@example.test", sendEmail: true }, ownerCookie);
   assert.equal(invitationResponse.status, 201);
   const created = await invitationResponse.json(); assert.equal(created.invitation.delivery, "failed"); assert.equal(sends, 1);

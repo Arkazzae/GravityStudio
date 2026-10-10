@@ -21,6 +21,7 @@ import { accountView, saveAccount } from "./account.ts";
 import { Administration, requireActiveUser, requireAdministrator } from "./administration.ts";
 import { WorkTimeService, requireWorkTime } from "./work-time.ts";
 import { MailService } from "./mail.ts";
+import { StorageUsageService } from "./storage-usage.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -75,6 +76,7 @@ export async function createStudioServer(options: ServerOptions) {
   const workTime = new WorkTimeService(store);
   const administration = new Administration(store, workTime);
   const mail = options.mail ?? new MailService(store, credentials);
+  const storageUsage = new StorageUsageService(store);
   const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
   await localText.initialize();
   const text = new TextService(store, credentials, { fetch: options.textFetch, local: localText });
@@ -167,6 +169,11 @@ export async function createStudioServer(options: ServerOptions) {
         requireAdmin();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
         if (path === "/api/admin/users" && method === "GET") return json(response, { users: administration.users() });
+        if (path === "/api/admin/storage" && method === "GET") {
+          const usage = await mediaOperation(() => storageUsage.view());
+          requireAdmin();
+          return json(response, usage);
+        }
         const adminUserRoute = path.match(/^\/api\/admin\/users\/([a-f0-9-]{36})(\/work-time)?$/);
         if (adminUserRoute) {
           const id = adminUserRoute[1];
