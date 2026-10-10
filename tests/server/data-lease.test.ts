@@ -8,11 +8,22 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { acquireDataLease } from "../../apps/server/data-lease.ts";
 
-test("the data lease excludes another process and is released after SIGKILL", { timeout: 10_000 }, async t => {
+test("the data lease survives garbage collection, excludes another process and is released after SIGKILL", { timeout: 10_000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), "gravity-process-lease-"));
   const source = new URL("../../apps/server/data-lease.ts", import.meta.url).href;
-  const script = `import { acquireDataLease } from ${JSON.stringify(source)}; acquireDataLease(process.argv[1]); process.send('locked'); setInterval(() => {}, 1000);`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script, directory], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const script = `
+    import { acquireDataLease } from ${JSON.stringify(source)};
+    // Retain the lease as the real server does; an ignored release callback lets SQLite be collected.
+    const release = acquireDataLease(process.argv[1]);
+    process.once('exit', release);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      global.gc();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    process.send('locked');
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ["--expose-gc", "--input-type=module", "-e", script, directory], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
   const exited = once(child, "exit");
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
