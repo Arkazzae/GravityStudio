@@ -121,7 +121,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     finally { setSigningOut(false); }
   }
   function reuse(job: Job) {
-    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
+    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', quality: 'custom', ...job.parameters, negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
     document.getElementById('image-prompt')?.focus();
   }
   async function deleteOutput(job: Job, output: Job['outputs'][number]) {

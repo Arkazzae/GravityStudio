@@ -46,8 +46,8 @@ export function DockSettings({ model, draft, busy, onChange, onReset }: { model?
   return <>
     <Popover label="Advanced settings" title="Advanced" width={320} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="advanced-trigger" active={open} disabled={!model} aria-label="Advanced settings" title="Advanced settings"><SlidersHorizontal />{dirty && <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-volt" />}</IconChip>}>
       {() => <div className="flex h-[min(60dvh,480px)] flex-col gap-1 overflow-y-auto [scrollbar-gutter:stable]">
-        <NumberControl label="Width" min={limits?.width?.min ?? dimensions?.min ?? 256} max={widthMax} step={widthStep} value={draft.width} onChange={width => onChange({ width, aspect: 'custom' })} />
-        <NumberControl label="Height" min={limits?.height?.min ?? dimensions?.min ?? 256} max={heightMax} step={heightStep} value={draft.height} onChange={height => onChange({ height, aspect: 'custom' })} />
+        <NumberControl label="Width" min={limits?.width?.min ?? dimensions?.min ?? 256} max={widthMax} step={widthStep} value={draft.width} onChange={width => onChange({ width, aspect: 'custom', quality: 'custom' })} />
+        <NumberControl label="Height" min={limits?.height?.min ?? dimensions?.min ?? 256} max={heightMax} step={heightStep} value={draft.height} onChange={height => onChange({ height, aspect: 'custom', quality: 'custom' })} />
         <NumberControl label="Steps" min={limits?.steps?.min ?? 1} max={limits?.steps?.max ?? 100} step={limits?.steps?.step ?? 1} value={draft.steps} onChange={steps => onChange({ steps })} />
         <NumberControl label="Guidance" min={limits?.cfg?.min ?? 0} max={limits?.cfg?.max ?? 30} step={limits?.cfg?.step ?? .1} value={draft.cfg} onChange={cfg => onChange({ cfg })} />
         <div className="min-w-0 shrink-0 rounded-lg bg-white/[0.03] px-2.5 py-2"><ParameterLabel label="Seed" htmlFor="generation-seed" />

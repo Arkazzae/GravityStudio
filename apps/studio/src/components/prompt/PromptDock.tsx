@@ -6,16 +6,17 @@ import { ModelMenu } from './ModelMenu';
 import { ReferencePicker } from './ReferencePicker';
 import { ImageReferenceInput } from './ImageReferenceInput';
 import { ImageAspectRatioMenu } from './ImageAspectRatioMenu';
+import { ImageQualityMenu } from './ImageQualityMenu';
 import { DockSettings } from './DockSettings';
 import { PromptAssistant } from './PromptAssistant';
-import { imageSizeProblem, type ImageAspectRatio } from '@/lib/image-settings';
+import { imageQualityForSize, imageSizeProblem, type ImageAspectRatio, type ImageQuality } from '@/lib/image-settings';
 import { api, errorMessage, type InputImage, type StudioModel, type Job } from '@/lib/api';
 import { imageFileProblem } from '@/lib/image-files';
 import { useFileIntake } from '@/lib/use-file-intake';
 
-export interface Draft { aspect?: ImageAspectRatio | 'custom'; modelId: string; prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfg: number; seed: string; denoise: number; images: InputImage[] }
+export interface Draft { aspect?: ImageAspectRatio | 'custom'; quality?: ImageQuality | 'custom'; modelId: string; prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfg: number; seed: string; denoise: number; images: InputImage[] }
 export const initialDraft: Draft = { aspect: 'auto', modelId: '', prompt: '', negativePrompt: '', width: 1024, height: 1024, steps: 30, cfg: 7, seed: '', denoise: .75, images: [] };
-export function modelDraft(draft: Draft, model: StudioModel): Draft { return { ...draft, modelId: model.id, aspect: 'auto', ...model.defaults, negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75 }; }
+export function modelDraft(draft: Draft, model: StudioModel): Draft { return { ...draft, modelId: model.id, aspect: 'auto', ...model.defaults, quality: imageQualityForSize(model, model.defaults.width, model.defaults.height, 'auto'), negativePrompt: model.defaults.negativePrompt || '', seed: '', denoise: .75 }; }
 
 export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, setDraft, onSubmitted, onHeight, connected, onSessionExpired, jobs, onOpenModels, favoriteError, sessionIdentity = '', onOpenAssistantSettings, onBusyChange }: { browsing: boolean; onBrowse: () => void; onCloseAssets: () => void; jobs: Job[]; models: StudioModel[]; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; onSubmitted: (job: Job) => void; onHeight: (height: number) => void; connected: boolean; onSessionExpired: () => void; onOpenModels: () => void; favoriteError?: string; sessionIdentity?: string; onOpenAssistantSettings?: () => void; onBusyChange?: (busy: boolean) => void }) {
   const dock = useRef<HTMLDivElement>(null);
@@ -114,9 +115,12 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
         <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1.5 max-sm:[&>div:first-child]:min-w-0 max-sm:[&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
           <ModelMenu disabled={uploading} onManage={onOpenModels} models={models} value={draft.modelId} referenceCount={draft.images.length} onChange={id => { const next = models.find(model => model.id === id); if (next) setDraft(modelDraft(draft, next)); }} />
           <ImageAspectRatioMenu model={model} draft={draft} onChange={update} />
-        </div><div className="flex shrink-0 items-center gap-0.5 self-end sm:self-auto sm:border-l sm:border-white/[0.06] sm:pl-1.5">
+        </div><div className="flex shrink-0 items-center justify-between gap-1.5">
+          <ImageQualityMenu model={model} draft={draft} onChange={update} />
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:border-l sm:border-white/[0.06] sm:pl-1.5">
           <PromptAssistant draft={draft} setDraft={setDraft} model={model} connected={connected} submitting={busy || uploading} sessionIdentity={sessionIdentity} onBusyChange={setAssistantBusy} onSessionExpired={onSessionExpired} onOpenSettings={onOpenAssistantSettings} />
           <DockSettings model={model} draft={draft} busy={busy} onChange={update} onReset={() => { if (model) setDraft(modelDraft(draft, model)); }} />
+          </div>
         </div></div>
         {error || sizeError ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError}</p> : connected && !model?.ready ? <p className="px-1 text-xs text-ink-2">Choose a model in Models. Manage your GPUs in Settings.</p> : null}
       </div>
