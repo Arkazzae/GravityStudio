@@ -1453,10 +1453,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('#output-viewer[open]')", 'An image preview is retained before signing out');
   await browser.click('#output-viewer button[aria-label="Close preview"]');
   await browser.until("!document.querySelector('#output-viewer[open]')", 'The preview is closed before signing out');
-  const privateModalSelector = '#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer, #assets-browser-dialog, #assets-output-viewer, #assets-input-viewer';
-  await browser.evaluate(`void (window.__gravityPrivateModals = Array.from(document.querySelectorAll(${JSON.stringify(privateModalSelector)})))`);
+  const privateModalSelector = '#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer, #assets-browser-dialog, #assets-output-viewer, #assets-input-viewer, #account-panel';
+  await browser.evaluate(`void (window.__gravityPrivateModals = Array.from(document.querySelectorAll(${JSON.stringify(privateModalSelector)})).filter(dialog => dialog.id !== 'account-panel'))`);
   assert.equal(await browser.evaluate('window.__gravityPrivateModals.length'), 6, 'Each visited private modal is retained while the owner is signed in');
   await browser.click('[aria-label="Account"]');
+  await browser.until("!!document.querySelector('#account-panel[open]')", 'The account drawer opens before signing out');
+  await browser.evaluate("window.__gravityPrivateModals.push(document.querySelector('#account-panel'))");
   await browser.clickText('Sign out');
   await browser.until("document.body.innerText.includes('Welcome back.')", 'Signed out');
   assert.equal(await browser.evaluate(`document.querySelectorAll(${JSON.stringify(privateModalSelector)}).length`), 0, 'Signing out removes every private modal from the DOM');
@@ -2150,5 +2152,207 @@ test('file drops route to references or Assets without claiming text or navigati
   }
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
+  assert.deepEqual(browser.errors, []);
+});
+
+test('account drawer persists profiles, preserves conflicting drafts and clears private state on sign out', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort();
+  const origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'account-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => {
+    child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL');
+    await server.closeOperations(); await close(server); await fixture.close();
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Account frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  let cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  async function setSessionCookie() { await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' }); }
+  await setSessionCookie();
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('#image-prompt') && !!document.querySelector('button[aria-label=\"Account\"]') && !document.querySelector('dialog[open]')", 'The authenticated workspace loads');
+
+  type Profile = { revision: number; displayName: string; workspaceName: string; avatarTheme: string };
+  async function profile() {
+    const response = await fetch(`${backend}/api/account`, { headers: { Cookie: cookie } });
+    assert.equal(response.status, 200);
+    return await response.json() as Profile;
+  }
+  async function updateProfile(value: Profile) {
+    const response = await fetch(`${backend}/api/account`, { method: 'PUT', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+    assert.equal(response.status, 200);
+    return await response.json() as Profile;
+  }
+  const displayName = '#account-panel input[name="displayName"]';
+  const workspaceName = '#account-panel input[name="workspaceName"]';
+  const value = (selector: string) => browser.evaluate<string>(`document.querySelector(${JSON.stringify(selector)}).value`);
+  async function panelButton(label: string) {
+    const expression = `Array.from(document.querySelectorAll('#account-panel button')).find(button => button.textContent.trim() === ${JSON.stringify(label)})`;
+    await browser.until(`!!(${expression}) && !(${expression}).disabled`, `Account action ${label}`);
+    await browser.evaluate(`(${expression}).focus()`); await browser.key('Enter');
+  }
+  async function openAccount() {
+    await browser.click('button[aria-label="Account"]');
+    await browser.until(`document.querySelector('#account-panel[open]') && document.querySelector(${JSON.stringify(displayName)}) && !document.querySelector(${JSON.stringify(displayName)}).matches(':disabled')`, 'The account profile is ready');
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#account-panel').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+  }
+  async function closed() { await browser.until("!document.querySelector('#account-panel[open]')", 'The account drawer closes'); }
+  async function instrumentRequests() {
+    await browser.evaluate(`(() => {
+      window.__gravityAccountFetch = window.fetch;
+      window.__gravityAccountRequests = { saves: 0, uploads: 0, failNext: false, holdNextRead: false, readHeld: false };
+      window.fetch = async (input, options = {}) => {
+        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+        const method = String(options.method || 'GET').toUpperCase();
+        if (url.origin === location.origin && url.pathname === '/api/inputs' && method === 'POST') window.__gravityAccountRequests.uploads++;
+        if (url.origin === location.origin && url.pathname === '/api/account' && method === 'PUT') {
+          window.__gravityAccountRequests.saves++;
+          if (window.__gravityAccountRequests.failNext) { window.__gravityAccountRequests.failNext = false; return Response.json({error: {message: 'Profile save temporarily unavailable.'}}, {status: 503}); }
+        }
+        const response = await window.__gravityAccountFetch.call(window, input, options);
+        if (url.origin === location.origin && url.pathname === '/api/account' && method === 'GET' && window.__gravityAccountRequests.holdNextRead) {
+          window.__gravityAccountRequests.holdNextRead = false;
+          const body = await response.json();
+          window.__gravityAccountRequests.readHeld = true;
+          await new Promise(resolve => { window.__gravityReleaseAccountRead = resolve; });
+          return Response.json(body, {status: response.status});
+        }
+        return response;
+      };
+    })()`);
+  }
+  await instrumentRequests();
+  const initial = await profile();
+  await openAccount();
+  assert.equal(await value(displayName), initial.displayName);
+  assert.equal(await value(workspaceName), initial.workspaceName);
+  assert.equal(await browser.evaluate("document.querySelector('#account-panel input[name=\"username\"]').readOnly"), true, 'The login username cannot be changed through the profile form');
+  assert.equal(await value('#account-panel input[name="username"]'), fixture.owner.username);
+  assert.equal(await browser.evaluate("document.querySelectorAll('#account-panel [aria-label=\"Avatar color\"] input[type=radio]').length"), 6, 'All six avatar colors are available');
+
+  await browser.fill(displayName, 'Ada Lovelace');
+  await browser.fill(workspaceName, 'Northlight Studio');
+  await browser.click('#account-panel input[type="radio"][value="mint"]');
+  await panelButton('Save changes'); await closed();
+  const saved = await profile();
+  assert.deepEqual({ displayName: saved.displayName, workspaceName: saved.workspaceName, avatarTheme: saved.avatarTheme }, { displayName: 'Ada Lovelace', workspaceName: 'Northlight Studio', avatarTheme: 'mint' });
+  assert.equal(saved.revision, initial.revision + 1);
+  assert.match(await browser.evaluate<string>("document.querySelector('button[aria-label=\"Account\"]').textContent"), /AL/, 'Saving updates the avatar initials in the header');
+
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('#image-prompt') && !window.__gravityAccountRequests", 'A fresh page loads the saved account');
+  await instrumentRequests(); await openAccount();
+  assert.equal(await value(displayName), saved.displayName, 'The display name survives a full page reload');
+  assert.equal(await value(workspaceName), saved.workspaceName, 'The workspace name is stored by the server');
+  assert.equal(await browser.evaluate("document.querySelector('#account-panel input[type=radio][value=mint]').checked"), true);
+
+  await browser.fill(displayName, 'Discard this profile draft');
+  await panelButton('Cancel'); await closed(); await openAccount();
+  assert.equal(await value(displayName), saved.displayName, 'Cancel discards unfinished profile edits');
+  await browser.fill(displayName, 'Keep this closed drawer draft');
+  await browser.key('Escape'); await closed();
+  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Account', 'Escape returns focus to the account trigger');
+  await openAccount();
+  assert.equal(await value(displayName), 'Keep this closed drawer draft', 'Escape preserves the unfinished draft');
+  const backdrop = await browser.evaluate<{ x: number; y: number }>("(() => { const rect = document.querySelector('#account-panel').getBoundingClientRect(); return [{x: 2, y: 2}, {x: innerWidth - 2, y: 2}].find(point => point.x < rect.left || point.x > rect.right) || null; })()");
+  assert.ok(backdrop, 'The desktop drawer leaves a dismissible backdrop');
+  await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...backdrop, button: 'left', clickCount: 1 });
+  await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...backdrop, button: 'left', clickCount: 1 });
+  await closed(); await openAccount();
+  assert.equal(await value(displayName), 'Keep this closed drawer draft', 'Backdrop dismissal preserves the unfinished draft');
+  await panelButton('Cancel'); await closed(); await openAccount();
+
+  await browser.evaluate("Array.from(document.querySelectorAll('#account-panel button, #account-panel input')).filter(element => !element.disabled && element.getClientRects().length).at(-1).focus()");
+  await browser.key('Tab');
+  assert.equal(await browser.evaluate("!!document.activeElement?.closest('#account-panel')"), true, 'Tab stays inside the modal drawer');
+  await browser.evaluate("Array.from(document.querySelectorAll('#account-panel button, #account-panel input')).find(element => !element.disabled && element.getClientRects().length).focus()");
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 });
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 });
+  assert.equal(await browser.evaluate("!!document.activeElement?.closest('#account-panel')"), true, 'Shift+Tab stays inside the modal drawer');
+
+  const beforeInvalid = await browser.evaluate<number>('window.__gravityAccountRequests.saves');
+  await browser.fill(displayName, '');
+  await browser.evaluate("document.querySelector('#account-panel form').requestSubmit()");
+  await browser.until(`document.querySelector('#account-panel[open]') && (document.querySelector(${JSON.stringify(displayName)}).matches(':invalid') || document.querySelector('#account-panel [role=alert]'))`, 'An empty display name is rejected in the drawer');
+  assert.equal(await browser.evaluate<number>('window.__gravityAccountRequests.saves'), beforeInvalid, 'Required fields are validated before contacting the server');
+  await browser.fill(displayName, 'Recovered Profile');
+  await browser.evaluate('window.__gravityAccountRequests.failNext = true');
+  await panelButton('Save changes');
+  await browser.until("document.querySelector('#account-panel[open] [role=alert]')?.textContent.includes('temporarily unavailable')", 'Save failures remain actionable in the drawer');
+  assert.equal(await value(displayName), 'Recovered Profile', 'A failed save preserves the edited name');
+  assert.equal((await profile()).displayName, saved.displayName, 'A failed save does not change the stored profile');
+  await panelButton('Save changes'); await closed();
+
+  await openAccount();
+  await browser.fill(displayName, 'Keep my conflicting draft');
+  const otherClient = await updateProfile({ ...await profile(), displayName: 'Saved by another browser', workspaceName: 'Shared Workspace', avatarTheme: 'blue' });
+  await panelButton('Save changes');
+  await browser.until("!!Array.from(document.querySelectorAll('#account-panel button')).find(button => button.textContent.trim() === 'Reload saved profile') && !!document.querySelector('#account-panel [role=alert]')", 'A stale account revision offers an explicit reload');
+  assert.equal(await value(displayName), 'Keep my conflicting draft', 'A conflict never replaces the unfinished draft silently');
+  assert.equal((await profile()).revision, otherClient.revision, 'The rejected stale save cannot overwrite another browser');
+  await panelButton('Reload saved profile');
+  await browser.until(`document.querySelector(${JSON.stringify(displayName)}).value === 'Saved by another browser'`, 'Explicit reload loads the saved profile');
+  assert.equal(await value(workspaceName), 'Shared Workspace');
+  await browser.fill(displayName, 'Final Profile'); await panelButton('Save changes'); await closed();
+  assert.equal((await profile()).displayName, 'Final Profile', 'Saving can retry after a conflict has been resolved');
+
+  await openAccount();
+  const bytes = Buffer.from(fixture.workers[0].state.outputBytes).toString('base64');
+  const prevented = await browser.evaluate<boolean[]>(`(() => ['dragover', 'drop', 'paste'].map(type => {
+    const transfer = new DataTransfer(); transfer.items.add(new File([Uint8Array.from(atob(${JSON.stringify(bytes)}), character => character.charCodeAt(0))], 'blocked-account.png', {type: 'image/png'}));
+    const event = type === 'paste' ? new ClipboardEvent('paste', {clipboardData: transfer, bubbles: true, cancelable: true}) : new DragEvent(type, {dataTransfer: transfer, bubbles: true, cancelable: true});
+    document.dispatchEvent(event); return event.defaultPrevented;
+  }))()`);
+  assert.deepEqual(prevented.slice(0, 2), [true, true], 'File drags cannot navigate away while Account is open');
+  await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+  assert.equal(await browser.evaluate('window.__gravityAccountRequests.uploads'), 0, 'An account drawer never uploads files into the workspace behind it');
+  assert.equal(await browser.evaluate("!!document.querySelector('[data-file-drop-target]')"), false);
+  assert.equal(await browser.evaluate('location.pathname'), '/image');
+  assert.equal(fixture.store.inputs(fixture.owner.id).length, 0);
+
+  assert.equal(await browser.evaluate("!!document.querySelector('#account-panel [aria-label=\"Play a sound when a generation is ready\"]') && !!document.querySelector('#account-panel [aria-label=\"Show a desktop notification when a generation is ready\"]')"), true, 'Account reuses the real controls for completion alerts on this device');
+  for (const mobile of [false, true]) {
+    const width = mobile ? 390 : 1440, height = mobile ? 844 : 960;
+    await browser.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#account-panel').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+    assert.equal(await browser.evaluate("(() => { const dialog = document.querySelector('#account-panel'), rect = dialog.getBoundingClientRect(); return rect.left >= -1 && rect.top >= -1 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth; })()"), true, `Account fits the ${mobile ? 'mobile' : 'desktop'} viewport without horizontal overflow`);
+    if (mobile) assert.equal(await browser.evaluate("(() => { const rect = document.querySelector('#account-panel').getBoundingClientRect(); return rect.width >= innerWidth - 2 && rect.height >= innerHeight - 2; })()"), true, 'The mobile account drawer uses the full screen');
+    await browser.screenshot(join(output, `account-${mobile ? 'mobile' : 'desktop'}.png`));
+  }
+  await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  const privateDraft = 'Unsaved private account draft';
+  await updateProfile(await profile());
+  await browser.fill(displayName, privateDraft);
+  await panelButton('Save changes');
+  await browser.until("!!Array.from(document.querySelectorAll('#account-panel button')).find(button => button.textContent.trim() === 'Reload saved profile')", 'A second browser revision makes the sign-out reload stale');
+  await browser.evaluate('window.__gravityAccountRequests.holdNextRead = true');
+  await panelButton('Reload saved profile');
+  await browser.until('window.__gravityAccountRequests.readHeld', 'The saved profile response is in flight when signing out');
+  await browser.evaluate("void (window.__gravityAccountDialogBeforeSignout = document.querySelector('#account-panel'))");
+  await panelButton('Sign out');
+  await browser.until("document.body.innerText.includes('Welcome back.')", 'The real sign-out endpoint ends the owner session');
+  await browser.evaluate("window.__gravityReleaseAccountRead(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))");
+  assert.equal(await browser.evaluate("!!document.querySelector('#account-panel') || window.__gravityAccountDialogBeforeSignout.isConnected"), false, 'Signing out removes the account drawer and its private draft tree');
+  assert.equal(await browser.evaluate("document.body.innerText.includes('Welcome back.')"), true, 'A late profile response cannot restore private UI after signing out');
+  assert.equal(await browser.evaluate(`JSON.stringify({...localStorage, ...sessionStorage}).includes(${JSON.stringify(privateDraft)})`), false, 'The account draft is never retained in browser storage');
+  assert.equal((await fetch(`${backend}/api/account`, { headers: { Cookie: cookie } })).status, 401, 'The old session cannot read account details after signing out');
+  cookie = createSession(fixture.store, fixture.owner, false).split(';')[0]; await setSessionCookie();
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('#image-prompt') && !document.querySelector('dialog[open]')", 'A new owner session opens a clean workspace');
+  await openAccount();
+  assert.equal(await value(displayName), 'Final Profile', 'A new session loads the saved profile without restoring the signed-out draft');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Account regression never submits a generation');
   assert.deepEqual(browser.errors, []);
 });
