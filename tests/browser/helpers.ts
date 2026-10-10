@@ -65,11 +65,40 @@ export async function openBrowser(t: TestContext) {
   }
   async function clickExpression(expression: string) {
     await until(`(() => { const element = (${expression}); return element && element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible'; })()`, 'Clickable visible control');
-    await evaluate('new Promise(resolve => requestAnimationFrame(() => resolve(true)))');
-    const point = await evaluate<{ x: number; y: number }>(`(() => { const element = (${expression}); element.scrollIntoView({block:'nearest',inline:'nearest'}); const rect = element.getBoundingClientRect(); return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}; })()`);
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    const deadline = Date.now() + 20000;
+    let obstruction = 'The control kept moving after scrolling.';
+    let placement: ScrollLogicalPosition = 'nearest';
+    while (Date.now() < deadline) {
+      // Scrolling can trigger anchoring and layout on the next frame, especially
+      // when an error notice has just changed the height of a gallery.
+      const point = await evaluate<{ x: number; y: number } | null>(`(async () => {
+        const element = (${expression});
+        if (!element?.getClientRects().length || getComputedStyle(element).visibility !== 'visible') return null;
+        element.scrollIntoView({block:${JSON.stringify(placement)},inline:'nearest'});
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const before = element.getBoundingClientRect();
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (!element.isConnected || element !== (${expression})) return null;
+        const rect = element.getBoundingClientRect();
+        if (['left', 'top', 'width', 'height'].some(key => Math.abs(rect[key] - before[key]) > .5)) return null;
+        return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+      })()`);
+      if (!point) { await delay(50); continue; }
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+      const target = await evaluate<{ ready: boolean; obstruction: string }>(`(async () => {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const element = (${expression});
+        const rect = element?.getBoundingClientRect();
+        const hit = document.elementFromPoint(${point.x}, ${point.y});
+        const stable = rect && Math.abs(rect.left + rect.width / 2 - ${point.x}) <= .5 && Math.abs(rect.top + rect.height / 2 - ${point.y}) <= .5;
+        return {ready: !!(stable && hit && element.contains(hit)), obstruction: stable ? (hit?.outerHTML.slice(0, 300) || 'No element at the click point.') : 'The control moved after hovering.'};
+      })()`);
+      if (!target.ready) { obstruction = target.obstruction; placement = 'center'; await delay(50); continue; }
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      return;
+    }
+    throw new Error(`Browser click target never became stable and unobstructed: ${expression}\n${obstruction}`);
   }
   await send('Page.enable'); await send('Runtime.enable'); await send('Page.bringToFront');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
