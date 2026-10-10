@@ -39,7 +39,7 @@ async function atomicJson(path: string, value: unknown) {
 export async function writeRuntimeDeployment(plan: RuntimeDeployment) {
   await mkdir(join(plan.dataDirectory, "runtime"), { recursive: true, mode: 0o700 });
   await mkdir(plan.modelsDirectory, { recursive: true, mode: 0o755 });
-  for (const folder of ["checkpoints", "diffusion_models", "text_encoders", "clip", "vae", "loras", "controlnet", "clip_vision", "upscale_models", "embeddings"]) await mkdir(join(plan.modelsDirectory, folder), { recursive: true, mode: 0o755 });
+  for (const folder of ["checkpoints", "diffusion_models", "text_encoders", "clip", "vae", "loras", "controlnet", "clip_vision", "upscale_models", "embeddings", "background_removal"]) await mkdir(join(plan.modelsDirectory, folder), { recursive: true, mode: 0o755 });
   for (const worker of plan.workers) for (const folder of ["input", "output", "temp", "user"]) await mkdir(join(worker.stateDirectory, folder), { recursive: true, mode: 0o700 });
   await atomicJson(plan.composeFile, plan.compose);
   await atomicJson(join(plan.dataDirectory, "runtime", "plan.json"), plan);

@@ -9,6 +9,7 @@ const requestKey = z.string().regex(/^[a-zA-Z0-9_.:-]{8,128}$/);
 const generation = z.strictObject({
   modelId: z.string().min(1).max(96), prompt: z.string().min(1).max(16000),
   operation: z.enum(["text-to-image", "image-to-image", "reference"]).optional(),
+  background: z.enum(["auto", "opaque", "transparent"]).optional(),
   negativePrompt: z.string().max(16000).optional(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(),
   steps: z.number().int().min(1).max(100).optional(), cfg: z.number().min(0).max(30).optional(), seed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   denoise: z.number().min(0).max(1).optional(), images: z.array(id).max(4).optional(),

@@ -1,6 +1,6 @@
 export const JOB_STATUSES = ["queued", "preparing", "running", "succeeded", "failed", "cancelled", "interrupted"] as const;
 export type JobStatus = typeof JOB_STATUSES[number];
-export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras";
+export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras" | "background_removal";
 export interface WorkerSettings {
   id: string;
   name: string;
@@ -39,6 +39,7 @@ export interface IntegrationStatus {
 export interface IntegrationTestResult { ok: true; message: string }
 export interface GenerationInput {
   modelId: string;
+  background?: "auto" | "opaque" | "transparent";
   operation?: "text-to-image" | "image-to-image" | "reference";
   prompt: string;
   negativePrompt?: string;

@@ -10,6 +10,7 @@ import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./s
 import { inputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
 import { modelRegistry } from "./registry.ts";
+import { BIREFNET_MEMORY } from "../../packages/inference/index.ts";
 
 interface WorkerState {
   connected: boolean;
@@ -160,13 +161,17 @@ export class Engine {
       const available = this.availableWorkers(configuration, snapshot);
       const card = modelCard(resolved, configuration, available.map(worker => worker.id));
       const family = FAMILY_RECIPES[model.familyId];
+      const transparent = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, background: "transparent" }, resolved);
+      const transparentWorkers = this.availableWorkers(configuration, transparent);
+      const background = { native: !!family.nativeTransparency, available: transparentWorkers.length > 0,
+        ...(!transparentWorkers.length ? { reason: !available.length ? "Connect a ready worker for this model." : "Download BiRefNet in Models and use a worker with background removal support." } : {}) };
       const installed = await localArtifactsInstalled(this.store.directory, resolved.artifacts) || settings.workers.some(worker => {
         const state = this.workers.get(worker.id);
         return state?.identity === workerIdentity(worker) && !!state.discovery && resolved.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
       });
       return { ...card, installed, unavailableReason: card.missingReasons.join(" "),
         limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
-        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1" },
+        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background },
       };
     }));
     return { models, families: Object.values(FAMILY_RECIPES).map(({ id, name }) => ({ id, name })) };
@@ -174,7 +179,7 @@ export class Engine {
   async submit(userId: string, value: unknown, key: string) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(400, "INVALID_JOB", "Provide generation settings.");
     if (!/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) throw new ApiError(400, "INVALID_REQUEST_KEY", "Supply an Idempotency-Key between 8 and 128 characters.");
-    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images"]);
+    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images", "background"]);
     if (Object.keys(value).some(field => !allowed.has(field))) throw new ApiError(400, "INVALID_JOB", "The request contains an unsupported generation parameter.");
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
@@ -203,7 +208,8 @@ export class Engine {
     const defaultPixels = (base.width ?? 1024) * (base.height ?? 1024);
     // Until a larger canvas is calibrated, use a conservative growth estimate.
     const scale = Math.max(1, pixels / defaultPixels);
-    const memory = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale), vramBytes: Math.ceil(configuration.memory.vramBytes * scale) };
+    const cutout = snapshot.auxiliaryArtifacts?.length ? BIREFNET_MEMORY : { ramBytes: 0, vramBytes: 0 };
+    const memory = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale) + cutout.ramBytes, vramBytes: Math.ceil(configuration.memory.vramBytes * scale) + cutout.vramBytes };
     const placements: PlacementSnapshot[] = workers.map(worker => ({ worker: structuredClone(worker), memory }));
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const job = this.store.createJob(userId, input, snapshot, placements, model.name, { ...snapshot.parameters }, key, requestHash);

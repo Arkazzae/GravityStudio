@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { link, lstat, mkdir, open, readFile, realpath, statfs, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ApiError } from "../../packages/contracts/index.ts";
-import { DEFAULT_MODELS, FAMILY_RECIPES, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest } from "../../packages/inference/index.ts";
+import { BIREFNET_ARTIFACT, DEFAULT_MODELS, FAMILY_RECIPES, compileGeneration, getModel, isRelativeFile, type ModelArtifact, type ModelManifest } from "../../packages/inference/index.ts";
 import type { Engine } from "./engine.ts";
 import { modelRegistry, saveImportedModel } from "./registry.ts";
 import { defaultModelConfiguration, settingsView } from "./settings.ts";
@@ -16,6 +16,7 @@ const stateKey = "model-download";
 const active = new Set(["downloading", "verifying", "activating"]);
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const now = () => new Date().toISOString();
+const backgroundTool: { id: string; name: string; artifacts: ModelArtifact[] } = { id: "birefnet", name: "BiRefNet", artifacts: [{ ...BIREFNET_ARTIFACT }] };
 const downloadError = (code: string, message: string, status = 400) => new ApiError(status, code, message);
 
 export interface ModelDownload {
@@ -119,16 +120,20 @@ export class ModelLibrary {
         installed: artifacts.every(artifact => artifact.installed), enabled: settings.modelConfigurations.some(configuration => configuration.modelId === model.id && configuration.enabled), downloadable,
         ...(!downloadable ? { unavailableReason: "This catalog model has no Hugging Face download source. Add its checkpoint to the shared model folder to use it." } : {}), artifacts };
     }));
-    return { models, download: this.current ? { ...this.current } : null };
+    const installed = await regularFile(join(this.modelsDirectory, BIREFNET_ARTIFACT.folder, BIREFNET_ARTIFACT.filename));
+    const tool = { id: backgroundTool.id, name: backgroundTool.name, familyId: "background-removal", family: "Background removal", kind: "utility" as const,
+      description: "Remove backgrounds after generation with any image model. Qwen Image 2.1 uses its native transparency instead.", license: "MIT", source: "catalog" as const,
+      installed, enabled: installed, downloadable: true, artifacts: [{ role: BIREFNET_ARTIFACT.role, filename: BIREFNET_ARTIFACT.filename, installed }] };
+    return { models: [...models, tool], download: this.current ? { ...this.current } : null };
   }
 
   start(value: unknown): ModelDownload {
     if (this.controller.signal.aborted) throw downloadError("STUDIO_STOPPING", "The studio is restarting. Try again shortly.", 503);
     if (this.busy()) throw downloadError("MODEL_DOWNLOAD_BUSY", "Wait for the current model operation to finish.", 409);
     if (!object(value)) throw downloadError("INVALID_MODEL_REQUEST", "Choose a model or provide a Hugging Face checkpoint link.");
-    let model: ModelManifest;
+    let model: ModelManifest | typeof backgroundTool;
     if (typeof value.modelId === "string" && Object.keys(value).length === 1) {
-      model = getModel(value.modelId, modelRegistry(this.store));
+      model = value.modelId === backgroundTool.id ? backgroundTool : getModel(value.modelId, modelRegistry(this.store));
     } else {
       if (Object.keys(value).some(key => !["url", "name", "familyId"].includes(key)) || value.familyId !== "sdxl" || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name)) throw downloadError("INVALID_MODEL_REQUEST", "Give this SDXL / Illustrious checkpoint a name of up to 120 characters.");
       const source = huggingFaceFile(value.url);
@@ -137,7 +142,7 @@ export class ModelLibrary {
       model = { id: `hf-${fingerprint}`, name: value.name.trim(), familyId: "sdxl", revision: "1", description: "An imported checkpoint using the shared SDXL / Illustrious recipe.", artifacts: [{ role: "checkpoint", folder: "checkpoints", filename: `hf-${fingerprint}/${filename}`, source }] };
       const existing = modelRegistry(this.store).find(item => item.id === model.id);
       if (existing) model = { ...existing, name: model.name };
-      saveImportedModel(this.store, model);
+      if ("familyId" in model) saveImportedModel(this.store, model);
     }
     for (const artifact of model.artifacts) huggingFaceFile(artifact.source);
     this.current = { id: randomUUID(), modelId: model.id, modelName: model.name, status: "downloading", stage: "Preparing download", completedFiles: 0, totalFiles: model.artifacts.length, receivedBytes: 0, totalBytes: null, startedAt: now(), updatedAt: now() };
@@ -274,14 +279,20 @@ export class ModelLibrary {
     }
   }
 
-  private async download(model: ModelManifest) {
+  private async download(model: ModelManifest | typeof backgroundTool) {
     for (const artifact of model.artifacts) {
       await this.downloadFile(artifact, digest => {
-        if (!DEFAULT_MODELS.some(item => item.id === model.id)) { artifact.sha256 = digest; model.revision = digest.slice(0, 16); saveImportedModel(this.store, model); }
+        if ("familyId" in model && !DEFAULT_MODELS.some(item => item.id === model.id)) { artifact.sha256 = digest; model.revision = digest.slice(0, 16); saveImportedModel(this.store, model); }
       });
       this.update({ completedFiles: this.current!.completedFiles + 1 });
     }
     this.update({ status: "activating", stage: "Checking the image engine" });
+    if (!("familyId" in model)) {
+      this.engine.invalidateWorkers();
+      await this.engine.refreshWorkers(true);
+      this.update({ status: "succeeded", stage: "Downloaded. Transparent background is available on compatible image workers." });
+      return;
+    }
     try {
       await this.activateModel({ modelId: model.id });
       this.update({ status: "succeeded", stage: "Ready to generate" });
