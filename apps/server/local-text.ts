@@ -157,7 +157,7 @@ export class LocalTextRuntime {
       await this.reservation!.admit();
       combined.throwIfAborted();
       if (!admitted) onAdmitted?.();
-      this.phase = 'running'; this.message = 'MiMo is refining your prompt';
+      this.phase = 'running'; this.message = 'MiMo is generating a response';
       this.scheduleMaintenance();
       const result = await work({ provider: 'openai-compatible', baseUrl: this.endpoint.baseUrl, apiKey: this.endpoint.apiKey }, this.model());
       combined.throwIfAborted();

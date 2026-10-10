@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { ApiError } from "../../packages/contracts/index.ts";
-import type { PromptRefinementResult, TextModels, TextProviderId, TextSettings } from "../../packages/contracts/text.ts";
+import type { PromptRefinementResult, TextModel, TextModels, TextProviderId, TextSettings } from "../../packages/contracts/text.ts";
 import { cancelled, discoverTextModels, generateRefinement, validModelId, type TextConnection } from "../../packages/text/providers.ts";
 import type { CredentialVault } from "./credentials.ts";
 import type { Store } from "./store.ts";
@@ -12,6 +12,9 @@ import type { LocalTextRuntime } from "./local-text.ts";
 const metadataKey = "text-settings";
 const credentialId = "text-openai-compatible";
 interface SavedSettings { version: 1; revision: number; baseUrl: string; assistant: TextSettings["assistant"] }
+export interface GatewayTextModel { id: string; object: 'model'; created: number; owned_by: TextProviderId; name: string; type: 'text' }
+export interface GatewayTextContext { connection: TextConnection; model: TextModel; signal: AbortSignal; fetcher: typeof fetch }
+export interface TextMeter { begin: () => void; end: () => void; authorize?: () => void }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const changed = () => new ApiError(409, "TEXT_SETTINGS_CHANGED", "Text settings changed. Reload them and try again.");
 function check(condition: unknown, message: string): asserts condition { if (!condition) throw new ApiError(400, "INVALID_TEXT_SETTINGS", message); }
@@ -41,17 +44,21 @@ export class TextService {
   private credentials: CredentialVault;
   private fetcher: typeof fetch;
   private timeoutMs: number;
+  private gatewayTimeoutMs: number;
+  private gatewayActive = 0;
   private closed = false;
   private refining = false;
   private operations = new Map<AbortController, Promise<unknown>>();
   private discovering = new Set<TextProviderId>();
   private cache = new Map<TextProviderId, { identity: string; at: number; result: TextModels }>();
   private local?: Pick<LocalTextRuntime, 'models' | 'run'>;
-  constructor(store: Store, credentials: CredentialVault, options: { fetch?: typeof fetch; timeoutMs?: number; local?: Pick<LocalTextRuntime, 'models' | 'run'> } = {}) {
+  constructor(store: Store, credentials: CredentialVault, options: { fetch?: typeof fetch; timeoutMs?: number; gatewayTimeoutMs?: number; local?: Pick<LocalTextRuntime, 'models' | 'run'> } = {}) {
     this.store = store; this.credentials = credentials; this.fetcher = options.fetch ?? fetch;
     this.local = options.local;
     this.timeoutMs = options.timeoutMs ?? 45_000;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 60_000) throw new TypeError("Text request timeout must be between 1 and 60000 milliseconds.");
+    this.gatewayTimeoutMs = options.gatewayTimeoutMs ?? 300_000;
+    if (!Number.isFinite(this.gatewayTimeoutMs) || this.gatewayTimeoutMs <= 0 || this.gatewayTimeoutMs > 900_000) throw new TypeError('Chat request timeout must be between 1 and 900000 milliseconds.');
   }
   private requireOpen() { if (this.closed) throw new ApiError(503, "TEXT_STOPPING", "The studio is restarting. Try again shortly."); }
   private saved(): SavedSettings {
@@ -135,7 +142,7 @@ export class TextService {
     this.requireOpen();
     const controller = new AbortController();
     const signal = external ? AbortSignal.any([external, controller.signal]) : controller.signal;
-    const timer = setTimeout(() => controller.abort(new ApiError(504, "TEXT_TIMEOUT", "The text provider took too long to respond. Your original prompt is unchanged.")), timeoutMs);
+    const timer = setTimeout(() => controller.abort(new ApiError(504, "TEXT_TIMEOUT", "The text provider took too long to respond.")), timeoutMs);
     const flight = Promise.resolve().then(() => { if (signal.aborted) throw cancelled(signal); return work(signal); }).finally(() => { clearTimeout(timer); this.operations.delete(controller); });
     this.operations.set(controller, flight);
     return flight;
@@ -160,7 +167,64 @@ export class TextService {
     const connection = this.connection(providerId(provider));
     return this.operation(inner => this.discovered(connection, inner, refresh), signal, Math.min(this.timeoutMs, 12_000));
   }
-  refine(body: unknown, signal?: AbortSignal, meter?: { begin: () => void; end: () => void }): Promise<PromptRefinementResult> {
+  private gatewayTarget(id: unknown): { provider: TextProviderId; modelId: string } {
+    this.requireOpen();
+    if (id === 'studio-assistant') {
+      const assistant = this.saved().assistant;
+      if (!assistant) throw new ApiError(404, 'TEXT_MODEL_UNAVAILABLE', 'Choose a Studio assistant or use a text model ID from /v1/models.');
+      return assistant;
+    }
+    const match = typeof id === 'string' ? id.match(/^text\/(local|gemini|openai-compatible)\/(.+)$/) : null;
+    if (!match || !validModelId(match[2])) throw new ApiError(404, 'TEXT_MODEL_UNAVAILABLE', 'Choose a text model ID returned by /v1/models.');
+    return { provider: match[1] as TextProviderId, modelId: match[2] };
+  }
+  gatewayLocal(id: unknown): boolean { return this.gatewayTarget(id).provider === 'local'; }
+  async gatewayModels(signal?: AbortSignal): Promise<GatewayTextModel[]> {
+    this.requireOpen();
+    const saved = this.saved();
+    const providers: TextProviderId[] = ['local'];
+    if (saved.baseUrl) providers.push('openai-compatible');
+    if (this.credentials.status('gemini')) providers.push('gemini');
+    // A disconnected external provider must not hide the installed local model.
+    const results = await Promise.allSettled(providers.map(provider => this.models(provider, signal)));
+    if (signal?.aborted) throw cancelled(signal);
+    this.requireOpen();
+    const models: GatewayTextModel[] = [];
+    for (const result of results) if (result.status === 'fulfilled') {
+      for (const model of result.value.models) models.push({ id: `text/${result.value.provider}/${model.id}`, object: 'model', created: 0, owned_by: result.value.provider, name: model.name, type: 'text' });
+    }
+    if (saved.assistant) {
+      const selected = models.find(model => model.id === `text/${saved.assistant!.provider}/${saved.assistant!.modelId}`);
+      if (selected) models.unshift({ ...selected, id: 'studio-assistant', name: `Studio assistant · ${selected.name}` });
+    }
+    return models;
+  }
+  /** The callback owns the complete response body lifetime, including streamed tokens. */
+  runGateway<T>(id: unknown, work: (context: GatewayTextContext) => Promise<T>, signal?: AbortSignal, meter?: TextMeter): Promise<T> {
+    const target = this.gatewayTarget(id);
+    if (this.gatewayActive >= 4) throw new ApiError(429, 'TEXT_BUSY', 'The Studio text gateway is busy. Try again shortly.');
+    this.gatewayActive++;
+    let admitted = false;
+    return this.operation(async inner => {
+      const authorizedWork = (connection: TextConnection, model: TextModel) => {
+        if (inner.aborted) throw cancelled(inner);
+        // Discovery, GPU admission and cold loading can all outlive a token.
+        meter?.authorize?.();
+        return work({ connection, model, signal: inner, fetcher: this.fetcher });
+      };
+      if (target.provider === 'local') {
+        if (!this.local) throw new ApiError(409, 'LOCAL_TEXT_NOT_READY', 'Prepare the local language model in Settings → Models → Language.');
+        meter?.authorize?.();
+        return this.local.run(target.modelId, inner, authorizedWork, () => { meter?.begin(); admitted = true; });
+      }
+      const connection = this.connection(target.provider);
+      const available = await this.discovered(connection, inner);
+      const model = available.models.find(model => model.id === target.modelId);
+      if (!model) throw new ApiError(404, 'TEXT_MODEL_UNAVAILABLE', 'The requested text model is no longer available from this connection.');
+      return authorizedWork(connection, model);
+    }, signal, this.gatewayTimeoutMs).finally(() => { this.gatewayActive--; if (admitted) meter?.end(); });
+  }
+  refine(body: unknown, signal?: AbortSignal, meter?: TextMeter): Promise<PromptRefinementResult> {
     this.requireOpen();
     check(object(body) && Object.keys(body).every(key => ["settingsRevision", "prompt", "imageModelId", "instruction"].includes(key)), "Supply the image prompt, image model and current text settings revision.");
     const settings = this.expectRevision(body.settingsRevision);
@@ -177,15 +241,17 @@ export class TextService {
     if (provider === 'local') {
       if (!this.local) throw new ApiError(409, 'LOCAL_TEXT_NOT_READY', 'Prepare the local language model in Models → Language.');
       this.refining = true;
-      return this.operation(inner => this.local!.run(modelId, inner, async (connection, textModel) => {
+      return this.operation(inner => { meter?.authorize?.(); return this.local!.run(modelId, inner, async (connection, textModel) => {
         this.expectRevision(settings.revision);
+        meter?.authorize?.();
         const result = await generateRefinement(connection, textModel, prompt, inner, this.fetcher);
         if (inner.aborted) throw cancelled(inner);
         this.expectRevision(settings.revision);
+        meter?.authorize?.();
         const refined = parseRefinementResult(result.text, originalPrompt, instruction, model);
         if (connection.apiKey && refined.includes(connection.apiKey)) throw new ApiError(502, 'TEXT_INVALID_RESPONSE', 'The text model returned an invalid refinement.');
         return { prompt: refined, originalPrompt, provider, modelId, ...(result.usage ? { usage: result.usage } : {}) };
-      }, meter?.begin), signal, 180_000).finally(() => { meter?.end(); this.refining = false; });
+      }, meter?.begin); }, signal, 180_000).finally(() => { meter?.end(); this.refining = false; });
     }
     const connection = this.connection(provider), identity = this.connectionIdentity(connection);
     this.refining = true;
@@ -193,7 +259,7 @@ export class TextService {
       const available = await this.discovered(connection, inner);
       const textModel = available.models.find(item => item.id === modelId);
       if (!textModel) throw new ApiError(409, "TEXT_MODEL_UNAVAILABLE", "The saved text model is no longer available. Choose another model in Settings.");
-      const unchanged = () => { if (inner.aborted) throw cancelled(inner); this.expectRevision(settings.revision); if (this.connectionIdentity(this.connection(provider)) !== identity) throw changed(); };
+      const unchanged = () => { if (inner.aborted) throw cancelled(inner); this.expectRevision(settings.revision); if (this.connectionIdentity(this.connection(provider)) !== identity) throw changed(); meter?.authorize?.(); };
       unchanged();
       const result = await generateRefinement(connection, textModel, prompt, inner, this.fetcher);
       unchanged();
