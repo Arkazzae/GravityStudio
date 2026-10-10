@@ -27,8 +27,11 @@ export interface RuntimeSetupStatus { phase: 'idle' | 'checking' | 'building' | 
 export type IntegrationProviderId = 'huggingface' | 'civitai' | 'gemini' | 'openai' | 'anthropic' | 'nanogpt';
 export interface IntegrationStatus { id: IntegrationProviderId; name: string; description: string; credential: { suffix: string; updatedAt: string } | null }
 export interface IntegrationTestResult { ok: true; message: string }
-export interface LibraryModel { id: string; name: string; familyId: string; family: string; kind?: 'utility'; description?: string; license?: string; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
-export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; startedAt: string; updatedAt: string }
+export interface ModelRepository { id: string; url: string }
+export type ModelAccessStatus = 'available' | 'gated' | 'unauthorized' | 'forbidden' | 'not_found' | 'unavailable';
+export interface ModelAccessResult { modelId?: string; available: boolean; hasToken: boolean; checkedAt: string; repositories: Array<ModelRepository & { status: ModelAccessStatus; message: string }> }
+export interface LibraryModel { id: string; name: string; familyId: string; family: string; kind?: 'utility'; description?: string; license?: string; licenseUrl?: string; repositories: ModelRepository[]; source: 'catalog' | 'huggingface'; installed: boolean; enabled: boolean; downloadable: boolean; unavailableReason?: string; artifacts: Array<{ role: string; filename: string; installed: boolean }> }
+export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; errorCode?: string; access?: { repository: ModelRepository; status: Exclude<ModelAccessStatus, 'available'>; message: string }; startedAt: string; updatedAt: string }
 export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null }
 export interface InputImage { id: string; url: string; name: string; width: number; height: number }
 export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string; background?: ImageBackground }

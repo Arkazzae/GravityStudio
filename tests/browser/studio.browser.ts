@@ -102,8 +102,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   let finishCheckpointDownload!: () => void;
   const checkpointResponseReady = new Promise<void>(resolve => { finishCheckpointDownload = resolve; });
   t.after(() => finishCheckpointDownload());
-  const models = new ModelLibrary(store, engine, { fetch: async input => {
-    assert.equal(String(input), source); await checkpointResponseReady;
+  const models = new ModelLibrary(store, engine, { fetch: async (input, init) => {
+    assert.equal(String(input), source);
+    if (init?.method === 'HEAD') return new Response(null, { headers: { 'Content-Length': String(fixtureCheckpoint.length) } });
+    await checkpointResponseReady;
     return new Response(fixtureCheckpoint, { headers: { 'Content-Length': String(fixtureCheckpoint.length) } });
   } });
   let integrationResponseStatus = 200;
@@ -2243,6 +2245,155 @@ test('file drops route to references or Assets without claiming text or navigati
   }
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
+  assert.deepEqual(browser.errors, []);
+});
+
+test('model downloads check Hugging Face access and guide gated, token and license recovery', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort();
+  const origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'model-access-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => {
+    child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL');
+    await server.closeOperations(); await close(server); await fixture.close();
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Model access frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await browser.send('Network.enable');
+  await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  // Provider credential writes use the real encrypted endpoint. Only repository
+  // access and download responses are fixtures; no license is accepted or weight fetched.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__hfAccessStatus = 'gated'; window.__hfEvents = []; window.__hfDownload = null; window.__hfDownloadFailure = false;
+    const originalFetch = window.fetch.bind(window);
+    const messages = {available:'Repository access confirmed.',gated:'Accept this repository’s terms or request access on Hugging Face, then save a read token from the same account.',unauthorized:'Your Hugging Face token was not accepted. Save a valid read token and check again.',forbidden:'Your token cannot read this repository. Check its permissions.'};
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.origin === location.origin && method === 'POST' && ['/api/models/access','/api/models/download'].includes(url.pathname)) {
+        const body = JSON.parse(options.body), id = body.url ? new URL(body.url).pathname.split('/').slice(1,3).join('/') : 'Comfy-Org/Ideogram-4';
+        const repository = {id,url:'https://huggingface.co/' + id};
+        window.__hfEvents.push({path:url.pathname,body});
+        if (url.pathname === '/api/models/access') {
+          const providers = await originalFetch('/api/integrations').then(response => response.json());
+          const status = window.__hfAccessStatus;
+          return Response.json({...(body.modelId ? {modelId:body.modelId} : {}),available:status === 'available',hasToken:!!providers.providers.find(provider => provider.id === 'huggingface').credential,checkedAt:new Date().toISOString(),repositories:[{...repository,status,message:messages[status]}]});
+        }
+        window.__hfDownload = {id:'access-download-fixture',modelId:body.modelId || 'import-access-fixture',modelName:body.name || 'Ideogram 4 FP8',status:window.__hfDownloadFailure ? 'failed' : 'succeeded',stage:window.__hfDownloadFailure ? 'Download failed' : 'Ready to use',completedFiles:1,totalFiles:1,receivedBytes:32,totalBytes:32,startedAt:new Date().toISOString(),updatedAt:new Date().toISOString(),...(window.__hfDownloadFailure ? {error:'Repository access changed during the download.',errorCode:'MODEL_ACCESS_FORBIDDEN',access:{repository,status:'forbidden',message:messages.forbidden}} : {})};
+        return Response.json(window.__hfDownload);
+      }
+      const response = await originalFetch(input, options);
+      if (url.origin === location.origin && url.pathname === '/api/models/library' && method === 'GET' && response.ok) {
+        const library = await response.json();
+        return Response.json({...library,models:library.models.filter(model => ['ideogram-4-fp8','qwen-image-2.1','krea-2-turbo'].includes(model.id)).map(model => ({...model,installed:false,enabled:false})),download:window.__hfDownload});
+      }
+      return response;
+    };
+  ` });
+  const article = '#models-panel-library article[data-model-id="ideogram-4-fp8"]';
+  const check = `${article} > div:last-child > button:last-of-type`;
+  const download = `${article} > div:last-child > button:first-of-type`;
+  const tokenForm = '#models-panel-huggingface form[aria-labelledby="models-integration-huggingface-title"]';
+  const tokenInput = `${tokenForm} input[type=password]`;
+  const importForm = '#models-panel-huggingface form:not([aria-labelledby])';
+  const importedUrl = 'https://huggingface.co/private/import/blob/main/checkpoint.safetensors';
+  const downloadCount = () => browser.evaluate<number>("window.__hfEvents.filter(event => event.path === '/api/models/download').length");
+  async function modelReady() { await browser.until(`!!document.querySelector(${JSON.stringify(check)}) && !document.querySelector(${JSON.stringify(check)}).disabled`, 'Model access actions are ready'); }
+  async function captures(surface: string) {
+    for (const width of [1440, 390]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width === 1440 ? 960 : 844, deviceScaleFactor: 1, mobile: width < 768 });
+      await browser.evaluate("document.querySelector('#models-dialog [data-dialog-scroll]').scrollTop = 0");
+      if (surface === 'library-gated') await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} [role=alert]`)}).scrollIntoView({block:'center'})`);
+      await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#models-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+      assert.equal(await browser.evaluate("(() => { const dialog = document.querySelector('#models-dialog'), rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && dialog.scrollWidth <= dialog.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()"), true, `${surface} fits ${width}px`);
+      await browser.screenshot(join(output, `model-access-${surface}-${width}.png`));
+    }
+  }
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('header button[aria-label=\"Models\"]')", 'The workspace loads');
+  await browser.click('header button[aria-label="Models"]'); await modelReady();
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} a[href="https://huggingface.co/Comfy-Org/Ideogram-4"]`)})?.target`), '_blank', 'The download repository is linked directly');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} a[href="https://huggingface.co/ideogram-ai/ideogram-4-fp8/blob/main/LICENSE.md"]`)})?.textContent`), 'License', 'Ideogram links its publisher license separately from the artifact repository');
+  await browser.click(check);
+  await browser.until(`document.querySelector(${JSON.stringify(`${article} [role=alert]`)})?.textContent.includes('request access')`, 'Gated access explains the external approval step');
+  assert.equal(await downloadCount(), 0, 'Check access never starts a download');
+  await browser.click(download); await modelReady();
+  assert.equal(await downloadCount(), 0, 'Download preflight blocks weights while access is gated');
+  await captures('library-gated');
+  await browser.click(`${article} [role=alert] button`);
+  await browser.until(`document.querySelector('#models-tab-huggingface')?.getAttribute('aria-selected') === 'true' && !!document.querySelector(${JSON.stringify(tokenInput)})`, 'Recovery opens the shared Hugging Face token form');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(tokenInput)}).value`), '', 'A saved token is never populated into the password input');
+  await captures('huggingface');
+  const token = 'hf_browser_read_token_ab12';
+  await browser.fill(tokenInput, token); await browser.click(`${tokenForm} button[type=submit]`);
+  await browser.until(`document.querySelector(${JSON.stringify(tokenForm)})?.textContent.includes('•••• ab12') && document.querySelector(${JSON.stringify(tokenInput)}).value === ''`, 'The real encrypted endpoint saves the token and clears the secret');
+  const stored = fixture.store.db.prepare("SELECT ciphertext,suffix FROM integration_credentials WHERE provider='huggingface'").get() as { ciphertext: string; suffix: string };
+  assert.equal(stored.suffix, 'ab12'); assert.equal(String(stored.ciphertext).includes(token), false, 'The credential is encrypted at rest');
+  assert.equal(await browser.evaluate(`JSON.stringify({...localStorage,...sessionStorage}).includes(${JSON.stringify(token)})`), false, 'The token is absent from browser storage');
+  await browser.click('#models-panel-huggingface > button'); await modelReady();
+  assert.equal(await browser.evaluate(`!!document.querySelector(${JSON.stringify(`${article} [role=alert], ${article} [role=status]`)})`), false, 'Saving a token invalidates earlier repository checks');
+  await browser.click(check); await modelReady();
+  assert.equal(await downloadCount(), 0, 'Saving a token does not accept a model license or start a download');
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(`${article} [role=alert]`)}).textContent`), /Accept this repository/);
+  await browser.evaluate("window.__hfAccessStatus = 'available'");
+  await browser.click(check);
+  await browser.until(`document.querySelector(${JSON.stringify(`${article} [role=status]`)})?.textContent.includes('Access confirmed')`, 'Checking again recognizes manually granted access');
+
+  await browser.click('button[aria-label="Close models"]');
+  await browser.click('header button[aria-label="Settings"]');
+  await browser.click('#settings-tab-integrations');
+  const settingsTokenForm = '#settings-panel-integrations form[aria-labelledby="integration-huggingface-title"]';
+  await browser.until(`!!document.querySelector(${JSON.stringify(`${settingsTokenForm} input[type=password]`)})`, 'The same credential can be updated from Settings');
+  await browser.fill(`${settingsTokenForm} input[type=password]`, 'hf_browser_replacement_cd34');
+  await browser.click(`${settingsTokenForm} button[type=submit]`);
+  await browser.until(`document.querySelector(${JSON.stringify(settingsTokenForm)})?.textContent.includes('•••• cd34')`, 'Settings saves a replacement credential');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.click('header button[aria-label="Models"]'); await modelReady();
+  await browser.until(`!document.querySelector(${JSON.stringify(`${article} [role=status]`)})`, 'Reopening Models invalidates access checked with the older credential');
+  await browser.click(download);
+  await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true'", 'Successful preflight opens the download status');
+  assert.equal(await downloadCount(), 1);
+  assert.deepEqual(await browser.evaluate("window.__hfEvents.slice(-2).map(event => ({path:event.path,body:event.body}))"), [{ path: '/api/models/access', body: { modelId: 'ideogram-4-fp8' } }, { path: '/api/models/download', body: { modelId: 'ideogram-4-fp8' } }], 'Every Download rechecks the exact model immediately before starting');
+
+  await browser.click('#models-tab-huggingface');
+  await browser.fill(`${importForm} input[name=checkpoint-url]`, importedUrl);
+  await browser.fill(`${importForm} input[name=checkpoint-name]`, 'Private checkpoint');
+  for (const [status, message] of [['unauthorized', 'token was not accepted'], ['forbidden', 'Check its permissions']] as const) {
+    await browser.evaluate(`window.__hfAccessStatus = ${JSON.stringify(status)}`);
+    await browser.click(`${importForm} button:not([type])`);
+    await browser.until(`document.querySelector('#models-panel-huggingface [role=alert]')?.textContent.includes(${JSON.stringify(message)})`, `${status} access has distinct recovery guidance`);
+    assert.equal(await downloadCount(), 1, 'An imported checkpoint is also gated by a fresh access check');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${importForm} input[name=checkpoint-url]`)}).value`), importedUrl, 'A failed access check retains the import draft');
+    assert.equal(await browser.evaluate("document.querySelector('#models-panel-huggingface [role=alert] a').href"), 'https://huggingface.co/private/import', 'Recovery links the exact imported repository');
+    assert.equal(await browser.evaluate("document.querySelector('#models-panel-huggingface [role=alert]').textContent.includes('Review terms')"), false, 'Plain token failures do not claim a gated license response');
+  }
+  await browser.evaluate("window.__hfAccessStatus = 'available'; window.__hfDownloadFailure = true");
+  await browser.click(`${importForm} button:not([type])`);
+  await browser.until("document.querySelector('#models-panel-downloads [role=alert]')?.textContent.includes('Check its permissions')", 'A late download access failure retains actionable recovery');
+  assert.equal(await downloadCount(), 2);
+  assert.deepEqual(await browser.evaluate("window.__hfEvents.slice(-2).map(event => event.body)"), [{ url: importedUrl }, { url: importedUrl, name: 'Private checkpoint', familyId: 'sdxl' }], 'Import preflight uses the exact file URL before starting its download');
+  assert.equal(await browser.evaluate("document.querySelector('#models-panel-downloads [role=alert] a').href"), 'https://huggingface.co/private/import');
+  await browser.click('#models-panel-downloads [role=alert] button');
+  await browser.until(`!!document.querySelector(${JSON.stringify(tokenInput)}) && document.querySelector('#models-tab-huggingface')?.getAttribute('aria-selected') === 'true'`, 'A failed download can reopen token settings');
+  await browser.click(`${tokenForm} button[aria-label="Remove Hugging Face key"]`);
+  await browser.until(`document.querySelector(${JSON.stringify(tokenForm)})?.textContent.includes('No key saved')`, 'Removing the token clears its status');
+  await browser.click('#models-tab-library');
+  assert.equal(await browser.evaluate(`!!document.querySelector(${JSON.stringify(`${article} [role=status]`)})`), false, 'Removing a token invalidates checks');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0);
+  assert.equal(fixture.workers[0].state.submissions.length, 0);
   assert.deepEqual(browser.errors, []);
 });
 

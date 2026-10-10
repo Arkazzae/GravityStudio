@@ -48,7 +48,7 @@ export function IntegrationsSettings({ active = true }: { active?: boolean }) {
 
 type ProviderAction = 'save' | 'remove' | 'test';
 
-function ProviderSettings({ initialStatus, onActionChange }: { initialStatus: IntegrationStatus; onActionChange: (running: boolean) => void }) {
+export function ProviderSettings({ initialStatus, onActionChange, onCredentialChange, idPrefix = 'integration', showAccessCheck = true }: { initialStatus: IntegrationStatus; onActionChange: (running: boolean) => void; onCredentialChange?: (status: IntegrationStatus) => void; idPrefix?: string; showAccessCheck?: boolean }) {
   const [provider, setProvider] = useState(initialStatus);
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState<ProviderAction | null>(null);
@@ -73,6 +73,7 @@ function ProviderSettings({ initialStatus, onActionChange }: { initialStatus: In
         const result = await api<IntegrationStatus>(path, { method: action === 'save' ? 'PUT' : 'DELETE', ...(action === 'save' ? { body: JSON.stringify({ apiKey: apiKey.trim() }) } : {}), signal: controller.signal });
         if (request.current === controller && !controller.signal.aborted) {
           setProvider(result); setApiKey(''); setMessage(action === 'save' ? 'Key saved. Check access to verify it.' : 'Key removed.');
+          onCredentialChange?.(result);
         }
       }
     } catch (error) {
@@ -83,7 +84,7 @@ function ProviderSettings({ initialStatus, onActionChange }: { initialStatus: In
   }
 
   function save(event: FormEvent) { event.preventDefault(); void run('save'); }
-  const prefix = `integration-${provider.id}`;
+  const prefix = `${idPrefix}-${provider.id}`;
   return <form onSubmit={save} aria-labelledby={`${prefix}-title`} aria-busy={!!busy} className="py-6">
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <h3 id={`${prefix}-title`} className="text-sm font-medium">{provider.name}</h3>
@@ -94,7 +95,7 @@ function ProviderSettings({ initialStatus, onActionChange }: { initialStatus: In
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <button type="submit" disabled={!!busy || !apiKey.trim()} className="flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi disabled:opacity-50">{busy === 'save' && <LoaderCircle size={15} className="animate-spin" />}{busy === 'save' ? 'Saving…' : provider.credential ? 'Replace key' : 'Save key'}</button>
       {provider.credential && <>
-        <Chip type="button" disabled={!!busy || !!apiKey.trim()} icon={busy === 'test' ? <LoaderCircle className="animate-spin" /> : <Check />} onClick={() => void run('test')}>{busy === 'test' ? 'Checking…' : 'Check access'}</Chip>
+        {showAccessCheck && <Chip type="button" disabled={!!busy || !!apiKey.trim()} icon={busy === 'test' ? <LoaderCircle className="animate-spin" /> : <Check />} onClick={() => void run('test')}>{busy === 'test' ? 'Checking…' : 'Check access'}</Chip>}
         <button type="button" disabled={!!busy} onClick={() => void run('remove')} aria-label={`Remove ${provider.name} key`} className="flex min-h-11 items-center gap-2 rounded-chip px-3 text-xs text-ink-2 hover:bg-chip hover:text-ink disabled:opacity-50">{busy === 'remove' ? <LoaderCircle size={15} className="animate-spin" /> : <Trash2 size={15} />}{busy === 'remove' ? 'Removing…' : 'Remove key'}</button>
       </>}
     </div>
