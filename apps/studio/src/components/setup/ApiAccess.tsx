@@ -1,12 +1,12 @@
 'use client';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, Copy, LoaderCircle, Trash2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { api, errorMessage } from '@/lib/api';
 
 interface AccessToken { id: string; name: string; createdAt: string; lastUsedAt?: string | null }
 
-export function ApiAccess() {
+export function ApiAccess({ active = true }: { active?: boolean }) {
   const [tokens, setTokens] = useState<AccessToken[]>([]);
   const [name, setName] = useState('');
   const [secret, setSecret] = useState('');
@@ -18,14 +18,22 @@ export function ApiAccess() {
   const [loaded, setLoaded] = useState(false);
   const secretInput = useRef<HTMLInputElement>(null);
   const endpointInput = useRef<HTMLInputElement>(null);
+  const activeRef = useRef(active);
+  const visibilityRevision = useRef(0);
   async function load() {
     try { setTokens((await api<{ tokens: AccessToken[] }>('/tokens')).tokens); setLoaded(true); }
     catch (error) { setError(errorMessage(error)); }
   }
   useEffect(() => { setEndpoint(`${window.location.origin}/api/mcp`); void load(); }, []);
+  useLayoutEffect(() => {
+    activeRef.current = active;
+    if (!active) { setSecret(''); setCopied(''); }
+    return () => { activeRef.current = false; visibilityRevision.current++; };
+  }, [active]);
   async function create(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setCopied('');
-    try { const created = await api<AccessToken & { token: string }>('/tokens', { method: 'POST', body: JSON.stringify({ name }) }); setSecret(created.token); setName(''); await load(); }
+    const revision = visibilityRevision.current;
+    try { const created = await api<AccessToken & { token: string }>('/tokens', { method: 'POST', body: JSON.stringify({ name }) }); if (activeRef.current && visibilityRevision.current === revision) setSecret(created.token); setName(''); await load(); }
     catch (error) { setError(errorMessage(error)); }
     finally { setBusy(false); }
   }

@@ -15,7 +15,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
 - Administrator and user accounts, one-use invitations, private galleries, revocable API tokens, a REST API and an MCP endpoint.
-- A separate administration panel with user management, server-time allowances and SMTP, Resend or Cloudflare invitation email.
+- One Settings workspace with role-based administration, model management, disk usage, server-time allowances and SMTP, Resend or Cloudflare invitation email.
 - A slide-out Account panel with a saved display name, avatar colors and workspace name.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
@@ -42,13 +42,13 @@ Open the avatar in the top bar to edit **Account**. Display name, avatar color a
 
 ### Accounts and administration
 
-Open **Account → Administration**, or visit `/admin`. The first owner becomes an administrator; upgrading an existing installation preserves that account and its data. Administrators manage users, invitations, server-time allowances and mail. Server settings, model downloads and provider credentials require an administrator's browser session. Each user's images, references and API tokens remain private.
+Open **Settings**. Everyone can manage personal preferences and API access, and view their own server-time allowance; administrator-only tabs add users, invitations, mail, models, storage and server configuration. The first owner becomes an administrator; upgrading an existing installation preserves that account and its data. Administrators manage users, invitations, server-time allowances and mail. Server settings, model downloads and provider credentials require an administrator's browser session. Each user's images, references and API tokens remain private.
 
 Create an invitation with a role, expiration and optional initial time allowance. Copy its link or explicitly send it by email. Links can be used once and can be revoked before acceptance. Studio stores only their hashes. There is no open registration. Suspension immediately revokes sessions and API tokens; reactivation requires signing in again. Deleting an account removes its images and account data, retaining an anonymous usage ledger. Active jobs and uploads must finish first; queued jobs are cancelled. Interrupted jobs must be resolved before deletion. Failed storage cleanup leaves the account disabled and retries automatically.
 
 **Work time** measures time reserved for model loading, execution and handling the result. Overlapping tasks count once per user. Queue waits, browsing, downloads and idle models are free. Administrators have unlimited time; invited users receive the allowance chosen in their invitation and can receive later adjustments with a reason. Exhaustion blocks new work and pauses queued admission, while active jobs finish normally and may leave a negative balance. Interrupted image jobs retain their reservation until resolved. Local prompt refinement counts; external provider requests do not use the machine-time allowance. Earlier completed jobs are not charged retroactively.
 
-Under **Administration → Mail**, configure a sender and choose authenticated SMTP (implicit TLS or required STARTTLS), Resend, or Cloudflare Email Service. Secrets use the same encrypted credential vault as model integrations. Resend needs an API key and verified sending domain. Cloudflare uses its [SMTP sending service](https://developers.cloudflare.com/email-service/api/send-emails/smtp/), an onboarded sending domain and an API token with **Email Sending:Edit** permission. Email Routing alone is insufficient. **Send test email** sends only when explicitly requested; saving settings does not send a message. Provider acceptance does not guarantee inbox delivery.
+Under **Settings → Mail**, configure a sender and choose authenticated SMTP (implicit TLS or required STARTTLS), Resend, or Cloudflare Email Service. Secrets use the same encrypted credential vault as model integrations. Resend needs an API key and verified sending domain. Cloudflare uses its [SMTP sending service](https://developers.cloudflare.com/email-service/api/send-emails/smtp/), an onboarded sending domain and an API token with **Email Sending:Edit** permission. Email Routing alone is insufficient. **Send test email** sends only when explicitly requested; saving settings does not send a message. Provider acceptance does not guarantee inbox delivery.
 
 ### Install the app and enable notifications
 
@@ -60,11 +60,11 @@ Updates appear under **Settings → App** and reload only when you choose **Relo
 
 ### Set up generation
 
-In **Settings**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
+In **Settings → GPUs**, check the GPUs to use and choose **Set up generation**. On Linux x86_64, the studio detects a ready Docker or Podman installation, finds free ports, builds the pinned ComfyUI runtime, tests each selected GPU and connects the workers automatically. Progress stays visible in the studio; you can leave the page while setup continues.
 
-Then open **Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Studio checks access to the required files before starting a download, then verifies the downloaded weights before activation. **Check access** can also be run separately. Catalog entries without a download source can use files already placed in the shared model directory.
+Then open **Settings → Models** to download a catalog model or import a Hugging Face `.safetensors` checkpoint for the SDXL / Illustrious family. Studio checks access to the required files before starting a download, then verifies the downloaded weights before activation. **Check access** can also be run separately. Catalog entries without a download source can use files already placed in the shared model directory.
 
-For a gated repository, open the repository link to accept its terms or request access on Hugging Face, then save a read token from that account under **Models → Hugging Face** or **Settings → Integrations**. A fine-grained token must allow access to the required repository. Studio does not accept terms on your behalf. Repository access and the model license are separate: publicly downloadable files still carry their license conditions. Model cards show repository and available license links, including the separate commercial-license requirements for Qwen Image 2.1 and Ideogram 4.
+For a gated repository, open the repository link to accept its terms or request access on Hugging Face, then save a read token from that account under **Settings → Models → Hugging Face** or **Settings → Integrations**. A fine-grained token must allow access to the required repository. Studio does not accept terms on your behalf. Repository access and the model license are separate: publicly downloadable files still carry their license conditions. Model cards show repository and available license links, including the separate commercial-license requirements for Qwen Image 2.1 and Ideogram 4.
 
 Change the GPU checkboxes later and apply the selection. Existing worker identities and ports are retained; newly selected GPUs get additional workers. Finish or cancel queued generations before changing the selection. An existing ComfyUI installation can be connected through **Advanced settings**.
 
@@ -80,9 +80,15 @@ The installer builds one shared image per backend, CUDA or ROCm, and starts one 
 
 See [runtime installation](deploy/comfyui/README.md) for device permissions, selecting GPUs, verification and stopping workers. See [model files and recipes](packages/inference/README.md) for the required weights and their sources.
 
+### Disk and object storage usage
+
+Administrators can open **Settings → Storage** to see the data volume's capacity, used space and available space, plus a breakdown of Studio files and the largest model files. Model weights, language models, supporting tools, local images, database files and runtime files are counted separately. Disk usage includes other applications on the same volume; Studio file sizes do not include container layers stored elsewhere. Scans are cached for 30 seconds and identify partial or unavailable results.
+
+For S3/RustFS, the panel separately totals the imported and generated images recorded in Studio. This is the size of those managed objects, not the bucket's total usage or the remote disk's capacity. It does not scan unrelated objects or expose storage credentials.
+
 ### Upscale an image
 
-Download **Nomos2 HQ**, **SeedVR2 3B** or **SeedVR2 7B** under **Models → Tools**. Open a generated or imported image and choose **Upscale**, then select a downloaded model and 2× or 4×. Output is limited to 4096 pixels per side. The action becomes available when a connected worker has all required weights and nodes.
+Download **Nomos2 HQ**, **SeedVR2 3B** or **SeedVR2 7B** under **Settings → Models → Tools**. Open a generated or imported image and choose **Upscale**, then select a downloaded model and 2× or 4×. Output is limited to 4096 pixels per side. The action becomes available when a connected worker has all required weights and nodes.
 
 Upscaling creates a separate queued job and saves a new image, preserving the original and its transparency. It shares generation's worker selection, memory reservations, restart recovery and private media storage. Source images cannot be deleted while an upscale is active. Nomos2 runs a native 4× restoration and reduces it for 2× output; SeedVR2 uses the native ComfyUI diffusion workflow. Memory requirements are estimates and vary with source size and hardware. No additional container or custom node installation is required.
 
@@ -98,7 +104,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 ## API and MCP
 
-Create a token under **Account → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an administrator browser session.
+Create a token under **Settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an administrator browser session.
 
 The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model and upscaler listing, image generation and upscaling, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
 
@@ -114,13 +120,13 @@ The saved Hugging Face token is used for model downloads; `HF_TOKEN` remains a f
 
 ### Prompt assistant
 
-For a local assistant, open **Models → Language → Local Studio**, download **MiMo V2.6 Distill Qwen 9B**, then choose **Use for assistant**. Studio downloads verified Q8_0 weights and a pinned llama.cpp GPU image, and manages one container for this runtime. GPU selection follows the enabled Studio GPUs by default; an optional checkbox selection assigns a different set to the assistant. [Runtime details](deploy/llamacpp/README.md) describe supported builds and requirements.
+For a local assistant, open **Settings → Models → Language → Local Studio**, download **MiMo V2.6 Distill Qwen 9B**, then choose **Use for assistant**. Studio downloads verified Q8_0 weights and a pinned llama.cpp GPU image, and manages one container for this runtime. GPU selection follows the enabled Studio GPUs by default; an optional checkbox selection assigns a different set to the assistant. [Runtime details](deploy/llamacpp/README.md) describe supported builds and requirements.
 
 Models can remain together in VRAM when their weights, working-memory budgets and reserves fit. MiMo loads on demand and stays warm for subsequent requests. Image admission accounts for its retained reservation and can unload it when idle under memory pressure. Active requests retain their reservation until they finish; cancellation and uncertain failures require a confirmed container stop before releasing memory. The idle-unload interval in Generation also applies to MiMo; zero disables time-based unloading. **Unload from GPU** explicitly releases the local model. Memory budgets are conservative estimates, not a guarantee of fit for every workload.
 
 Save a Gemini key in **Settings → Integrations**, or configure the **OpenAI-compatible endpoint** there with its API base URL (including `/v1` where required) and optional separate key. This connects to an existing server, such as llama.cpp; Studio does not start or schedule that text runtime. Changing the endpoint address clears its assistant selection and discards its previous key. Supply a replacement key when the new destination needs one.
 
-In **Models → Language** or **Settings → Assistant**, load the available models and choose **Use for assistant**. Compatible endpoints must support model listing and chat completions with JSON output. Discovery lists candidates; a successful refinement confirms support for the request format. Studio never silently switches providers or retries an ambiguous generation.
+In **Settings → Models → Language** or **Settings → Assistant**, load the available models and choose **Use for assistant**. Compatible endpoints must support model listing and chat completions with JSON output. Discovery lists candidates; a successful refinement confirms support for the request format. Studio never silently switches providers or retries an ambiguous generation.
 
 Open **AI** in the prompt dock to **Refine** the current prompt or **Rewrite** it with an instruction. Guidance follows the selected image model's family. Only text is sent to the provider; reference images stay in Studio. Generation uses the resulting prompt without another automatic refinement. Undo restores the preceding prompt until you edit it, and Cancel stops waiting and aborts the upstream request. The provider may still charge for work it has already performed.
 

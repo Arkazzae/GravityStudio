@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Boxes, Check, Download, ExternalLink, HardDrive, LoaderCircle, SlidersHorizontal, Wand2 } from '@/components/ui/icons';
 import { LanguageModels } from './LanguageModels';
 import { ProviderSettings } from './IntegrationsSettings';
@@ -10,7 +10,7 @@ const downloadBusy = (download?: ModelDownload | null) => !!download && !['succe
 const size = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
 export type ModelsSection = 'library' | 'installed' | 'tools' | 'huggingface' | 'downloads' | 'language';
 
-export function ModelLibrary({ onChanged, onConfigureText, active = true, requestedSection }: { onChanged: () => void; onConfigureText: () => void; active?: boolean; requestedSection?: { section: ModelsSection; revision: number } }) {
+export function ModelLibrary({ onChanged, onConfigureText, active = true, requestedSection, embedded = false }: { onChanged: () => void; onConfigureText: () => void; active?: boolean; requestedSection?: { section: ModelsSection; revision: number }; embedded?: boolean }) {
   const [section, setSection] = useState<ModelsSection>('library');
   const [languageVisited, setLanguageVisited] = useState(false);
   const [library, setLibrary] = useState<ModelLibraryState | null>(null);
@@ -203,7 +203,7 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
     </article>)}</div>;
   }
 
-  return <TabbedWorkspace id="models" label="Model sections" sections={sections} selected={section} onSelect={setSection}>
+  return <ModelWorkspace embedded={embedded} sections={sections} selected={section} onSelect={setSection}>
     {(languageVisited || section === 'language') && <div hidden={section !== 'language'} id="models-panel-language" role="tabpanel" aria-labelledby="models-tab-language" tabIndex={0}><LanguageModels active={active && section === 'language'} onConfigure={onConfigureText} /></div>}
     {error && <p className="error-notice mb-6 break-words" role="alert">{error}{!library && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</p>}
     {downloading && section !== 'downloads' && <div className="mb-6 flex items-center gap-3 border-b border-line pb-5">
@@ -252,7 +252,28 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
         {!downloading && <button type="button" className={`${actionClass} mt-5`} onClick={() => openSection(downloadState.status === 'succeeded' ? 'installed' : 'library')}>{downloadState.status === 'succeeded' ? 'View installed models' : 'Browse library'}</button>}
       </section>}
     </div>
-  </TabbedWorkspace>;
+  </ModelWorkspace>;
+}
+
+function ModelWorkspace({ embedded, sections, selected, onSelect, children }: { embedded: boolean; sections: readonly WorkspaceSection<ModelsSection>[]; selected: ModelsSection; onSelect: (section: ModelsSection) => void; children: ReactNode }) {
+  const content = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { if (embedded) content.current?.closest('[data-dialog-scroll]')?.scrollTo({ top: 0 }); }, [embedded, selected]);
+  function navigate(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next: number;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % sections.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index + sections.length - 1) % sections.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = sections.length - 1;
+    else return;
+    event.preventDefault(); onSelect(sections[next].id); document.getElementById(`models-tab-${sections[next].id}`)?.focus();
+  }
+  if (!embedded) return <TabbedWorkspace id="models" label="Model sections" sections={sections} selected={selected} onSelect={onSelect}>{children}</TabbedWorkspace>;
+  return <div ref={content} className="min-w-0">
+    <nav role="tablist" aria-label="Model sections" aria-orientation="horizontal" className="mb-6 flex min-w-0 flex-wrap gap-1 border-b border-line pb-4">
+      {sections.map(({ id, label, icon: Icon, busy }, index) => <button key={id} type="button" role="tab" id={`models-tab-${id}`} aria-controls={`models-panel-${id}`} aria-selected={selected === id} tabIndex={selected === id ? 0 : -1} onClick={() => onSelect(id)} onKeyDown={event => navigate(event, index)} className={`inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-xs font-medium outline-offset-2 focus-visible:outline-2 focus-visible:outline-volt ${selected === id ? 'bg-chip text-ink' : 'text-ink-2 hover:bg-chip hover:text-ink'}`}><Icon size={16} className={busy ? 'animate-spin' : selected === id ? 'text-volt' : undefined} />{label}</button>)}
+    </nav>
+    {children}
+  </div>;
 }
 
 function AccessReport({ result, onConfigureToken }: { result: Pick<ModelAccessResult, 'available' | 'repositories'>; onConfigureToken?: () => void }) {

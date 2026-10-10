@@ -1,11 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import Link from 'next/link';
-import { ArrowRight, Check, Clock3, KeyRound, LoaderCircle, LogOut, MonitorIcon, Shield, UserRound, X } from '@/components/ui/icons';
+import { ArrowRight, Check, Clock3, KeyRound, LoaderCircle, LogOut, MonitorIcon, Settings, UserRound, X } from '@/components/ui/icons';
 import { AppSettings } from '@/components/setup/AppSettings';
-import { ApiAccess } from '@/components/setup/ApiAccess';
-import { StudioDialog } from '@/components/studio/StudioDialog';
+import type { UnifiedSettingsSection } from '@/components/setup/UnifiedSettings';
 import { OwnWorkTime } from '@/components/admin/WorkTimePanel';
 import { AdminSession } from '@/components/admin/shared';
 import { CompletionAlertSettings, type CompletionAlertSettingsProps } from '@/components/system/NotificationsPopover';
@@ -28,6 +26,7 @@ interface AccountButtonProps {
   onSignOut: () => Promise<void>;
   onSessionExpired: () => void;
   onNotice: (title: string, body?: string) => void;
+  onOpenSettings: (section?: UnifiedSettingsSection) => void;
   appBusy?: boolean;
   alertSettings: CompletionAlertSettingsProps;
 }
@@ -43,10 +42,9 @@ export function AccountButton(props: AccountButtonProps) {
   return <AccountControl key={props.user.id} {...props} />;
 }
 
-function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotice, appBusy = false, alertSettings }: AccountButtonProps) {
+function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotice, onOpenSettings, appBusy = false, alertSettings }: AccountButtonProps) {
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
-  const [apiOpen, setApiOpen] = useState(false);
   const [profile, setProfile] = useState<AccountProfile | null>(null);
   const [draft, setDraft] = useState<Pick<AccountProfile, 'displayName' | 'avatarTheme'> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,9 +173,9 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
               <label className={styles.field}><span>Username<small>Sign-in name</small></span><input name="username" autoComplete="username" value={user.username} readOnly /></label>
             </section>
           </fieldset>}
-          {user.role === 'admin' && <section className={styles.section} aria-labelledby="account-admin-heading"><h2 id="account-admin-heading"><Shield strokeWidth={1.8} />Administration</h2><p className={styles.help}>Manage users, invitations, server time and shared settings.</p><Link href="/admin" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi">Open administration<ArrowRight size={16} /></Link></section>}
+          <section className={styles.section} aria-labelledby="account-settings-heading"><h2 id="account-settings-heading"><Settings strokeWidth={1.8} />Settings</h2><p className={styles.help}>{user.role === 'admin' ? 'Manage this Studio, its users and your preferences.' : 'Manage your preferences, server time and API access.'}</p><button type="button" disabled={pending} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi" onClick={() => { setOpen(false); onOpenSettings(user.role === 'admin' ? 'users' : 'app'); }}>Open Settings<ArrowRight size={16} /></button></section>
           <section className={styles.section} aria-labelledby="account-time-heading"><h2 id="account-time-heading"><Clock3 strokeWidth={1.8} />Work time</h2><details><summary className="cursor-pointer py-2 text-sm text-ink-2 hover:text-ink">View your allowance and activity</summary><div className="mt-3"><OwnWorkTime active={open} /></div></details></section>
-          <section className={styles.section} aria-labelledby="account-api-heading"><h2 id="account-api-heading"><KeyRound strokeWidth={1.8} />API access</h2><p className={styles.help}>Connect your tools to your own images and jobs.</p><button type="button" disabled={pending} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi" onClick={() => { setOpen(false); setApiOpen(true); }}>Manage access tokens<ArrowRight size={16} /></button></section>
+          <section className={styles.section} aria-labelledby="account-api-heading"><h2 id="account-api-heading"><KeyRound strokeWidth={1.8} />API access</h2><p className={styles.help}>Connect your tools to your own images and jobs.</p><button type="button" disabled={pending} className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi" onClick={() => { setOpen(false); onOpenSettings('api'); }}>Manage access tokens<ArrowRight size={16} /></button></section>
           <section className={`${styles.section} ${styles.notificationSection}`} aria-labelledby="account-notifications-heading">
             <h2 id="account-notifications-heading">Notifications on this device</h2>
             <p className={styles.help}>These preferences apply immediately in this browser.</p>
@@ -193,6 +191,5 @@ function AccountControl({ user, signingOut, onSignOut, onSessionExpired, onNotic
         </footer>
       </form>
     </dialog>}
-    {apiOpen && <StudioDialog panel="api-access" open title="API access" description="Personal access tokens for your Studio account." icon={<KeyRound size={22} />} onClose={() => setApiOpen(false)} triggerRef={trigger}><div className="h-full overflow-y-auto p-5 sm:p-8"><ApiAccess /></div></StudioDialog>}
   </AdminSession.Provider>;
 }

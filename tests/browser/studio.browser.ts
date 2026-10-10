@@ -30,6 +30,12 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const studio = join(root, 'apps/studio');
 const close = (server: Server) => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
 async function freePort() { const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = (server.address() as AddressInfo).port; await close(server); return port; }
+async function openModels(browser: Awaited<ReturnType<typeof openBrowser>>) {
+  if (!await browser.evaluate("!!document.querySelector('#settings-dialog[open]')")) await browser.click('header button[aria-label="Settings"]');
+  await browser.until("!!document.querySelector('#settings-dialog[open] #settings-tab-models')", 'Settings offers Models');
+  await browser.click('#settings-tab-models');
+  await browser.until("document.querySelector('#settings-tab-models')?.getAttribute('aria-selected') === 'true'", 'Settings selects Models');
+}
 
 test('first run selects GPUs, downloads a checkpoint, generates and restores images through the real Studio API', { timeout: 180000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'gravity-studio-browser-'));
@@ -349,10 +355,10 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.clickText('Start creating');
   await browser.until("!document.querySelector('#settings-dialog[open]') && !!document.querySelector('#image-prompt')", 'Image composer after onboarding closes');
   await browser.clickText('Browse models');
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-library article h3')", 'Models opens its Library section');
-  assert.equal(await browser.evaluate("document.querySelector('#models-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-library article h3')", 'Models opens its Library section');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
   const modelSections = ['library', 'installed', 'tools', 'huggingface', 'downloads', 'language'];
-  assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'vertical');
+  assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'horizontal');
   assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Tools', 'Hugging Face', 'Downloads', 'Language']);
   async function modelSectionKey(key: string, section: string) {
     await browser.key(key);
@@ -361,72 +367,75 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     assert.equal(await browser.evaluate(`document.querySelector('#models-panel-${section}').getAttribute('aria-labelledby')`), `models-tab-${section}`);
   }
   async function modelFrame(mobile: boolean) {
-    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#models-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
-    const frame = await browser.evaluate<{ width: number; height: number; sidebar: number; fits: boolean }>(`(() => {
-      const dialog = document.querySelector('#models-dialog'), rect = dialog.getBoundingClientRect(), sidebar = dialog.querySelector('[role=tablist][aria-label="Model sections"]').getBoundingClientRect();
-      const selected = dialog.querySelector('[role=tab][aria-selected=true]'), panel = document.getElementById(selected.getAttribute('aria-controls'));
-      return { width: rect.width, height: rect.height, sidebar: sidebar.width, fits: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && panel.scrollWidth <= panel.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth && sidebar.right <= panel.getBoundingClientRect().left };
+    await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#settings-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)");
+    const frame = await browser.evaluate<{ width: number; height: number; sidebar: number; verticalNavigators: number; fits: boolean }>(`(() => {
+      const dialog = document.querySelector('#settings-dialog'), rect = dialog.getBoundingClientRect();
+      const sidebar = dialog.querySelector('[role=tablist][aria-label="Settings sections"]').getBoundingClientRect();
+      const tabs = dialog.querySelector('[role=tablist][aria-label="Model sections"]'), tabRect = tabs.getBoundingClientRect();
+      const selected = tabs.querySelector('[role=tab][aria-selected=true]'), panel = document.getElementById(selected.getAttribute('aria-controls')), panelRect = panel.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, sidebar: sidebar.width, verticalNavigators: dialog.querySelectorAll('[role=tablist][aria-orientation=vertical]').length, fits: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1 && panel.scrollWidth <= panel.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth && sidebar.right <= panelRect.left + 1 && tabRect.bottom <= panelRect.top + 1 && tabRect.left >= sidebar.right && tabRect.right <= rect.right };
     })()`);
-    assert.ok(Math.abs(frame.width - (mobile ? 374 : 1040)) <= 1, 'Models retains the shared modal width');
-    assert.ok(Math.abs(frame.height - 820) <= 1, 'Models retains the shared modal height across sections');
-    assert.ok(Math.abs(frame.sidebar - (mobile ? 56 : 200)) <= 1, 'Models keeps its left navigation beside the content');
-    assert.equal(frame.fits, true, 'The selected Models section fits the viewport without horizontal overflow');
+    assert.ok(Math.abs(frame.width - (mobile ? 374 : 1040)) <= 1, 'Models uses the shared Settings modal width');
+    assert.ok(Math.abs(frame.height - 820) <= 1, 'Settings retains its shared modal height across model sections');
+    assert.ok(Math.abs(frame.sidebar - (mobile ? 56 : 200)) <= 1, 'Settings keeps its single left navigator beside the content');
+    assert.equal(frame.verticalNavigators, 1, 'Embedded Models does not add a second sidebar');
+    assert.equal(frame.fits, true, 'Horizontal model tabs and their selected panel fit without page overflow');
   }
   await browser.click('#models-tab-library');
   await modelFrame(false);
-  await modelSectionKey('ArrowDown', 'installed');
+  await modelSectionKey('ArrowRight', 'installed');
   assert.equal(await browser.evaluate("document.querySelectorAll('#models-panel-installed article').length"), 0, 'Installed excludes every checkpoint before the first download');
   await modelFrame(false);
-  await modelSectionKey('ArrowDown', 'tools');
+  await modelSectionKey('ArrowRight', 'tools');
   await modelFrame(false);
-  await modelSectionKey('ArrowDown', 'huggingface');
+  await modelSectionKey('ArrowRight', 'huggingface');
   await browser.fill('input[name="checkpoint-url"]', checkpointUrl);
   await browser.fill('input[name="checkpoint-name"]', 'Browser checkpoint');
   await modelFrame(false);
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 500, deviceScaleFactor: 1, mobile: true });
-  await browser.until("(() => { const content = document.querySelector('#models-panel-huggingface').parentElement; return content.scrollHeight > content.clientHeight; })()", 'The Hugging Face form has real overflow in a short mobile viewport');
-  const modelsScroll = await browser.evaluate<number>("(() => { const content = document.querySelector('#models-panel-huggingface').parentElement; content.scrollTop = Math.min(80, content.scrollHeight - content.clientHeight); return content.scrollTop; })()");
+  await browser.until("(() => { const content = document.querySelector('#models-panel-huggingface').closest('[data-dialog-scroll]'); return content.scrollHeight > content.clientHeight; })()", 'The Hugging Face form has real overflow in a short mobile viewport');
+  const modelsScroll = await browser.evaluate<number>("(() => { const content = document.querySelector('#models-panel-huggingface').closest('[data-dialog-scroll]'); content.scrollTop = Math.min(80, content.scrollHeight - content.clientHeight); return content.scrollTop; })()");
   assert.ok(modelsScroll > 0, 'Models scroll preservation uses a nonzero position');
-  await dismissBackdrop('models-dialog');
-  await browser.click('header button[aria-label="Models"]');
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-huggingface')?.getAttribute('aria-selected') === 'true'", 'Models returns to the dismissed Hugging Face tab');
+  await dismissBackdrop('settings-dialog');
+  await openModels(browser);
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-tab-huggingface')?.getAttribute('aria-selected') === 'true'", 'Models returns to the dismissed Hugging Face tab');
   await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-url]').value"), checkpointUrl, 'Backdrop dismissal keeps the unfinished Hugging Face URL');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), 'Browser checkpoint', 'Backdrop dismissal keeps the unfinished checkpoint name');
-  assert.equal(await browser.evaluate("document.querySelector('#models-panel-huggingface').parentElement.scrollTop"), modelsScroll, 'Reopening Models restores its content scroll');
+  assert.equal(await browser.evaluate("document.querySelector('#models-panel-huggingface').closest('[data-dialog-scroll]').scrollTop"), modelsScroll, 'Reopening Models restores its content scroll');
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await browser.click('#models-tab-huggingface');
-  await modelSectionKey('ArrowDown', 'downloads');
+  await modelSectionKey('ArrowRight', 'downloads');
   await modelFrame(false);
   await modelSectionKey('Home', 'library');
   await modelSectionKey('End', 'language');
-  await modelSectionKey('ArrowUp', 'downloads');
-  await modelSectionKey('ArrowUp', 'huggingface');
+  await modelSectionKey('ArrowLeft', 'downloads');
+  await modelSectionKey('ArrowLeft', 'huggingface');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-url]').value"), checkpointUrl, 'Switching sections preserves the Hugging Face URL draft');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), 'Browser checkpoint', 'Switching sections preserves the checkpoint name draft');
   await browser.clickText('Download checkpoint');
   await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true' && document.activeElement?.id === 'models-tab-downloads' && !!document.querySelector('#models-panel-downloads progress')", 'Starting a download opens and focuses Downloads');
   await browser.click('#models-tab-library');
-  await clickScopedText('#models-dialog', 'View download');
+  await clickScopedText('#settings-dialog', 'View download');
   await browser.until("!!document.querySelector('#models-panel-downloads progress')", 'Download progress survives switching sections');
-  await browser.click('button[aria-label="Close models"]');
-  await browser.until("!document.querySelector('#models-dialog[open]')", 'Close Models while its download is pending');
-  await browser.click('header button[aria-label="Models"]');
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-downloads progress')", 'Reopening Models retains Downloads and its ongoing progress');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Close Models while its download is pending');
+  await openModels(browser);
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-downloads progress')", 'Reopening Models retains Downloads and its ongoing progress');
   await browser.click('#models-tab-library');
-  await browser.click('button[aria-label="Close models"]');
-  await browser.until("!document.querySelector('#models-dialog[open]')", 'Download continues after closing Models');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Download continues after closing Models');
   finishCheckpointDownload();
   await browser.until("!!document.querySelector('main button[aria-label=\"Model: Browser checkpoint\"]')", 'Background download refreshes the Image model selection');
   assert.equal(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.enabled, true);
   assert.deepEqual(store.settings().modelConfigurations.find(item => item.modelId === modelId)?.workerIds, ['browser-comfy']);
-  await browser.click('header button[aria-label="Models"]');
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-panel-library')?.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated when Models reopens');
+  await openModels(browser);
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-panel-library')?.innerText.includes('Ready to use')", 'Downloaded checkpoint is activated when Models reopens');
   await browser.click('#models-tab-downloads');
   await browser.until("document.querySelector('#models-panel-downloads')?.innerText.includes('Ready to generate') && !document.querySelector('#models-panel-downloads progress')", 'Downloads records completion while another section was selected');
   await browser.click('#models-tab-installed');
   assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('#models-panel-installed article h3')).map(heading => heading.textContent.trim())"), ['Browser checkpoint'], 'Installed contains only the downloaded model');
-  await browser.evaluate("document.querySelectorAll('#models-dialog, #models-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
+  await browser.evaluate("document.querySelectorAll('#settings-dialog, #settings-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
   await browser.screenshot(join(output, 'models-desktop.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   for (const section of modelSections) {
@@ -437,8 +446,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('#models-tab-installed');
   await browser.screenshot(join(output, 'models-mobile.png'));
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
-  await browser.click('button[aria-label="Close models"]');
-  await browser.until("!document.querySelector('#models-dialog[open]')", 'Model library closes after import');
+  await browser.click('button[aria-label="Close settings"]');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Model library closes after import');
   await browser.until("!!document.querySelector('button[aria-label=\"Model: Browser checkpoint\"]')", 'Ready model');
   await browser.until("document.querySelector('[data-server-activity]')?.dataset.state === 'idle'", 'Server activity starts idle');
   assert.equal(await browser.evaluate("document.querySelector('[data-server-activity]').textContent.includes('Activity')"), false, 'The header uses a compact meter without an Activity text label');
@@ -489,8 +498,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("!!document.querySelector('[popover]:popover-open input[aria-label=\"Search models\"]')"), false, 'A short model list needs no search field');
   assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem]')).some(row => row.textContent.includes('SDXL Base 1.0'))"), false, 'A model without installed files is absent from the composer menu');
   await browser.click('button[aria-label="Manage image models"]');
-  await browser.until("!!document.querySelector('#models-dialog[open]') && !document.querySelector('[popover]:popover-open')", 'Model menu opens its management modal');
-  await browser.click('button[aria-label="Close models"]');
+  await browser.until("!!document.querySelector('#settings-dialog[open]') && !document.querySelector('[popover]:popover-open')", 'Model menu opens its management modal');
+  await browser.click('button[aria-label="Close settings"]');
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), prompt, 'Managing models preserves the prompt');
   await browser.click('button[aria-label^="Aspect ratio:"]');
   await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Aspect ratio 16:9\"]')", 'Aspect ratio menu');
@@ -888,23 +897,24 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click(`${firstFigure} button[aria-label="Add to favorites"]`);
   await browser.until(`document.querySelector(${JSON.stringify(`${firstFigure} button[aria-label="Remove from favorites"]`)})?.getAttribute('aria-pressed') === 'true'`, 'Favorite restored for reference browsing');
 
-  // Keep a genuine scrolled gallery and a live draft beneath both overlays.
+  // Keep a genuine scrolled gallery and a live draft beneath both Settings sections.
   // DOM identity catches remounts that restoring localStorage alone would conceal.
   const modalDraft = 'Keep this unfinished prompt while browsing my models and settings';
   await browser.fill('#image-prompt', modalDraft);
   await browser.fill('input[aria-label="Image tile size"]', '1');
   async function checkWorkspaceModal(label: 'Models' | 'Settings', closeWith: 'escape' | 'backdrop', viewport: string) {
-    const id = `${label.toLowerCase()}-dialog`;
-    const trigger = `header button[aria-label="${label}"]`;
+    const id = 'settings-dialog';
+    const trigger = 'header button[aria-label="Settings"]';
     const findGallery = "(() => { let element = document.querySelector('figure'); while (element && element !== document.body) { if (['auto', 'scroll'].includes(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element; element = element.parentElement; } return null; })()";
     await browser.until(`!!(${findGallery})`, `${viewport} gallery has actual overflow`);
     await browser.evaluate(`(() => { const gallery = (${findGallery}); gallery.scrollTop = Math.min(120, gallery.scrollHeight - gallery.clientHeight); window.__gravityModalState = { prompt: document.querySelector('#image-prompt'), value: document.querySelector('#image-prompt').value, gallery, scrollTop: gallery.scrollTop, trigger: document.querySelector(${JSON.stringify(trigger)}), reference: document.querySelector('button[aria-label="Remove reference 1"]') }; })()`);
     assert.equal(await browser.evaluate('window.__gravityModalState.scrollTop > 0'), true, 'The preservation check uses a nonzero scroll position');
     const workspaceWidth = await browser.evaluate<number>("document.querySelector('main').getBoundingClientRect().width");
     assert.equal(await browser.evaluate('document.querySelector("main").getBoundingClientRect().width >= innerWidth - 2'), true, 'Image workspace uses the full viewport width');
-    await browser.click(trigger);
-    await browser.until(`document.querySelector('#${id}[open]')?.matches(':modal')`, `${label} opens as a native modal`);
-    await browser.until(`Array.from(document.querySelectorAll('#${id} h1, #${id} h2')).some(heading => heading.textContent.trim() === ${JSON.stringify(label)})`, `${label} modal heading`);
+    if (label === 'Models') await openModels(browser);
+    else { await browser.click(trigger); await browser.click('#settings-tab-app'); }
+    await browser.until(`document.querySelector('#${id}[open]')?.matches(':modal')`, `${label} opens in the shared native modal`);
+    await browser.until(`Array.from(document.querySelectorAll('#${id} h1, #${id} h2')).some(heading => heading.textContent.trim() === 'Settings')`, 'The shared modal has a Settings heading');
     await browser.evaluate(`Promise.all(document.querySelector('#${id}').getAnimations().map(animation => animation.finished.catch(() => {})))`);
     assert.equal(await browser.evaluate(`(() => { const dialog = document.querySelector('#${id}'); const rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1 && dialog.scrollWidth <= dialog.clientWidth + 1; })()`), true, `${viewport} ${label} fits the viewport without horizontal overflow`);
     assert.equal(await browser.evaluate<number>("document.querySelector('main').getBoundingClientRect().width"), workspaceWidth, 'Opening an overlay does not narrow the Image workspace');
@@ -1011,8 +1021,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 844, deviceScaleFactor: 1, mobile: true });
   await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
   await browser.screenshot(join(output, 'image-topbar-320.png'));
-  const compactHeader = await browser.evaluate<{ width: number; scrollWidth: number; buttons: Array<{ label: string; x: number; right: number; y: number; bottom: number; width: number; height: number }> }>("(() => { const header = document.querySelector('header'); return {width: header.clientWidth, scrollWidth: header.scrollWidth, buttons: ['Assets', 'Models', 'Settings'].map(label => { const rect = header.querySelector('button[aria-label=\"' + label + '\"]').getBoundingClientRect(); return {label, x: rect.left, right: rect.right, y: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height}; })}; })()");
-  for (const label of ['Assets', 'Models', 'Settings']) {
+  const compactHeader = await browser.evaluate<{ width: number; scrollWidth: number; buttons: Array<{ label: string; x: number; right: number; y: number; bottom: number; width: number; height: number }> }>("(() => { const header = document.querySelector('header'); return {width: header.clientWidth, scrollWidth: header.scrollWidth, buttons: ['Assets', 'Settings'].map(label => { const rect = header.querySelector('button[aria-label=\"' + label + '\"]').getBoundingClientRect(); return {label, x: rect.left, right: rect.right, y: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height}; })}; })()");
+  for (const label of ['Assets', 'Settings']) {
     assert.equal(await browser.evaluate(`(() => { const button = document.querySelector('header button[aria-label="${label}"]'), rect = button.getBoundingClientRect(); return rect.width >= 36 && rect.height >= 36 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight; })()`), true, `${label} retains its 36px target and stays reachable in a 320px topbar: ${JSON.stringify(compactHeader)}`);
   }
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -1033,7 +1043,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(store.job(unknown.id).status, 'failed');
   assert.equal(comfy.state.submissions.filter(item => item.prompt_id === unknown.id).length, 1, 'Closing does not resubmit');
   await browser.click('header button[aria-label="Settings"]');
-  await browser.until("document.querySelector('#settings-dialog[open]')?.innerText.includes('GPUs to use')", 'Mobile settings dialog');
+  await browser.click('#settings-tab-gpus');
+  await browser.until("document.querySelector('#settings-dialog[open]')?.innerText.includes('GPUs to use')", 'Mobile GPU settings section');
   await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
   await clickScopedText('#settings-dialog', 'Apply GPU selection');
   await browser.until("document.querySelector('#settings-dialog')?.innerText.includes('2 GPUs ready for generation')", 'Both selected GPUs are ready');
@@ -1042,7 +1053,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const savedPolicy = structuredClone(store.settings().policy);
   await browser.screenshot(join(output, 'settings-mobile.png'));
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Settings sections\"]')?.getAttribute('aria-orientation')"), 'vertical', 'Settings has one vertical section navigator');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'API access', 'App']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Settings sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['App', 'Work time', 'API access', 'Models', 'GPUs', 'Generation', 'Assistant', 'Connections', 'Model files', 'Integrations', 'Storage', 'Users', 'Invitations', 'Mail']);
   assert.equal(await browser.evaluate("!!document.querySelector('#settings-panel-integrations')"), false, 'Integration settings load only after selecting their tab');
   async function settingsKey(key: string, section: string) {
     await browser.key(key);
@@ -1084,23 +1095,23 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!document.querySelector('#settings-panel-connections input[name=worker-gpu]')", 'Removing the unsaved manual worker returns to the managed worker');
   await browser.fill(workerNameInput, 'Unsaved browser worker');
   await browser.click('#settings-tab-connections');
-  await settingsKey('ArrowDown', 'models');
-  await browser.fill('#settings-panel-models select', modelId);
-  const modelWorkers = '#settings-panel-models input[type="checkbox"][name="model-worker"]';
+  await settingsKey('ArrowDown', 'model-files');
+  await browser.fill('#settings-panel-model-files select', modelId);
+  const modelWorkers = '#settings-panel-model-files input[type="checkbox"][name="model-worker"]';
   const selectedModelWorkers = `Array.from(document.querySelectorAll('${modelWorkers}:checked')).map(input => input.value)`;
   await browser.until(`document.querySelectorAll('${modelWorkers}').length === 2`, 'Model supports assignment to both workers');
   assert.equal(await browser.evaluate(`document.querySelector('${modelWorkers}').closest('fieldset').querySelector('legend').textContent.trim()`), 'Workers for this model');
   assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy', 'browser-comfy-first'], 'An existing multi-worker assignment opens with both checkboxes checked');
-  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-models input[name=model-auto-workers]').checked"), true, 'Imported models initially follow all Studio GPUs');
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-model-files input[name=model-auto-workers]').checked"), true, 'Imported models initially follow all Studio GPUs');
   await browser.click(`${modelWorkers}[value="browser-comfy-first"]`);
   assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy'], 'Unchecking one worker preserves the other selection');
-  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-models input[name=model-auto-workers]').checked"), false, 'An explicit worker choice switches the model to manual assignment');
-  const checkpointInput = '#settings-panel-models input[list="artifacts-checkpoint"]';
+  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-model-files input[name=model-auto-workers]').checked"), false, 'An explicit worker choice switches the model to manual assignment');
+  const checkpointInput = '#settings-panel-model-files input[list="artifacts-checkpoint"]';
   await browser.fill(checkpointInput, 'unsaved-browser-checkpoint.safetensors');
-  await browser.click('#settings-tab-models');
+  await browser.click('#settings-tab-model-files');
   await settingsKey('ArrowUp', 'connections');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(workerNameInput)}).value`), 'Unsaved browser worker', 'Changing tabs preserves an unsaved connection name');
-  await settingsKey('ArrowDown', 'models');
+  await settingsKey('ArrowDown', 'model-files');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(checkpointInput)}).value`), 'unsaved-browser-checkpoint.safetensors', 'Changing tabs preserves an unsaved model filename');
   assert.deepEqual(await browser.evaluate(selectedModelWorkers), ['browser-comfy'], 'Changing tabs preserves the worker selection draft');
   await browser.click(`${modelWorkers}[value="browser-comfy-first"]`);
@@ -1110,10 +1121,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=vramReserveGiB]').value"), '1.5', 'Changing tabs preserves the VRAM reserve draft');
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=maxConcurrentJobs]').value"), '1', 'Changing tabs preserves the concurrency draft');
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation select[name=idleUnloadSeconds]').value"), '300', 'Changing tabs preserves the model retention draft');
-  await settingsKey('Home', 'gpus');
-  assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation').hidden && document.querySelector('#settings-panel-connections').hidden && document.querySelector('#settings-panel-models').hidden"), true, 'Inactive sections remain mounted and hidden');
-  await settingsKey('End', 'app');
-  await settingsKey('ArrowUp', 'api');
+  await settingsKey('Home', 'app');
+  assert.equal(await browser.evaluate("['generation', 'connections', 'model-files'].every(section => document.querySelector('#settings-panel-' + section)?.getClientRects().length === 0)"), true, 'Inactive sections remain mounted and hidden');
+  await settingsKey('End', 'mail');
+  await settingsKey('Home', 'app');
+  await settingsKey('ArrowDown', 'work-time');
+  await settingsKey('ArrowDown', 'api');
   await browser.until("document.body.innerText.includes('API & MCP access')", 'API access settings');
   await browser.fill('input[placeholder="My MCP client"]', 'Browser test MCP');
   await browser.clickText('Create token');
@@ -1121,11 +1134,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const token = await browser.evaluate<string>("document.querySelector('input[aria-label=\"New access token\"]').value");
   await browser.evaluate("void (window.__gravityTokenInput = document.querySelector('input[aria-label=\"New access token\"]'))");
   await browser.click('#settings-tab-gpus');
-  await browser.until("document.querySelector('#settings-panel-api')?.hidden === true", 'API section hides when returning to GPUs');
+  await browser.until("!document.querySelector('#settings-panel-api')", 'Leaving API access removes its one-time secret');
   await browser.click('#settings-tab-api');
   await browser.until("document.querySelector('#settings-panel-api')?.hidden === false", 'API section reopens');
-  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"New access token\"]') === window.__gravityTokenInput"), true, 'Switching sections keeps the one-time token field mounted');
-  assert.equal(await browser.evaluate("document.querySelector('input[aria-label=\"New access token\"]').value"), token, 'A newly created token remains available after changing sections');
+  assert.equal(await browser.evaluate("!!document.querySelector('input[aria-label=\"New access token\"]') || window.__gravityTokenInput.isConnected"), false, 'Switching sections clears the one-time token field');
+  await browser.until("!!document.querySelector('[aria-label=\"Revoke Browser test MCP\"]')", 'The saved token remains listed after its secret is cleared');
   assert.equal(store.settings().workers[0].name, 'GPU 2', 'Tab navigation does not save the connection draft');
   assert.equal(store.settings().modelConfigurations.some(configuration => Object.values(configuration.artifacts).includes('unsaved-browser-checkpoint.safetensors')), false, 'Tab navigation does not save model file drafts');
   assert.deepEqual(store.settings().policy, savedPolicy, 'Tab navigation does not save generation policy drafts');
@@ -1137,16 +1150,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   const mcpText = await mcp.text();
   const mcpResult = JSON.parse(mcp.headers.get('content-type')?.includes('text/event-stream') ? mcpText.split('\n').find(line => line.startsWith('data: '))!.slice(6) : mcpText) as { result: { serverInfo: { name: string } } };
   assert.equal(mcpResult.result.serverInfo.name, 'gravity-studio');
-  await browser.clickText('I have saved it');
-  await browser.until("!document.querySelector('input[aria-label=\"New access token\"]')", 'Token secret hidden');
+  assert.equal(await browser.evaluate("!!document.querySelector('input[aria-label=\"New access token\"]')"), false, 'The token secret remains hidden after the API request');
   await browser.screenshot(join(output, 'api-mobile.png'));
   await browser.click('[aria-label="Revoke Browser test MCP"]');
   await browser.until("document.body.innerText.includes('No access tokens yet.')", 'Token revoked');
   assert.equal((await fetch(`${origin}/api/catalog`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
   // Fail one list request to exercise retry without contacting any external provider.
   await browser.evaluate("(() => { const originalFetch = window.fetch.bind(window); window.fetch = (input, init) => { if (String(input) === '/api/integrations' && !init?.method) { window.fetch = originalFetch; return Promise.resolve(new Response(JSON.stringify({error: {message: 'Integration list unavailable.'}}), {status: 503, headers: {'Content-Type': 'application/json'}})); } return originalFetch(input, init); }; })()");
-  await browser.click('#settings-tab-api');
-  await settingsKey('ArrowUp', 'integrations');
+  await browser.click('#settings-tab-model-files');
+  await settingsKey('ArrowDown', 'integrations');
   await browser.until("document.querySelector('#settings-panel-integrations [role=alert]')?.textContent.includes('Integration list unavailable.')", 'Integration list failure is actionable');
   await clickScopedText('#settings-panel-integrations', 'Try again');
   await browser.until("document.querySelectorAll('#settings-panel-integrations form[aria-labelledby^=integration-] input[type=password]').length === 6", 'All six providers load after retry');
@@ -1160,7 +1172,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.click('#settings-tab-gpus');
   await browser.click('input[name="runtime-gpu"][value="amd:9700a"]');
   await browser.click('#settings-tab-integrations');
-  const settingsScroll = await browser.evaluate<number>("(() => { const content = document.querySelector('#settings-panel-integrations').parentElement; content.scrollTop = Math.min(160, content.scrollHeight - content.clientHeight); return content.scrollTop; })()");
+  const settingsScroll = await browser.evaluate<number>("(() => { const content = document.querySelector('#settings-panel-integrations').closest('[data-dialog-scroll]'); content.scrollTop = Math.min(160, content.scrollHeight - content.clientHeight); return content.scrollTop; })()");
   assert.ok(settingsScroll > 0, 'Settings preservation uses real scrolled content');
   await browser.evaluate("window.__gravityDraftRefreshFetch = window.fetch; window.__gravityDraftRefreshes = { state: 0, settings: 0 }; window.fetch = async function(input, init) { const response = await window.__gravityDraftRefreshFetch.call(this, input, init); const url = new URL(input instanceof Request ? input.url : String(input), location.href); if (response.ok && (init?.method || 'GET') === 'GET') { if (url.pathname === '/api/state') window.__gravityDraftRefreshes.state++; if (url.pathname === '/api/settings') window.__gravityDraftRefreshes.settings++; } return response; }");
   try {
@@ -1170,7 +1182,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
     await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#settings-tab-integrations')?.getAttribute('aria-selected') === 'true' && window.__gravityDraftRefreshes.settings > 0", 'Settings reopens Integrations and refreshes server configuration');
     await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
     assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerInput)}).value`), originalProviderKey, 'An unsaved provider key survives backdrop dismissal and server refresh');
-    assert.equal(await browser.evaluate("document.querySelector('#settings-panel-integrations').parentElement.scrollTop"), settingsScroll, 'Settings reopens at the same content scroll position');
+    assert.equal(await browser.evaluate("document.querySelector('#settings-panel-integrations').closest('[data-dialog-scroll]').scrollTop"), settingsScroll, 'Settings reopens at the same content scroll position');
     assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=ramReserveGiB]').value"), '9', 'Polling preserves the unsaved RAM reserve');
     assert.equal(await browser.evaluate("document.querySelector('#settings-panel-generation input[name=vramReserveGiB]').value"), '1.5', 'Polling preserves the unsaved VRAM reserve');
     assert.equal(await browser.evaluate("document.querySelector('input[name=runtime-gpu][value=\"amd:9700a\"]').checked"), false, 'Refreshing on reopen preserves an unsaved GPU selection');
@@ -1209,7 +1221,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("document.querySelector('#settings-panel-integrations').scrollWidth <= document.querySelector('#settings-panel-integrations').clientWidth"), true, 'Integration controls fit the mobile content area');
   await browser.click('#settings-tab-connections');
   await browser.fill(workerNameInput, 'GPU 2');
-  await browser.click('#settings-tab-models');
+  await browser.click('#settings-tab-model-files');
   await browser.fill(checkpointInput, filename);
   await browser.click('#settings-tab-generation');
   await clickScopedText('#settings-dialog', 'Save settings');
@@ -1283,15 +1295,15 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(await browser.evaluate("JSON.stringify({...localStorage, ...sessionStorage}).includes('browser-text-key-ef56')"), false, 'The compatible endpoint key never enters browser storage');
   await browser.click('#settings-tab-gpus');
   await browser.click('button[aria-label="Close settings"]');
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.click('#models-tab-language');
   await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language model selection loads');
   await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'openai-compatible');
   await clickScopedText('#models-panel-language', 'Manage connections');
-  await browser.until("document.querySelector('#settings-dialog[open]') && !document.querySelector('#models-dialog[open]') && document.querySelector('#settings-tab-integrations')?.getAttribute('aria-selected') === 'true'", 'The Models shortcut opens Integrations over the previously selected GPU tab');
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#settings-panel-models')?.hidden === true && document.querySelector('#settings-tab-integrations')?.getAttribute('aria-selected') === 'true'", 'The Models shortcut opens Integrations over the previously selected GPU tab');
   await browser.click('button[aria-label="Close settings"]');
-  await browser.click('header button[aria-label="Models"]');
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-language')?.getAttribute('aria-selected') === 'true'", 'Returning from connection settings preserves the Language model tab');
+  await openModels(browser);
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-tab-language')?.getAttribute('aria-selected') === 'true'", 'Returning from connection settings preserves the Language model tab');
   await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'openai-compatible');
   await clickScopedText('#models-panel-language', 'Load models');
   await browser.until("!!document.querySelector('#models-panel-language select[aria-label=\"Assistant model\"] option[value=fixture-text]')", 'The compatible endpoint supplies discoverable models');
@@ -1299,7 +1311,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await clickScopedText('#models-panel-language', 'Use for assistant');
   await browser.until("document.querySelector('#models-panel-language [role=status]')?.textContent.includes('Assistant model saved')", 'Language model becomes the configured assistant');
   await browser.screenshot(join(output, 'language-models-mobile.png'));
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   await browser.click('header button[aria-label="Settings"]');
   await browser.click('#settings-tab-integrations');
   await browser.until("document.querySelector('input[aria-label=\"Text endpoint API key\"]')?.matches(':disabled') === false", 'Saved text connection is editable');
@@ -1375,7 +1387,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.key('Escape');
   await browser.fill('#image-prompt', assistantDraft);
 
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.click('#models-tab-language');
   await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language models opens before local setup');
   await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'local');
@@ -1395,9 +1407,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   localState.download!.receivedBytes = LOCAL_TEXT_MODEL.sizeBytes / 2;
   await browser.until(`document.querySelector(${JSON.stringify(`${localScope} progress`)})?.value === 50`, 'Download progress is refreshed from the server');
   await browser.screenshot(join(output, 'local-language-download-mobile.png'));
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   assert.equal(localState.busy, true, 'Closing Models leaves managed setup running');
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.click('#models-tab-language');
   await browser.until("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]')?.matches(':disabled') === false", 'Language model controls reopen during setup');
   await browser.fill('#models-panel-language select[aria-label="Language model provider"]', 'local');
@@ -1407,12 +1419,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("Array.from(document.querySelectorAll('#models-panel-language button')).some(button => button.textContent.trim() === 'Use for assistant' && !button.matches(':disabled'))", 'The installed and prepared model becomes selectable');
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
   await modelFrame(false);
-  await browser.evaluate("document.querySelectorAll('#models-dialog, #models-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
+  await browser.evaluate("document.querySelectorAll('#settings-dialog, #settings-dialog *').forEach(element => { if (getComputedStyle(element).overflowY === 'auto') element.scrollTop = 0; })");
   await browser.screenshot(join(output, 'local-language-ready-desktop.png'));
   await clickScopedText('#models-panel-language', 'Use for assistant');
   await browser.until("Array.from(document.querySelectorAll('#models-panel-language [role=status]')).some(status => status.textContent.includes('Assistant model saved'))", 'MiMo is saved through the real assistant settings API');
   assert.deepEqual(await browser.evaluate("fetch('/api/text/settings').then(response => response.json()).then(settings => settings.assistant)"), { provider: 'local', modelId: LOCAL_TEXT_MODEL.id });
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   await browser.fill('#image-prompt', originalAssistantPrompt);
   await openAssistant();
   assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(assistantScope)}).textContent`), /Local Studio · mimo-v2.6-distill-qwen-9b/, 'The dock identifies the managed local provider');
@@ -1424,7 +1436,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   assert.equal(localState.gpuId, 'amd:9700b', 'The local runtime uses the saved GPU selection');
   assert.equal(store.jobs(store.owner()!.id).length, assistantJobs, 'Local refinement does not create image jobs');
   await browser.key('Escape');
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.click('#models-tab-language');
   await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('Loaded on GPU 2')`, 'Language models reports resident GPU usage');
   assert.equal(await browser.evaluate("document.querySelector('#models-panel-language select[aria-label=\"Language model provider\"]').value"), 'local', 'The saved local provider is selected when Models reopens');
@@ -1444,7 +1456,7 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await clickScopedText(localScope, 'Apply GPU selection');
   await browser.until(`document.querySelector(${JSON.stringify(localScope)})?.textContent.includes('GPU selection saved')`, 'An installed model can return to automatic Studio GPU selection');
   assert.deepEqual(localState.gpuIds, []);
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   Object.assign(localState, { phase: 'loaded', gpuId: 'amd:9700b', busy: false });
   const statusReadsBefore = localStatusReads;
   await openActivity();
@@ -1474,12 +1486,12 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.fill(providerInput, privateKeyDraft);
   await browser.key('Escape');
   await browser.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes with an unsaved private key');
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.click('#models-tab-huggingface');
   await browser.fill('input[name="checkpoint-url"]', 'https://huggingface.co/gravity-fixtures/private-draft/blob/main/model.safetensors');
   await browser.fill('input[name="checkpoint-name"]', 'Private unsaved checkpoint');
   await browser.key('Escape');
-  await browser.until("!document.querySelector('#models-dialog[open]')", 'Models closes with an unsaved checkpoint');
+  await browser.until("!document.querySelector('#settings-dialog[open]')", 'Models closes with an unsaved checkpoint');
   await browser.click('button[aria-label="Remove reference 1"]');
   await browser.click('button[aria-label="Browse saved images"]');
   await browser.until("!!document.querySelector('#reference-picker-dialog[open] article[data-source=import]')", 'The reference picker opens before session cleanup');
@@ -1501,9 +1513,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.until("!!document.querySelector('#output-viewer[open]')", 'An image preview is retained before signing out');
   await browser.click('#output-viewer button[aria-label="Close preview"]');
   await browser.until("!document.querySelector('#output-viewer[open]')", 'The preview is closed before signing out');
-  const privateModalSelector = '#settings-dialog, #models-dialog, #reference-picker-dialog, #output-viewer, #assets-browser-dialog, #assets-output-viewer, #assets-input-viewer, #account-panel';
+  const privateModalSelector = '#settings-dialog, #reference-picker-dialog, #output-viewer, #assets-browser-dialog, #assets-output-viewer, #assets-input-viewer, #account-panel';
   await browser.evaluate(`void (window.__gravityPrivateModals = Array.from(document.querySelectorAll(${JSON.stringify(privateModalSelector)})).filter(dialog => dialog.id !== 'account-panel'))`);
-  assert.equal(await browser.evaluate('window.__gravityPrivateModals.length'), 6, 'Each visited private modal is retained while the owner is signed in');
+  assert.equal(await browser.evaluate('window.__gravityPrivateModals.length'), 5, 'Each visited private modal is retained while the owner is signed in');
   await browser.click('[aria-label="Account"]');
   await browser.until("!!document.querySelector('#account-panel[open]')", 'The account drawer opens before signing out');
   await browser.evaluate("window.__gravityPrivateModals.push(document.querySelector('#account-panel'))");
@@ -1517,17 +1529,17 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.clickText('Sign in');
   await browser.until("!!document.querySelector('#image-prompt') && !document.querySelector('dialog[open]')", 'Owner signs back into the Image workspace');
   await browser.click('header button[aria-label="Settings"]');
-  await browser.until("document.querySelector('#settings-tab-gpus')?.getAttribute('aria-selected') === 'true'", 'A new session starts Settings on GPUs');
+  await browser.until("document.querySelector('#settings-tab-app')?.getAttribute('aria-selected') === 'true'", 'A new session starts Settings on App');
   await browser.click('#settings-tab-integrations');
   await browser.until(`document.querySelector(${JSON.stringify(providerInput)})?.matches(':disabled') === false`, 'Fresh session integration controls load');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(providerInput)}).value`), '', 'Signing in does not restore the previous private key draft');
   await browser.click('button[aria-label="Close settings"]');
-  await browser.click('header button[aria-label="Models"]');
+  await openModels(browser);
   await browser.until("document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true'", 'A new session starts Models in Library');
   await browser.click('#models-tab-huggingface');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-url]').value"), '', 'Signing in clears the previous checkpoint URL draft');
   assert.equal(await browser.evaluate("document.querySelector('input[name=checkpoint-name]').value"), '', 'Signing in clears the previous checkpoint name draft');
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   await browser.click('header button[aria-label="Assets"]');
   await browser.until("!!document.querySelector('#assets-browser-dialog[open]')", 'Fresh session Assets opens');
   assert.match(await browser.evaluate<string>("document.querySelector('#assets-browser-dialog nav button[aria-current=page]').textContent"), /^All Assets/, 'Signing in resets the asset browser category');
@@ -1542,8 +1554,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await clickScopedText('#reference-picker-dialog', 'Cancel');
   for (const label of ['Models', 'Settings']) {
     await browser.navigate(`${origin}/${label.toLowerCase()}`);
-    await browser.until(`!!document.querySelector('#${label.toLowerCase()}-dialog[open]') && !!document.querySelector('#image-prompt')`, `${label} entry URL opens its dialog over Image`);
-    await browser.click(`button[aria-label="Close ${label.toLowerCase()}"]`);
+    await browser.until(`!!document.querySelector('#settings-dialog[open]') && !!document.querySelector('#image-prompt') && document.querySelector('#settings-tab-${label === 'Models' ? 'models' : 'app'}')?.getAttribute('aria-selected') === 'true'`, `${label} entry URL opens its section in Settings over Image`);
+    await browser.click('button[aria-label="Close settings"]');
     await browser.until("!document.querySelector('dialog[open]') && !!document.querySelector('#image-prompt')", `${label} entry dialog closes to Image`);
   }
 
@@ -2233,9 +2245,10 @@ test('file drops route to references or Assets without claiming text or navigati
   await browser.click('#assets-input-viewer button[aria-label="Close preview"]');
   await browser.key('Escape');
   await browser.until("!document.querySelector('dialog[open]')", 'Assets closes before other modal routing checks');
-  for (const panel of ['Settings', 'Models']) {
-    await browser.click(`header button[aria-label="${panel}"]`);
-    await browser.until(`!!document.querySelector('#${panel.toLowerCase()}-dialog[open]')`, `${panel} is the active modal`);
+  for (const panel of ['app', 'models']) {
+    await browser.click('header button[aria-label="Settings"]');
+    await browser.click(`#settings-tab-${panel}`);
+    await browser.until("!!document.querySelector('#settings-dialog[open]')", `${panel} is in the active Settings modal`);
     const before = await uploadCount();
     assert.equal(await transfer('dragover', 'document', png(`blocked-${panel}.png`)), true);
     assert.equal(await transfer('drop', 'document', png(`blocked-${panel}.png`)), true);
@@ -2243,7 +2256,7 @@ test('file drops route to references or Assets without claiming text or navigati
     assert.equal(await uploadCount(), before, 'Unrelated dialogs block file navigation without attaching or importing files');
     assert.equal(await browser.evaluate(`!!${overlay('references')} || !!${overlay('assets')}`), false, 'Unrelated dialogs show no import overlay');
     assert.equal(await browser.evaluate('location.pathname'), '/image');
-    await browser.click(`button[aria-label="Close ${panel.toLowerCase()}"]`);
+    await browser.click('button[aria-label="Close settings"]');
   }
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
@@ -2327,14 +2340,14 @@ test('Upscale queues independent results from outputs and imports with model and
   await openUpscale();
   assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(popover)}).textContent`), /Download an upscaler/);
   await browser.click(`${popover} [data-upscale-manage]`);
-  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-tools')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-tools article')", 'Empty state opens Models directly in Tools');
+  await browser.until("document.querySelector('#settings-dialog[open]') && document.querySelector('#models-tab-tools')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-tools article')", 'Empty state opens Models directly in Tools');
   assert.equal(await browser.evaluate("document.querySelectorAll('#models-panel-library article[data-model-id=fixture-upscaler]').length"), 0, 'Upscalers stay outside the generation library');
   await browser.click('#models-panel-tools article button');
   await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true'", 'Tool downloads use the existing download flow');
   assert.deepEqual(await browser.evaluate('window.__upscaleEvents'), ['/api/models/access', '/api/models/download'], 'A tool download still checks repository access first');
   await browser.click('#models-tab-tools');
   await browser.until("document.querySelector('#models-panel-tools article')?.textContent.includes('Downloaded')", 'A downloaded tool needs no generation activation');
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   await browser.click('main figure button[aria-label="Open Original generation output"]');
   await openUpscale();
   await browser.fill(`${popover} select`, 'fixture-offline-upscaler');
@@ -2443,16 +2456,16 @@ test('model downloads check Hugging Face access and guide gated, token and licen
   async function captures(surface: string) {
     for (const width of [1440, 390]) {
       await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width === 1440 ? 960 : 844, deviceScaleFactor: 1, mobile: width < 768 });
-      await browser.evaluate("document.querySelector('#models-dialog [data-dialog-scroll]').scrollTop = 0");
+      await browser.evaluate("document.querySelector('#settings-dialog [data-dialog-scroll]').scrollTop = 0");
       if (surface === 'library-gated') await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} [role=alert]`)}).scrollIntoView({block:'center'})`);
-      await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#models-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
-      assert.equal(await browser.evaluate("(() => { const dialog = document.querySelector('#models-dialog'), rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && dialog.scrollWidth <= dialog.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()"), true, `${surface} fits ${width}px`);
+      await browser.evaluate("Promise.all([document.fonts.ready, ...document.querySelector('#settings-dialog').getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+      assert.equal(await browser.evaluate("(() => { const dialog = document.querySelector('#settings-dialog'), rect = dialog.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && dialog.scrollWidth <= dialog.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()"), true, `${surface} fits ${width}px`);
       await browser.screenshot(join(output, `model-access-${surface}-${width}.png`));
     }
   }
   await browser.navigate(`${origin}/image`);
-  await browser.until("!!document.querySelector('header button[aria-label=\"Models\"]')", 'The workspace loads');
-  await browser.click('header button[aria-label="Models"]'); await modelReady();
+  await browser.until("!!document.querySelector('header button[aria-label=\"Settings\"]')", 'The workspace loads');
+  await openModels(browser); await modelReady();
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} a[href="https://huggingface.co/Comfy-Org/Ideogram-4"]`)})?.target`), '_blank', 'The download repository is linked directly');
   assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(`${article} a[href="https://huggingface.co/ideogram-ai/ideogram-4-fp8/blob/main/LICENSE.md"]`)})?.textContent`), 'License', 'Ideogram links its publisher license separately from the artifact repository');
   await browser.click(check);
@@ -2480,7 +2493,7 @@ test('model downloads check Hugging Face access and guide gated, token and licen
   await browser.click(check);
   await browser.until(`document.querySelector(${JSON.stringify(`${article} [role=status]`)})?.textContent.includes('Access confirmed')`, 'Checking again recognizes manually granted access');
 
-  await browser.click('button[aria-label="Close models"]');
+  await browser.click('button[aria-label="Close settings"]');
   await browser.click('header button[aria-label="Settings"]');
   await browser.click('#settings-tab-integrations');
   const settingsTokenForm = '#settings-panel-integrations form[aria-labelledby="integration-huggingface-title"]';
@@ -2489,7 +2502,7 @@ test('model downloads check Hugging Face access and guide gated, token and licen
   await browser.click(`${settingsTokenForm} button[type=submit]`);
   await browser.until(`document.querySelector(${JSON.stringify(settingsTokenForm)})?.textContent.includes('•••• cd34')`, 'Settings saves a replacement credential');
   await browser.click('button[aria-label="Close settings"]');
-  await browser.click('header button[aria-label="Models"]'); await modelReady();
+  await openModels(browser); await modelReady();
   await browser.until(`!document.querySelector(${JSON.stringify(`${article} [role=status]`)})`, 'Reopening Models invalidates access checked with the older credential');
   await browser.click(download);
   await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true'", 'Successful preflight opens the download status');
@@ -2678,7 +2691,7 @@ test('Background preserves draft intent, submits each mode and reuses transparen
   assert.deepEqual(browser.errors, []);
 });
 
-test('administration manages invited accounts, private access, allowances and mail without sending messages', { timeout: 180000 }, async t => {
+test('unified Settings manages invited accounts, private access, allowances, storage and mail without sending messages', { timeout: 180000 }, async t => {
   const fixture = await engineFixture({ count: 1 });
   const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
   const frontendPort = await freePort(), origin = `http://127.0.0.1:${frontendPort}`;
@@ -2706,10 +2719,17 @@ test('administration manages invited accounts, private access, allowances and ma
   // Exercise real configuration writes, invitations and account APIs. Guard the
   // two email entry points before any interaction: this test never sends mail.
   await admin.send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    window.__adminEmailRequests = 0;
+    window.__adminEmailRequests = 0; window.__storageCase = 'live';
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (input, options = {}) => {
       const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.pathname === '/api/admin/storage' && window.__storageCase === 'partial') return Promise.resolve(Response.json({
+        sampledAt:'2026-10-10T12:00:00.000Z',cacheExpiresAt:'2026-10-10T12:00:30.000Z',
+        volume:{status:'unavailable',totalBytes:null,usedBytes:null,freeBytes:null,availableBytes:null,message:'The volume is temporarily unavailable.'},
+        local:{status:'partial',bytes:8589938688,allocatedBytes:8589942784,files:2,categories:[{id:'database',label:'Database',bytes:4096,allocatedBytes:8192,files:1,status:'complete'},{id:'image-models',label:'Image models',bytes:8589934592,allocatedBytes:8589934592,files:1,status:'partial'}],warnings:['The scan reached its file limit.']},
+        objectStorage:{configured:true,status:'partial',bytes:3145728,inputsBytes:1048576,outputsBytes:2097152,files:3,unknownSizeFiles:1,message:'Recorded managed image sizes only.'},
+        largestModelFiles:[{name:'diffusion_models/fixture-model.safetensors',categoryId:'image-models',bytes:8589934592}],modelFilesTruncated:true
+      }));
       if (url.pathname === '/api/admin/mail/test' || url.pathname === '/api/admin/invitations' && options.method === 'POST' && JSON.parse(options.body).sendEmail) {
         window.__adminEmailRequests++; return Promise.resolve(Response.json({error:{message:'Email is disabled in this browser test.'}}, {status:503}));
       }
@@ -2719,29 +2739,29 @@ test('administration manages invited accounts, private access, allowances and ma
   await member.send('Page.addScriptToEvaluateOnNewDocument', { source: `
     window.__memberRequests = [];
     const nativeFetch = window.fetch.bind(window);
-    window.fetch = (input, options = {}) => { const url = new URL(input instanceof Request ? input.url : String(input), location.href); if (url.origin === location.origin) window.__memberRequests.push(url.pathname); return nativeFetch(input, options); };
+    window.fetch = async (input, options = {}) => { const url = new URL(input instanceof Request ? input.url : String(input), location.href); if (url.origin === location.origin) window.__memberRequests.push(url.pathname); const response = await nativeFetch(input, options); if (url.pathname === '/api/tokens' && options.method === 'POST' && window.__holdTokenResponse) { window.__tokenResponseHeld = true; await new Promise(resolve => window.__releaseTokenResponse = resolve); window.__tokenResponseHeld = false; } return response; };
   ` });
   async function settle(browser = admin) { await browser.evaluate("Promise.all([document.fonts.ready,...document.getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)"); }
   async function capture(surface: string, browser = admin) {
     for (const width of [1440, 390, 320]) {
       await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 960 : 844, deviceScaleFactor: 1, mobile: false });
       await browser.evaluate("document.querySelector('[data-dialog-scroll]')?.scrollTo({top:0}); window.scrollTo(0,0)"); await settle(browser);
-      const geometry = await browser.evaluate<{ viewport: number; page: number; overflowing: string[] }>(`({viewport:innerWidth,page:document.documentElement.scrollWidth,overflowing:Array.from(document.querySelectorAll('main input,main select,main button')).filter(element=>element.getClientRects().length&&getComputedStyle(element).visibility!=='hidden').filter(element=>{const rect=element.getBoundingClientRect();return rect.right>innerWidth+1||rect.left < -1}).map(element=>element.getAttribute('name')||element.textContent.trim())})`);
+      const geometry = await browser.evaluate<{ viewport: number; page: number; overflowing: string[] }>(`({viewport:innerWidth,page:document.documentElement.scrollWidth,overflowing:Array.from((document.querySelector('dialog[open]') || document.querySelector('main')).querySelectorAll('input,select,button')).filter(element=>element.getClientRects().length&&getComputedStyle(element).visibility!=='hidden'&&!element.closest('[role=tablist][aria-orientation=horizontal]')).filter(element=>{const rect=element.getBoundingClientRect();return rect.right>innerWidth+1||rect.left < -1}).map(element=>element.getAttribute('name')||element.textContent.trim())})`);
       assert.ok(geometry.page <= geometry.viewport + 1, `${surface} fits ${width}px`);
       assert.deepEqual(geometry.overflowing, [], `${surface} controls fit ${width}px`);
-      await browser.screenshot(join(output, `admin-${surface}-${width}.png`));
+      await browser.screenshot(join(output, `settings-unified-${surface}-${width}.png`));
     }
     await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false }); await settle(browser);
   }
   await admin.navigate(`${origin}/image`);
   await admin.until("!!document.querySelector('button[aria-label=Account]')", 'Administrator Studio ready');
   await admin.click('button[aria-label="Account"]'); await admin.until("!!document.querySelector('#account-panel[open]')", 'Account opens'); await settle();
-  await admin.clickText('Open administration');
-  await admin.until("!!document.querySelector('[data-admin-user]')", 'Administration users loaded');
+  await admin.clickText('Open Settings');
+  await admin.until("!!document.querySelector('[data-admin-user]')", 'Settings Users loaded');
   assert.match(await admin.evaluate<string>('document.body.innerText'), /You cannot delete the account you are signed in with/);
   await capture('users');
 
-  await admin.click('#admin-tab-invitations');
+  await admin.click('#settings-tab-invitations');
   await admin.fill('input[name="invitation-email"]', 'artist@example.com');
   await admin.fill('input[name="invitation-hours"]', '1.5');
   assert.equal(await admin.evaluate("document.querySelector('input[name=\"send-invitation-email\"]').checked"), false);
@@ -2767,24 +2787,39 @@ test('administration manages invited accounts, private access, allowances and ma
   await member.until("location.pathname === '/image' && !!document.querySelector('#image-prompt')", 'New invited account opens Studio without server onboarding');
   const users = await request<{ users: Array<{ id: string; username: string; role: string; revision: number }> }>('/admin/users');
   const artist = users.users.find(user => user.username === 'artist')!; assert.equal(artist.role, 'user');
-  assert.equal(await member.evaluate("!!document.querySelector('button[aria-label=Models],button[aria-label=Settings],#models-dialog,#settings-dialog')"), false, 'Global controls do not mount for members');
+  assert.equal(await member.evaluate("!!document.querySelector('header button[aria-label=Settings]') && !document.querySelector('header button[aria-label=Models]')"), true, 'Every account has one Settings entry');
+  await member.click('header button[aria-label="Settings"]');
+  await member.until("document.querySelector('#settings-tab-app')?.getAttribute('aria-selected') === 'true'", 'Member Settings starts in App');
+  assert.deepEqual(await member.evaluate("Array.from(document.querySelectorAll('#settings-dialog [role=tablist] [role=tab]')).map(tab=>tab.textContent.trim())"), ['App', 'Work time', 'API access']);
+  await capture('personal', member);
+  await member.click('#settings-tab-work-time'); await member.until("document.querySelector('#settings-panel-work-time')?.innerText.includes('1h 30m')", 'Member time is available in Settings');
+  await member.click('button[aria-label="Close settings"]');
   assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => ['/api/settings','/api/runtime','/api/integrations','/api/models/library','/api/admin/users'].includes(path))"), [], 'Member Studio makes no privileged configuration requests');
   await member.click('button[aria-label="Account"]'); await member.until("!!document.querySelector('#account-panel[open]')", 'Member account opens'); await settle(member);
   assert.equal(await member.evaluate("!!document.querySelector('#account-panel a[href=\"/admin\"]')"), false);
   await member.click('#account-panel section[aria-labelledby="account-time-heading"] summary');
   await member.until("document.querySelector('#account-panel').innerText.includes('1h 30m')", 'Member sees their own allowance');
-  await member.clickText('Manage access tokens'); await member.until("!!document.querySelector('#api-access-dialog[open]')", 'Members retain personal API access'); await settle(member);
-  await member.fill('#api-access-dialog input[placeholder="My MCP client"]', 'artist-tool');
+  await member.clickText('Manage access tokens'); await member.until("!!document.querySelector('#settings-dialog[open] #settings-panel-api')", 'Members retain personal API access'); await settle(member);
+  await member.fill('#settings-panel-api input[placeholder="My MCP client"]', 'artist-tool');
   await member.clickText('Create token'); await member.until("!!document.querySelector('input[aria-label=\"New access token\"]')", 'Personal token is created');
-  await member.click('button[aria-label="Close API access"]');
-  await member.until("!document.querySelector('#api-access-dialog')", 'Closing clears one-time token view');
-  await member.navigate(`${origin}/admin`); await member.until("document.body.innerText.includes('Administrator access required')", 'Direct admin route denies members');
-  assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => path.startsWith('/api/admin/'))"), []);
-  await capture('denied', member);
-  for (const path of ['/settings', '/models']) {
-    await member.navigate(`${origin}${path}`); await member.until("!!document.querySelector('#image-prompt')", 'Legacy configuration route safely shows member Studio');
-    assert.equal(await member.evaluate("!!document.querySelector('#settings-dialog,#models-dialog')"), false);
-    assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => ['/api/settings','/api/runtime','/api/integrations','/api/models/library'].includes(path))"), []);
+  await member.click('button[aria-label="Close settings"]');
+  await member.until("!document.querySelector('input[aria-label=\"New access token\"]')", 'Closing clears one-time token view');
+  await member.click('header button[aria-label="Settings"]');
+  await member.until("!!document.querySelector('#settings-dialog[open] #settings-panel-api')", 'Personal API section remains selected');
+  await member.fill('#settings-panel-api input[placeholder="My MCP client"]', 'late-token-response');
+  await member.evaluate("window.__holdTokenResponse = true"); await member.clickText('Create token');
+  await member.until("window.__tokenResponseHeld === true", 'Token creation response is held after the server creates it');
+  await member.click('button[aria-label="Close settings"]'); await member.until("!document.querySelector('#settings-dialog[open]')", 'Settings closes during token creation');
+  await member.click('header button[aria-label="Settings"]'); await member.until("!!document.querySelector('#settings-dialog[open]')", 'Settings reopens before the response arrives');
+  await member.evaluate("window.__holdTokenResponse = false; window.__releaseTokenResponse()");
+  await member.until("document.querySelector('#settings-panel-api')?.innerText.includes('late-token-response') && !window.__tokenResponseHeld", 'Created token remains listed after its delayed response');
+  assert.equal(await member.evaluate("!!document.querySelector('input[aria-label=\"New access token\"]')"), false, 'A delayed create response cannot restore a one-time secret after dismissal');
+  await member.click('button[aria-label="Close settings"]');
+  for (const path of ['/admin', '/settings', '/models']) {
+    await member.navigate(`${origin}${path}`); await member.until("document.querySelector('#settings-dialog[open] #settings-tab-app')?.getAttribute('aria-selected') === 'true'", 'Legacy route opens personal Settings for a member');
+    assert.deepEqual(await member.evaluate("Array.from(document.querySelectorAll('#settings-dialog [role=tablist] [role=tab]')).map(tab=>tab.textContent.trim())"), ['App', 'Work time', 'API access']);
+    assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => ['/api/settings','/api/runtime','/api/integrations','/api/models/library'].includes(path) || path.startsWith('/api/admin/'))"), []);
+    await member.click('button[aria-label="Close settings"]');
   }
 
   // Expiry keeps Studio mounted. A different account without a saved draft must
@@ -2800,10 +2835,10 @@ test('administration manages invited accounts, private access, allowances and ma
   assert.equal(await member.evaluate("document.querySelector('#image-prompt').value"), '');
   await member.until(`JSON.parse(localStorage.getItem('gravity:image-draft:${second.user.id}') || '{}').prompt === ''`, 'Empty draft is persisted for the new account');
 
-  await admin.click('#admin-tab-work-time');
+  await admin.click('#settings-tab-work-time');
   await admin.fill('input[aria-label="Search work time users"]', 'artist');
-  await admin.until("Array.from(document.querySelectorAll('#admin-panel-work-time button')).some(button=>button.firstElementChild?.textContent === 'artist')", 'Target allowance is listed');
-  await admin.evaluate("Array.from(document.querySelectorAll('#admin-panel-work-time button')).find(button=>button.firstElementChild?.textContent === 'artist').focus()"); await admin.key('Enter');
+  await admin.until("Array.from(document.querySelectorAll('#settings-panel-work-time button')).some(button=>button.firstElementChild?.textContent === 'artist')", 'Target allowance is listed');
+  await admin.evaluate("Array.from(document.querySelectorAll('#settings-panel-work-time button')).find(button=>button.firstElementChild?.textContent === 'artist').focus()"); await admin.key('Enter');
   await admin.until(`!!document.querySelector('input[name="time-reason"]')`, 'Member time adjustment ready');
   await admin.fill('input[name=time-hours]', '0'); await admin.fill('input[name=time-minutes]', '30'); await admin.fill('input[name=time-reason]', 'Browser allowance review');
   await admin.clickText('Add server time'); await admin.until("document.body.innerText.includes('2h 00m') && document.querySelector('input[name=time-reason]')?.value === ''", 'Allowance adjustment persists');
@@ -2811,7 +2846,7 @@ test('administration manages invited accounts, private access, allowances and ma
   assert.equal(allowance.balance.remainingMs, 7_200_000); assert.ok(allowance.adjustments.some(entry => entry.reason === 'Browser allowance review'));
   await capture('work-time');
 
-  await admin.click('#admin-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com');
+  await admin.click('#settings-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com');
   await admin.until(`!!document.querySelector('[data-admin-user="${artist.id}"]')`, 'Invited account editable');
   await admin.fill('select[name=user-role]', 'admin'); await admin.clickText('Save access');
   await admin.until("document.querySelector('select[name=user-role]')?.value === 'admin' && Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Save access')?.disabled", 'Role promotion persisted');
@@ -2827,7 +2862,7 @@ test('administration manages invited accounts, private access, allowances and ma
   await admin.fill('select[name=user-status]', 'active'); await admin.clickText('Save access');
   await admin.until("document.querySelector('select[name=user-status]')?.value === 'active' && Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Save access')?.disabled", 'Account reactivated');
 
-  await admin.click('#admin-tab-mail'); await admin.until("!!document.querySelector('input[name=mail-from]')", 'Mail configuration loads');
+  await admin.click('#settings-tab-mail'); await admin.until("!!document.querySelector('input[name=mail-from]')", 'Mail configuration loads');
   await admin.fill('select[name=mail-provider]', 'smtp'); await admin.fill('input[name=mail-from]', 'studio@example.com');
   await admin.fill('input[name=smtp-host]', 'smtp.example.com'); await admin.fill('input[name=smtp-username]', 'studio'); await admin.fill('input[name=mail-secret]', 'browser-smtp-fixture-secret');
   await admin.clickText('Save mail settings'); await admin.until("document.body.innerText.includes('Credential saved') && document.querySelector('input[name=mail-secret]')?.value === ''", 'SMTP credential write clears secret input');
@@ -2843,19 +2878,31 @@ test('administration manages invited accounts, private access, allowances and ma
   await capture('mail');
   await admin.clickText('Remove saved credential'); await admin.until("document.body.innerText.includes('No credential saved.')", 'Removing provider credential updates its state');
   assert.equal((await request<{credentials:{cloudflare:{configured:boolean}}}>('/admin/mail')).credentials.cloudflare.configured, false);
-  await admin.click('#admin-tab-server'); await capture('server');
-  await admin.clickText('Open server settings'); await admin.until("!!document.querySelector('#settings-dialog[open]')", 'Existing server settings are accessible in administration'); await settle();
-  await admin.click('button[aria-label="Close settings"]'); await admin.until("!document.querySelector('#settings-dialog[open]')", 'Server settings dismiss');
-  await admin.clickText('Manage models'); await admin.until("!!document.querySelector('#models-dialog[open]')", 'Existing model manager is accessible in administration'); await settle();
-  await admin.click('button[aria-label="Close models"]'); await admin.until("!document.querySelector('#models-dialog[open]')", 'Models dismiss');
+  await admin.click('#settings-tab-gpus'); await admin.until("!!document.querySelector('#gpu-selection-title')", 'GPU configuration uses the same Settings surface'); await capture('gpus');
+  await admin.click('#settings-tab-models'); await admin.until("!!document.querySelector('#models-panel-library article')", 'Model management uses the same Settings surface');
+  assert.equal(await admin.evaluate("document.querySelectorAll('dialog[open]').length"), 1);
+  assert.equal(await admin.evaluate("document.querySelectorAll('#settings-dialog [role=tablist][aria-orientation=vertical]').length"), 1, 'Models adds no second sidebar');
+  assert.equal(await admin.evaluate("document.querySelector('#settings-dialog [aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'horizontal');
+  await capture('models');
+  await admin.click('#settings-tab-storage'); await admin.until("document.querySelector('#settings-panel-storage')?.innerText.includes('Server disk')", 'Administrator disk usage loads'); await capture('storage');
+  assert.equal(await admin.evaluate("!!document.querySelector('#settings-panel-storage [role=meter]')"), true, 'Live local filesystem usage has a meter');
+  await admin.evaluate("window.__storageCase = 'partial'"); await admin.click('#settings-panel-storage header button');
+  await admin.until("document.querySelector('#settings-panel-storage')?.innerText.includes('At least 8 GiB')", 'Partial disk scans are explicitly lower bounds');
+  const partialStorage = await admin.evaluate<string>("document.querySelector('#settings-panel-storage').innerText");
+  assert.match(partialStorage, /4 KiB/, 'Small database sizes retain useful precision');
+  assert.match(partialStorage, /At least 3 MiB/, 'Object storage displays recorded image sizes separately');
+  assert.match(partialStorage, /Unavailable/, 'Missing filesystem measurements do not become zero');
+  assert.match(partialStorage, /fixture-model\.safetensors/, 'Largest model files are listed');
+  assert.equal(await admin.evaluate("!!document.querySelector('#settings-panel-storage [role=meter]')"), false, 'Unavailable capacity has no misleading meter');
+  await capture('storage-partial');
 
-  await admin.click('#admin-tab-invitations'); await admin.fill('input[name=invitation-email]', 'revoked@example.com'); await admin.clickText('Create invitation link');
+  await admin.click('#settings-tab-invitations'); await admin.fill('input[name=invitation-email]', 'revoked@example.com'); await admin.clickText('Create invitation link');
   await admin.until("!!document.querySelector('input[aria-label=\"Invitation link\"]')", 'Revocable invitation created');
   const revokedUrl = await admin.evaluate<string>("document.querySelector('input[aria-label=\"Invitation link\"]').value");
   await admin.clickText('Revoke'); await admin.until("document.body.innerText.includes('Invitation revoked.')", 'Invitation revoked');
   await member.navigate(revokedUrl); await member.until("!!document.querySelector('[role=alert]')", 'Revoked link reports recovery');
   assert.equal(await member.evaluate("!!document.querySelector('input[name=username]')"), false); await capture('invite-error', member);
-  await admin.click('#admin-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com'); await admin.until(`!!document.querySelector('[data-admin-user="${artist.id}"]')`, 'Deletion target ready');
+  await admin.click('#settings-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com'); await admin.until(`!!document.querySelector('[data-admin-user="${artist.id}"]')`, 'Deletion target ready');
   await admin.clickText('Delete account'); await admin.fill('input[name=delete-confirmation]', 'wrong-user');
   assert.equal(await admin.evaluate("Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Permanently delete account').disabled"), true);
   await admin.fill('input[name=delete-confirmation]', 'artist'); await admin.clickText('Permanently delete account');

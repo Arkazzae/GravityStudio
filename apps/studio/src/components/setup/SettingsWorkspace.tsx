@@ -21,7 +21,7 @@ const sections = [
 ] as const;
 export type SettingsSection = typeof sections[number]['id'];
 
-export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, section, onSectionChange, active = true, activeWork = false }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; section: SettingsSection; onSectionChange: (section: SettingsSection) => void; active?: boolean; activeWork?: boolean }) {
+export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboarding = false, section, onSectionChange, active = true, activeWork = false, embedded = false, onBusyChange }: { initialHardware: Hardware | null; onSaved: () => void; onFinished: () => void; onboarding?: boolean; section: SettingsSection; onSectionChange: (section: SettingsSection) => void; active?: boolean; activeWork?: boolean; embedded?: boolean; onBusyChange?: (busy: boolean) => void }) {
   const [hardware, setHardware] = useState(initialHardware);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSetupStatus | null>(null);
@@ -112,6 +112,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
   }, [active, runtime?.busy, starting]);
 
   const busy = starting || !!runtime?.busy;
+  useEffect(() => { onBusyChange?.(busy || advancedDirty); }, [busy, advancedDirty, onBusyChange]);
   const assigned = settings?.workers.filter(worker => worker.enabled && worker.location === 'local').flatMap(worker => worker.deviceIds) || [];
   const changed = selected.length !== new Set(assigned).size || selected.some(id => !assigned.includes(id));
   useEffect(() => { if (settings && !changed) selectionEdited.current = false; }, [settings, changed]);
@@ -162,7 +163,7 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     if (section === 'assistant') setAssistantVisited(true);
   }, [section, advancedSection]);
   const selectSection = onSectionChange;
-  return <TabbedWorkspace id="settings" label="Settings sections" sections={sections} selected={section} onSelect={selectSection}>
+  const content = <>
     <div hidden={section !== 'gpus'} role="tabpanel" id="settings-panel-gpus" aria-labelledby="settings-tab-gpus">
     {error && <div className="error-notice mb-6" role="alert">{error}{!settings && <button onClick={() => void load()} className="ml-3 underline">Try again</button>}</div>}
     <section aria-labelledby="gpu-selection-title">
@@ -191,5 +192,6 @@ export function SettingsWorkspace({ initialHardware, onSaved, onFinished, onboar
     {(assistantVisited || section === 'assistant') && <div hidden={section !== 'assistant'} role="tabpanel" id="settings-panel-assistant" aria-labelledby="settings-tab-assistant" tabIndex={0}><LanguageModels active={active && section === 'assistant'} assistant onConfigure={() => selectSection('integrations')} /></div>}
     {section === 'app' && <div role="tabpanel" id="settings-panel-app" aria-labelledby="settings-tab-app" tabIndex={0}><AppSettings busy={activeWork || busy || advancedDirty} /></div>}
     {(advancedVisited || advancedSection) && <fieldset disabled={busy} hidden={section === 'integrations' || section === 'assistant' || section === 'app'} className="min-w-0">{busy && advancedSection && <p role="status" className="mb-5 text-sm text-ink-2">Applying GPU selection… Settings will be available when setup finishes.</p>}<AdvancedSettings section={section === 'integrations' || section === 'assistant' || section === 'app' ? undefined : section} revision={advancedRevision} initialHardware={hardware} onDirtyChange={setAdvancedDirty} onChooseGpus={() => { selectSection('gpus'); if (current.current.active) document.getElementById('settings-tab-gpus')?.focus(); }} onSaved={advancedSaved} /></fieldset>}
-  </TabbedWorkspace>;
+  </>;
+  return embedded ? content : <TabbedWorkspace id="settings" label="Settings sections" sections={sections} selected={section} onSelect={selectSection}>{content}</TabbedWorkspace>;
 }
