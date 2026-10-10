@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 
 export interface UpscaleActions {
   onSubmitted: (job: Job) => void;
-  onManage: () => void;
+  onManage?: () => void;
   onSessionExpired: () => void;
   onBusyChange: (busy: boolean) => void;
 }
@@ -82,9 +82,9 @@ export function UpscaleAction({ source, width, height, actions, onReady }: {
           {tooLarge && <p className="text-[12px] leading-5 text-ink-2">Choose a smaller scale or image. Maximum output: {selected.maxOutputDimension} px.</p>}
           {!selected.ready && <p className="text-[12px] leading-5 text-ink-2">{selected.missingReasons.join(' ') || 'Connect a ready worker to use this upscaler.'}</p>}
           <button type="button" disabled={busy || loading || tooLarge || !selected.ready} onClick={() => void submit(close)} className="flex h-11 items-center justify-center gap-2 rounded-xl bg-volt text-[14px] font-semibold text-on-volt hover:bg-volt-hi disabled:opacity-50">{busy ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4 rotate-45" />}{busy ? 'Queuing upscale…' : `Upscale ${factor}×`}</button>
-        </> : !loading && !error && <p className="text-[13px] leading-6 text-ink-2">Download an upscaler in Models to enlarge your images.</p>}
+        </> : !loading && !error && <p className="text-[13px] leading-6 text-ink-2">{actions.onManage ? 'Download an upscaler in Models to enlarge your images.' : 'No upscalers are installed. Ask your administrator to add one.'}</p>}
         {error && <p role="alert" className="error-notice text-xs">{error}{!models && <button type="button" onClick={() => void load()} className="ml-2 underline">Try again</button>}</p>}
-        <button data-upscale-manage type="button" disabled={busy} onClick={() => { close(); onReady(); actions.onManage(); }} className="min-h-9 text-left text-[12px] text-ink-2 underline underline-offset-4 hover:text-ink disabled:opacity-50">{installed.length ? 'Manage upscalers' : 'Download upscaler'}</button>
+        {actions.onManage && <button data-upscale-manage type="button" disabled={busy} onClick={() => { close(); onReady(); actions.onManage?.(); }} className="min-h-9 text-left text-[12px] text-ink-2 underline underline-offset-4 hover:text-ink disabled:opacity-50">{installed.length ? 'Manage upscalers' : 'Download upscaler'}</button>}
       </div>}
     </Popover>
   </div>;

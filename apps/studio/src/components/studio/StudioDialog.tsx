@@ -5,7 +5,7 @@ import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import styles from './StudioDialog.module.css';
 
 export function StudioDialog({ panel, open, title, description, icon, onClose, triggerRef, children }: {
-  panel: 'models' | 'settings';
+  panel: 'models' | 'settings' | 'api-access';
   open: boolean;
   title: string;
   description: string;
@@ -33,7 +33,7 @@ export function StudioDialog({ panel, open, title, description, icon, onClose, t
     onKeyDown={keepFocus} {...events}>
     <header className={styles.header}>
       <div className="min-w-0"><h1 id={`${panel}-title`}>{icon}{title}</h1><p id={`${panel}-description`}>{description}</p></div>
-      <button ref={closeButton} data-dialog-dismiss type="button" className={styles.close} aria-label={`Close ${panel}`} title={`Close ${panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
+      <button ref={closeButton} data-dialog-dismiss type="button" className={styles.close} aria-label={`Close ${panel === 'api-access' ? 'API access' : panel}`} title={`Close ${panel === 'api-access' ? 'API access' : panel}`} onClick={onClose}><X size={20} aria-hidden="true" /></button>
     </header>
     <div className={styles.body}>{children}</div>
   </dialog>;

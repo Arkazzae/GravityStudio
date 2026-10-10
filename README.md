@@ -14,7 +14,8 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Image upscaling with Nomos2 HQ and SeedVR2 3B / 7B on the same ComfyUI workers.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
-- Owner login, revocable API tokens, a REST API and an MCP endpoint.
+- Administrator and user accounts, one-use invitations, private galleries, revocable API tokens, a REST API and an MCP endpoint.
+- A separate administration panel with user management, server-time allowances and SMTP, Resend or Cloudflare invitation email.
 - A slide-out Account panel with a saved display name, avatar colors and workspace name.
 - Encrypted integration keys for Hugging Face, Civitai, Gemini, OpenAI, Anthropic and NanoGPT, with access checks in Settings.
 - A prompt assistant with managed local MiMo, Gemini and existing OpenAI-compatible text endpoints, manual refinement, instruction-based rewriting and Undo.
@@ -37,7 +38,17 @@ Open **http://127.0.0.1:4321**. Create the owner account using the key in `stora
 
 For development, use `pnpm dev` instead of the build/start commands. The web application and API run as two processes; neither needs its own container. Stop both with Ctrl+C.
 
-Open the avatar in the top bar to edit **Account**. Display name, avatar color and workspace name are saved on the server and follow the owner across devices; the login username stays the same. The workspace name is a personal label and does not create another workspace. The panel also provides completion preferences, app installation and updates, and sign out. Sound and desktop notification preferences apply immediately and stay in the current browser; **Cancel** discards only profile edits.
+Open the avatar in the top bar to edit **Account**. Display name, avatar color and workspace name are saved on the server and follow the user across devices; the login username stays the same. The workspace name is a personal label and does not create another workspace. The panel also provides completion preferences, app installation and updates, and sign out. Sound and desktop notification preferences apply immediately and stay in the current browser; **Cancel** discards only profile edits.
+
+### Accounts and administration
+
+Open **Account → Administration**, or visit `/admin`. The first owner becomes an administrator; upgrading an existing installation preserves that account and its data. Administrators manage users, invitations, server-time allowances and mail. Server settings, model downloads and provider credentials require an administrator's browser session. Each user's images, references and API tokens remain private.
+
+Create an invitation with a role, expiration and optional initial time allowance. Copy its link or explicitly send it by email. Links can be used once and can be revoked before acceptance. Studio stores only their hashes. There is no open registration. Suspension immediately revokes sessions and API tokens; reactivation requires signing in again. Deleting an account removes its images and account data, retaining an anonymous usage ledger. Active jobs and uploads must finish first; queued jobs are cancelled. Interrupted jobs must be resolved before deletion. Failed storage cleanup leaves the account disabled and retries automatically.
+
+**Work time** measures time reserved for model loading, execution and handling the result. Overlapping tasks count once per user. Queue waits, browsing, downloads and idle models are free. Administrators have unlimited time; invited users receive the allowance chosen in their invitation and can receive later adjustments with a reason. Exhaustion blocks new work and pauses queued admission, while active jobs finish normally and may leave a negative balance. Interrupted image jobs retain their reservation until resolved. Local prompt refinement counts; external provider requests do not use the machine-time allowance. Earlier completed jobs are not charged retroactively.
+
+Under **Administration → Mail**, configure a sender and choose authenticated SMTP (implicit TLS or required STARTTLS), Resend, or Cloudflare Email Service. Secrets use the same encrypted credential vault as model integrations. Resend needs an API key and verified sending domain. Cloudflare uses its [SMTP sending service](https://developers.cloudflare.com/email-service/api/send-emails/smtp/), an onboarded sending domain and an API token with **Email Sending:Edit** permission. Email Routing alone is insufficient. **Send test email** sends only when explicitly requested; saving settings does not send a message. Provider acceptance does not guarantee inbox delivery.
 
 ### Install the app and enable notifications
 
@@ -87,7 +98,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 ## API and MCP
 
-Create a token under **Settings → Advanced settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an owner browser session.
+Create a token under **Account → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an administrator browser session.
 
 The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model and upscaler listing, image generation and upscaling, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
 
@@ -95,7 +106,7 @@ See [API usage](apps/server/README.md) for requests and response behavior.
 
 ## Integration keys
 
-Open **Settings → Integrations** to save, replace, remove or check a provider key. The panel shows only the last four characters of a saved key; there is no reveal or export operation. The owner's browser session is required to manage integrations. Studio API tokens and MCP clients cannot read or manage them.
+Open **Settings → Integrations** to save, replace, remove or check a provider key. The panel shows only the last four characters of a saved key; there is no reveal or export operation. An administrator's browser session is required to manage integrations. Studio API tokens and MCP clients cannot read or manage them.
 
 Keys are encrypted with AES-256-GCM before being written to SQLite. The server uses `GRAVITY_CREDENTIALS_KEY` when supplied (32 random bytes encoded as base64), otherwise it creates a private `credentials.key` file in the data directory. Keep this master key stable and back it up securely: losing it makes saved keys unreadable. For deployments, supply it through your secret manager and keep it separate from database backups. Encryption protects a database copy; someone with access to the running server or both the database and master key can still recover credentials. Use HTTPS when accessing Studio over a network.
 
@@ -113,11 +124,11 @@ In **Models → Language** or **Settings → Assistant**, load the available mod
 
 Open **AI** in the prompt dock to **Refine** the current prompt or **Rewrite** it with an instruction. Guidance follows the selected image model's family. Only text is sent to the provider; reference images stay in Studio. Generation uses the resulting prompt without another automatic refinement. Undo restores the preceding prompt until you edit it, and Cancel stops waiting and aborts the upstream request. The provider may still charge for work it has already performed.
 
-Refinement requires the owner's browser session. Existing Studio API tokens and MCP clients cannot invoke paid text requests. Responses have time and size limits, incomplete output is rejected, and replies cannot replace a draft edited during the request. Quoted lettering and image markers are preserved; edit the original prompt directly when changing them. Cloud adapters are covered with protocol fixtures; no live paid-provider inference is part of the automated tests.
+Refinement requires an active user's browser session. Existing Studio API tokens and MCP clients cannot invoke paid text requests. Responses have time and size limits, incomplete output is rejected, and replies cannot replace a draft edited during the request. Quoted lettering and image markers are preserved; edit the original prompt directly when changing them. Cloud adapters are covered with protocol fixtures; no live paid-provider inference is part of the automated tests.
 
 ## Data and deployment
 
-By default, `storage/` contains the database, owner credentials, session/token hashes, private inputs and outputs, and managed worker state. Model weights live in `storage/models/`. These directories and `.env` are excluded from Git.
+By default, `storage/` contains the database, account credentials, session/token hashes, private inputs and outputs, and managed worker state. Model weights live in `storage/models/`. These directories and `.env` are excluded from Git.
 
 For primary object storage, use the [provided RustFS service](deploy/rustfs/README.md) or an existing private S3-compatible bucket. New references and generated images are written directly to that bucket; the authenticated gallery URLs stay the same. [Storage configuration and migration](docs/storage.md) covers credential setup, verified migration of existing files, backups and recovery. SQLite, weights and ComfyUI working files remain on the host.
 

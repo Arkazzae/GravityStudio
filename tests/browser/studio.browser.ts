@@ -2678,6 +2678,194 @@ test('Background preserves draft intent, submits each mode and reuses transparen
   assert.deepEqual(browser.errors, []);
 });
 
+test('administration manages invited accounts, private access, allowances and mail without sending messages', { timeout: 180000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort(), origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'admin-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => { child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await close(server); await fixture.close(); });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Administration frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const admin = await openBrowser(t), member = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await admin.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  async function request<T = unknown>(path: string, method = 'GET', body?: unknown) {
+    const response = await fetch(`${backend}/api${path}`, { method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.ok(response.ok, `${method} ${path} returns ${response.status}`); return await response.json() as T;
+  }
+  // Exercise real configuration writes, invitations and account APIs. Guard the
+  // two email entry points before any interaction: this test never sends mail.
+  await admin.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__adminEmailRequests = 0;
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.pathname === '/api/admin/mail/test' || url.pathname === '/api/admin/invitations' && options.method === 'POST' && JSON.parse(options.body).sendEmail) {
+        window.__adminEmailRequests++; return Promise.resolve(Response.json({error:{message:'Email is disabled in this browser test.'}}, {status:503}));
+      }
+      return nativeFetch(input, options);
+    };
+  ` });
+  await member.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__memberRequests = [];
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, options = {}) => { const url = new URL(input instanceof Request ? input.url : String(input), location.href); if (url.origin === location.origin) window.__memberRequests.push(url.pathname); return nativeFetch(input, options); };
+  ` });
+  async function settle(browser = admin) { await browser.evaluate("Promise.all([document.fonts.ready,...document.getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => true)"); }
+  async function capture(surface: string, browser = admin) {
+    for (const width of [1440, 390, 320]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 960 : 844, deviceScaleFactor: 1, mobile: false });
+      await browser.evaluate("document.querySelector('[data-dialog-scroll]')?.scrollTo({top:0}); window.scrollTo(0,0)"); await settle(browser);
+      const geometry = await browser.evaluate<{ viewport: number; page: number; overflowing: string[] }>(`({viewport:innerWidth,page:document.documentElement.scrollWidth,overflowing:Array.from(document.querySelectorAll('main input,main select,main button')).filter(element=>element.getClientRects().length&&getComputedStyle(element).visibility!=='hidden').filter(element=>{const rect=element.getBoundingClientRect();return rect.right>innerWidth+1||rect.left < -1}).map(element=>element.getAttribute('name')||element.textContent.trim())})`);
+      assert.ok(geometry.page <= geometry.viewport + 1, `${surface} fits ${width}px`);
+      assert.deepEqual(geometry.overflowing, [], `${surface} controls fit ${width}px`);
+      await browser.screenshot(join(output, `admin-${surface}-${width}.png`));
+    }
+    await browser.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false }); await settle(browser);
+  }
+  await admin.navigate(`${origin}/image`);
+  await admin.until("!!document.querySelector('button[aria-label=Account]')", 'Administrator Studio ready');
+  await admin.click('button[aria-label="Account"]'); await admin.until("!!document.querySelector('#account-panel[open]')", 'Account opens'); await settle();
+  await admin.clickText('Open administration');
+  await admin.until("!!document.querySelector('[data-admin-user]')", 'Administration users loaded');
+  assert.match(await admin.evaluate<string>('document.body.innerText'), /You cannot delete the account you are signed in with/);
+  await capture('users');
+
+  await admin.click('#admin-tab-invitations');
+  await admin.fill('input[name="invitation-email"]', 'artist@example.com');
+  await admin.fill('input[name="invitation-hours"]', '1.5');
+  assert.equal(await admin.evaluate("document.querySelector('input[name=\"send-invitation-email\"]').checked"), false);
+  await admin.clickText('Create invitation link');
+  await admin.until("!!document.querySelector('input[aria-label=\"Invitation link\"]')", 'One-time invitation link appears');
+  const invitationUrl = await admin.evaluate<string>("document.querySelector('input[aria-label=\"Invitation link\"]').value");
+  const token = new URL(invitationUrl).hash.slice('#token='.length);
+  assert.ok(token.length > 20);
+  assert.equal(await admin.evaluate(`JSON.stringify(localStorage).includes(${JSON.stringify(token)}) || JSON.stringify(sessionStorage).includes(${JSON.stringify(token)})`), false, 'Invitation token is kept out of browser storage');
+  await capture('invitations');
+  await member.navigate(invitationUrl);
+  await member.until("!!document.querySelector('input[name=confirmPassword]')", 'Invitation inspection unlocks account form');
+  assert.equal(await member.evaluate('location.hash'), '', 'Invitation bearer token is removed from history after inspection starts');
+  assert.match(await member.evaluate<string>('document.body.innerText'), /artist@example\.com/);
+  assert.match(await member.evaluate<string>('document.body.innerText'), /1h 30m/);
+  await capture('invite', member);
+  await member.fill('input[name=username]', 'artist');
+  await member.fill('input[name=password]', 'browser-member-password');
+  await member.fill('input[name=confirmPassword]', 'wrong-password-12');
+  await member.clickText('Join Studio'); await member.until("document.body.innerText.includes('The passwords do not match.')", 'Mismatched password recovery');
+  await member.fill('input[name=confirmPassword]', 'browser-member-password');
+  await member.clickText('Join Studio');
+  await member.until("location.pathname === '/image' && !!document.querySelector('#image-prompt')", 'New invited account opens Studio without server onboarding');
+  const users = await request<{ users: Array<{ id: string; username: string; role: string; revision: number }> }>('/admin/users');
+  const artist = users.users.find(user => user.username === 'artist')!; assert.equal(artist.role, 'user');
+  assert.equal(await member.evaluate("!!document.querySelector('button[aria-label=Models],button[aria-label=Settings],#models-dialog,#settings-dialog')"), false, 'Global controls do not mount for members');
+  assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => ['/api/settings','/api/runtime','/api/integrations','/api/models/library','/api/admin/users'].includes(path))"), [], 'Member Studio makes no privileged configuration requests');
+  await member.click('button[aria-label="Account"]'); await member.until("!!document.querySelector('#account-panel[open]')", 'Member account opens'); await settle(member);
+  assert.equal(await member.evaluate("!!document.querySelector('#account-panel a[href=\"/admin\"]')"), false);
+  await member.click('#account-panel section[aria-labelledby="account-time-heading"] summary');
+  await member.until("document.querySelector('#account-panel').innerText.includes('1h 30m')", 'Member sees their own allowance');
+  await member.clickText('Manage access tokens'); await member.until("!!document.querySelector('#api-access-dialog[open]')", 'Members retain personal API access'); await settle(member);
+  await member.fill('#api-access-dialog input[placeholder="My MCP client"]', 'artist-tool');
+  await member.clickText('Create token'); await member.until("!!document.querySelector('input[aria-label=\"New access token\"]')", 'Personal token is created');
+  await member.click('button[aria-label="Close API access"]');
+  await member.until("!document.querySelector('#api-access-dialog')", 'Closing clears one-time token view');
+  await member.navigate(`${origin}/admin`); await member.until("document.body.innerText.includes('Administrator access required')", 'Direct admin route denies members');
+  assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => path.startsWith('/api/admin/'))"), []);
+  await capture('denied', member);
+  for (const path of ['/settings', '/models']) {
+    await member.navigate(`${origin}${path}`); await member.until("!!document.querySelector('#image-prompt')", 'Legacy configuration route safely shows member Studio');
+    assert.equal(await member.evaluate("!!document.querySelector('#settings-dialog,#models-dialog')"), false);
+    assert.deepEqual(await member.evaluate("window.__memberRequests.filter(path => ['/api/settings','/api/runtime','/api/integrations','/api/models/library'].includes(path))"), []);
+  }
+
+  // Expiry keeps Studio mounted. A different account without a saved draft must
+  // start empty, rather than inheriting the previous account's in-memory prompt.
+  const secondInvite = await request<{url:string}>('/admin/invitations', 'POST', { role: 'user', expiresInHours: 24, initialTimeMs: 3_600_000, sendEmail: false });
+  const second = await request<{user:{id:string}}>('/invitations/accept', 'POST', { token: new URL(secondInvite.url).hash.slice('#token='.length), username: 'second-artist', password: 'browser-second-password' });
+  await member.fill('#image-prompt', 'Private first artist prompt');
+  await member.until(`JSON.parse(localStorage.getItem('gravity:image-draft:${artist.id}') || '{}').prompt === 'Private first artist prompt'`, 'First account draft is stored under its owner');
+  fixture.store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(artist.id);
+  await member.until("!!document.querySelector('input[autocomplete=current-password]')", 'Revoked session returns to sign-in without a navigation');
+  await member.fill('input[name=username]', 'second-artist'); await member.fill('input[name=password]', 'browser-second-password'); await member.clickText('Sign in');
+  await member.until("!!document.querySelector('#image-prompt')", 'Second account enters the same Studio component');
+  assert.equal(await member.evaluate("document.querySelector('#image-prompt').value"), '');
+  await member.until(`JSON.parse(localStorage.getItem('gravity:image-draft:${second.user.id}') || '{}').prompt === ''`, 'Empty draft is persisted for the new account');
+
+  await admin.click('#admin-tab-work-time');
+  await admin.fill('input[aria-label="Search work time users"]', 'artist');
+  await admin.until("Array.from(document.querySelectorAll('#admin-panel-work-time button')).some(button=>button.firstElementChild?.textContent === 'artist')", 'Target allowance is listed');
+  await admin.evaluate("Array.from(document.querySelectorAll('#admin-panel-work-time button')).find(button=>button.firstElementChild?.textContent === 'artist').focus()"); await admin.key('Enter');
+  await admin.until(`!!document.querySelector('input[name="time-reason"]')`, 'Member time adjustment ready');
+  await admin.fill('input[name=time-hours]', '0'); await admin.fill('input[name=time-minutes]', '30'); await admin.fill('input[name=time-reason]', 'Browser allowance review');
+  await admin.clickText('Add server time'); await admin.until("document.body.innerText.includes('2h 00m') && document.querySelector('input[name=time-reason]')?.value === ''", 'Allowance adjustment persists');
+  const allowance = await request<{ balance: { remainingMs: number }; adjustments: Array<{ reason: string }> }>(`/admin/users/${artist.id}/work-time`);
+  assert.equal(allowance.balance.remainingMs, 7_200_000); assert.ok(allowance.adjustments.some(entry => entry.reason === 'Browser allowance review'));
+  await capture('work-time');
+
+  await admin.click('#admin-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com');
+  await admin.until(`!!document.querySelector('[data-admin-user="${artist.id}"]')`, 'Invited account editable');
+  await admin.fill('select[name=user-role]', 'admin'); await admin.clickText('Save access');
+  await admin.until("document.querySelector('select[name=user-role]')?.value === 'admin' && Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Save access')?.disabled", 'Role promotion persisted');
+  assert.equal((await request<{users:Array<{id:string;role:string}>}>('/admin/users')).users.find(user=>user.id===artist.id)?.role, 'admin');
+  await admin.fill('select[name=user-role]', 'user'); await admin.clickText('Save access');
+  await admin.until("document.querySelector('select[name=user-role]')?.value === 'user' && Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Save access')?.disabled", 'Role restored');
+  const saved = (await request<{users:Array<{id:string;role:string;revision:number}>}>('/admin/users')).users.find(user=>user.id===artist.id)!;
+  await request(`/admin/users/${artist.id}`, 'PATCH', { revision: saved.revision, role: 'user', status: 'suspended' });
+  await admin.fill('select[name=user-role]', 'admin'); await admin.clickText('Save access');
+  await admin.until("!!document.querySelector('[role=alert]')", 'Stale revision is reported without discarding selection');
+  assert.equal(await admin.evaluate("document.querySelector('select[name=user-role]').value"), 'admin');
+  await admin.clickText('Reload saved user'); await admin.until("document.querySelector('select[name=user-status]')?.value === 'suspended'", 'Reload gets current status');
+  await admin.fill('select[name=user-status]', 'active'); await admin.clickText('Save access');
+  await admin.until("document.querySelector('select[name=user-status]')?.value === 'active' && Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Save access')?.disabled", 'Account reactivated');
+
+  await admin.click('#admin-tab-mail'); await admin.until("!!document.querySelector('input[name=mail-from]')", 'Mail configuration loads');
+  await admin.fill('select[name=mail-provider]', 'smtp'); await admin.fill('input[name=mail-from]', 'studio@example.com');
+  await admin.fill('input[name=smtp-host]', 'smtp.example.com'); await admin.fill('input[name=smtp-username]', 'studio'); await admin.fill('input[name=mail-secret]', 'browser-smtp-fixture-secret');
+  await admin.clickText('Save mail settings'); await admin.until("document.body.innerText.includes('Credential saved') && document.querySelector('input[name=mail-secret]')?.value === ''", 'SMTP credential write clears secret input');
+  let mail = await request<{configuration:{provider:string;smtp?:{host:string}};credentials:Record<string,{configured:boolean}>}>('/admin/mail');
+  assert.equal(mail.configuration.smtp?.host, 'smtp.example.com'); assert.equal(mail.credentials.smtp.configured, true); assert.equal(JSON.stringify(mail).includes('browser-smtp-fixture-secret'), false);
+  await admin.fill('select[name=mail-provider]', 'resend'); assert.equal(await admin.evaluate("!!document.querySelector('input[name=smtp-host]')"), false);
+  await admin.fill('input[name=mail-secret]', 'browser-resend-fixture-secret'); await admin.clickText('Save mail settings');
+  await admin.until("document.body.innerText.includes('Credential saved') && document.querySelector('input[name=mail-secret]')?.value === ''", 'Resend API credential saved');
+  await admin.fill('select[name=mail-provider]', 'cloudflare'); await admin.fill('input[name=mail-secret]', 'browser-cloudflare-fixture-secret'); await admin.clickText('Save mail settings');
+  await admin.until("document.body.innerText.includes('Credential saved') && document.querySelector('input[name=mail-secret]')?.value === ''", 'Cloudflare token saved');
+  mail = await request('/admin/mail'); assert.equal(mail.configuration.provider, 'cloudflare'); assert.equal(mail.configuration.smtp, undefined); assert.equal(mail.credentials.cloudflare.configured, true);
+  assert.equal(await admin.evaluate("JSON.stringify(localStorage).includes('fixture-secret') || JSON.stringify(sessionStorage).includes('fixture-secret')"), false);
+  await capture('mail');
+  await admin.clickText('Remove saved credential'); await admin.until("document.body.innerText.includes('No credential saved.')", 'Removing provider credential updates its state');
+  assert.equal((await request<{credentials:{cloudflare:{configured:boolean}}}>('/admin/mail')).credentials.cloudflare.configured, false);
+  await admin.click('#admin-tab-server'); await capture('server');
+  await admin.clickText('Open server settings'); await admin.until("!!document.querySelector('#settings-dialog[open]')", 'Existing server settings are accessible in administration'); await settle();
+  await admin.click('button[aria-label="Close settings"]'); await admin.until("!document.querySelector('#settings-dialog[open]')", 'Server settings dismiss');
+  await admin.clickText('Manage models'); await admin.until("!!document.querySelector('#models-dialog[open]')", 'Existing model manager is accessible in administration'); await settle();
+  await admin.click('button[aria-label="Close models"]'); await admin.until("!document.querySelector('#models-dialog[open]')", 'Models dismiss');
+
+  await admin.click('#admin-tab-invitations'); await admin.fill('input[name=invitation-email]', 'revoked@example.com'); await admin.clickText('Create invitation link');
+  await admin.until("!!document.querySelector('input[aria-label=\"Invitation link\"]')", 'Revocable invitation created');
+  const revokedUrl = await admin.evaluate<string>("document.querySelector('input[aria-label=\"Invitation link\"]').value");
+  await admin.clickText('Revoke'); await admin.until("document.body.innerText.includes('Invitation revoked.')", 'Invitation revoked');
+  await member.navigate(revokedUrl); await member.until("!!document.querySelector('[role=alert]')", 'Revoked link reports recovery');
+  assert.equal(await member.evaluate("!!document.querySelector('input[name=username]')"), false); await capture('invite-error', member);
+  await admin.click('#admin-tab-users'); await admin.fill('input[aria-label="Search users"]', 'artist@example.com'); await admin.until(`!!document.querySelector('[data-admin-user="${artist.id}"]')`, 'Deletion target ready');
+  await admin.clickText('Delete account'); await admin.fill('input[name=delete-confirmation]', 'wrong-user');
+  assert.equal(await admin.evaluate("Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Permanently delete account').disabled"), true);
+  await admin.fill('input[name=delete-confirmation]', 'artist'); await admin.clickText('Permanently delete account');
+  await admin.until("document.body.innerText.includes('No users match your search.')", 'Account deleted');
+  const deleted = (await request<{users:Array<{id:string;status:string}>}>('/admin/users')).users.find(user=>user.id===artist.id);
+  assert.ok(!deleted || deleted.status === 'deleted');
+  assert.equal(await admin.evaluate('window.__adminEmailRequests'), 0, 'No email send operation occurred');
+  assert.deepEqual(admin.errors, []); assert.deepEqual(member.errors, []);
+});
+
 test('account drawer persists profiles, preserves conflicting drafts and clears private state on sign out', { timeout: 120000 }, async t => {
   const fixture = await engineFixture({ count: 1 });
   const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });

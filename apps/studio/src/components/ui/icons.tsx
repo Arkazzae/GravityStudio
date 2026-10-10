@@ -4,9 +4,9 @@ import { forwardRef, type CSSProperties, type SVGProps } from 'react';
 import {
   Activity as ActivityIcon, Add, ArrowDown2, ArrowLeft2, ArrowRight as ArrowRightIcon, ArrowRight2, ArrowRotateLeft, ArrowUp as ArrowUpIcon,
   Box, Category, Clock, Copy as CopyIcon, Cpu as CpuIcon, Driver2, Eye as EyeIcon, EyeSlash,
-  ExportSquare, Folder, Gallery, GalleryAdd, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Layer, Logout, Magicpen, Mask, MessageQuestion,
+  ExportSquare, Folder, Gallery, GalleryAdd, Grid3, Heart as HeartIcon, Import, InfoCircle as InfoCircleIcon, Key, Layer, Logout, Magicpen, Mask, MessageQuestion,
   Notification as NotificationIcon, Monitor, Refresh, RepeateMusic, Scan as ScanIcon, SearchNormal1, SearchZoomIn1, SearchZoomOut1, Setting2, Setting4,
-  Shuffle as ShuffleIcon, Speedometer, Status, Stop, TickCircle, Trash, User, Warning2, type Icon,
+  Shuffle as ShuffleIcon, Sms, ShieldTick, Profile2User, Speedometer, Status, Stop, TickCircle, Trash, User, Warning2, type Icon,
 } from 'iconsax-reactjs';
 import { cn } from '@/lib/utils';
 import styles from './icons.module.css';
@@ -55,6 +55,7 @@ export const ImageIcon = /* @__PURE__ */ icon(Gallery, 'ImageIcon');
 export const ImagePlus = /* @__PURE__ */ icon(GalleryAdd, 'ImagePlus');
 export const InfoCircle = /* @__PURE__ */ icon(InfoCircleIcon, 'InfoCircle');
 export const Layers2 = /* @__PURE__ */ icon(Layer, 'Layers2');
+export const KeyRound = /* @__PURE__ */ icon(Key, 'KeyRound');
 export const LayoutGrid = /* @__PURE__ */ icon(Category, 'LayoutGrid');
 export const Library = /* @__PURE__ */ icon(Gallery, 'Library');
 export const LoaderCircle = /* @__PURE__ */ icon(Status, 'LoaderCircle');
@@ -78,3 +79,7 @@ export const Wand2 = /* @__PURE__ */ icon(Magicpen, 'Wand2');
 export const X = /* @__PURE__ */ icon(Add, 'X', 45);
 export const ZoomIn = /* @__PURE__ */ icon(SearchZoomIn1, 'ZoomIn');
 export const ZoomOut = /* @__PURE__ */ icon(SearchZoomOut1, 'ZoomOut');
+
+export const Mail = /* @__PURE__ */ icon(Sms, 'Mail');
+export const Shield = /* @__PURE__ */ icon(ShieldTick, 'Shield');
+export const Users = /* @__PURE__ */ icon(Profile2User, 'Users');

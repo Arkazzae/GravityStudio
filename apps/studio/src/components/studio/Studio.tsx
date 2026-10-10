@@ -57,28 +57,31 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [assetsBusy, setAssetsBusy] = useState(false);
   const [upscaleBusy, setUpscaleBusy] = useState(false);
   const authenticated = !!bootstrap?.authenticated;
+  const admin = authenticated && bootstrap?.user?.role === 'admin';
   const notifications = useJobNotifications(authenticated ? bootstrap?.user?.id || null : null, state?.jobs);
   const { updateAvailable } = usePwa();
   const { pushNotice } = notifications;
-  useEffect(() => { if (authenticated && updateAvailable) pushNotice({ kind: 'info', title: 'An app update is ready', body: 'Open Settings → App to reload when you are ready.' }); }, [authenticated, updateAvailable, pushNotice]);
+  useEffect(() => { if (authenticated && updateAvailable) pushNotice({ kind: 'info', title: 'An app update is ready', body: 'Open Account to reload when you are ready.' }); }, [authenticated, updateAvailable, pushNotice]);
   const pending = state?.jobs.filter(job => ['queued', 'preparing', 'running'].includes(job.status)) || [];
   const hasPending = useRef(false); hasPending.current = pending.length > 0;
   useEffect(() => {
     const userId = bootstrap?.authenticated ? bootstrap.user?.id : undefined;
     if (!userId) { setDraftOwner(null); return; }
+    let restored = initialDraft;
     try {
       const value = JSON.parse(localStorage.getItem(`gravity:image-draft:${userId}`) || 'null');
       if (value && typeof value.modelId === 'string' && typeof value.prompt === 'string') {
-        setDraft({ ...initialDraft, ...value, background: imageBackground(value.background), images: Array.isArray(value.images) ? value.images.filter((image: { id?: unknown; url?: unknown }) => typeof image.id === 'string' && typeof image.url === 'string' && image.url.startsWith('/api/inputs/')) : [] });
+        restored = { ...initialDraft, ...value, background: imageBackground(value.background), images: Array.isArray(value.images) ? value.images.filter((image: { id?: unknown; url?: unknown }) => typeof image.id === 'string' && typeof image.url === 'string' && image.url.startsWith('/api/inputs/')) : [] };
       }
     } catch { /* A blocked or full browser store does not prevent generation. */ }
+    setDraft(restored);
     setDraftOwner(userId);
   }, [bootstrap?.authenticated, bootstrap?.user?.id]);
   useEffect(() => {
     if (!draftOwner || !bootstrap?.authenticated) return;
     try { localStorage.setItem(`gravity:image-draft:${draftOwner}`, JSON.stringify(draft)); } catch { /* Keep the current in-memory draft. */ }
   }, [draft, draftOwner, bootstrap?.authenticated]);
-  const sessionExpired = useCallback(() => { setPanel(null); setVisitedPanels({ settings: false, models: false, assets: false }); setSettingsSection('gpus'); setModelsRequest(undefined); setOnboarding(false); stateRevision.current++; setBootstrap(current => current ? { ...current, authenticated: false } : null); setState(null); setConnected(false); setConnectionError(''); setCatalogError(null); }, []);
+  const sessionExpired = useCallback(() => { setDraft(initialDraft); setDraftOwner(null); setPanel(null); setVisitedPanels({ settings: false, models: false, assets: false }); setSettingsSection('gpus'); setModelsRequest(undefined); setOnboarding(false); stateRevision.current++; setBootstrap(current => current ? { ...current, authenticated: false } : null); setState(null); setConnected(false); setConnectionError(''); setCatalogError(null); }, []);
   const favorites = useFavorites(authenticated ? bootstrap?.user?.id || null : null, sessionExpired);
   const checkSession = useCallback(async () => {
     setBootstrapError('');
@@ -116,8 +119,8 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const assetJobs = useMemo(() => [...allJobs, ...favorites.jobs.filter(job => !allJobs.some(entry => entry.id === job.id))], [allJobs, favorites.jobs]);
   const jobs = filter === 'favorites' ? favorites.jobs : filter === 'queue' ? allJobs.filter(job => job.status !== 'succeeded' && job.status !== 'cancelled') : allJobs;
   const imageCount = jobs.reduce((total, job) => total + job.outputs.filter(output => output.mimeType.startsWith('image/')).length, 0);
-  const showSettings = panel === 'settings';
-  const showModels = panel === 'models';
+  const showSettings = admin && panel === 'settings';
+  const showModels = admin && panel === 'models';
   async function signOut() {
     setSigningOut(true);
     try { await api('/logout', { method: 'POST', body: '{}', signal: AbortSignal.timeout(30_000) }); setDraft(initialDraft); sessionExpired(); }
@@ -147,7 +150,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
       setFilter('all'); closePanel(); void refresh();
       pushNotice({ kind: 'success', title: 'Upscale queued', body: `${job.modelName || job.modelId}${job.input?.operation === 'upscale' ? ` · ${job.input.scale}×` : ''}` });
     },
-    onManage: () => { setModelsRequest(current => ({ section: 'tools', revision: (current?.revision || 0) + 1 })); openPanel('models'); },
+    onManage: admin ? () => { setModelsRequest(current => ({ section: 'tools', revision: (current?.revision || 0) + 1 })); openPanel('models'); } : undefined,
     onSessionExpired: sessionExpired,
     onBusyChange: setUpscaleBusy,
   };
@@ -165,24 +168,24 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
         </div>)}
       </nav>
       <div className="ml-2 flex shrink-0 items-center gap-1 max-md:ml-auto max-sm:gap-0">
-        <ServerActivity state={state} connected={connected} connectionError={connectionError || (catalogError?.unavailable ? catalogError.message : '') || favorites.connectionError} onRefresh={refreshActivity} />
+        <ServerActivity admin={admin} state={state} connected={connected} connectionError={connectionError || (catalogError?.unavailable ? catalogError.message : '') || favorites.connectionError} onRefresh={refreshActivity} />
         <NotificationsPopover connected={connected} {...notifications} />
         <IconChip ref={assetsTrigger} onClick={() => openPanel('assets')} active={panel === 'assets'} aria-label="Assets" title="Assets" aria-haspopup="dialog" aria-expanded={panel === 'assets'} aria-controls={panel === 'assets' ? "assets-browser-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Library aria-hidden="true" /></IconChip>
-        <IconChip ref={modelsTrigger} onClick={() => openPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>
-        <IconChip ref={settingsTrigger} onClick={() => openPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>
+        {admin && <IconChip ref={modelsTrigger} onClick={() => openPanel('models')} active={showModels} aria-label="Models" title="Models" aria-haspopup="dialog" aria-expanded={showModels} aria-controls={showModels ? "models-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><HardDrive aria-hidden="true" /></IconChip>}
+        {admin && <IconChip ref={settingsTrigger} onClick={() => openPanel('settings')} active={showSettings} aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded={showSettings} aria-controls={showSettings ? "settings-dialog" : undefined} className="rounded-lg [&_svg]:size-5"><Settings aria-hidden="true" /></IconChip>}
         {bootstrap.user && <AccountButton user={bootstrap.user} signingOut={signingOut} onSignOut={signOut} onSessionExpired={sessionExpired} appBusy={pending.length > 0 || dockBusy || assetsBusy || upscaleBusy} alertSettings={notifications} onNotice={(title, body) => pushNotice({ kind: 'success', title, body })} />}
       </div>
     </header>
     {catalogError && !catalogError.unavailable && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-y border-[#e8997038] bg-[#67412c33] px-4 py-2 text-xs text-[#ffc3aa]"><span>{catalogError.message}</span><button className="shrink-0 underline underline-offset-3" onClick={() => void refreshCatalog()}>Try again</button></div>}
     <main className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
-        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight, scrollPaddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid upscale={upscaleActions} onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={() => openPanel('models')} onOpenSettings={() => openPanel('settings')} />}</div>
-        <PromptDock browsing={panel === 'references'} onBrowse={() => openPanel('references')} onCloseAssets={closePanel} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={() => { setSettingsSection('assistant'); openPanel('settings'); }} favoriteError={favorites.error} onOpenModels={() => openPanel('models')} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
+        <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight, scrollPaddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid upscale={upscaleActions} onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={admin ? () => openPanel('models') : undefined} onOpenSettings={admin ? () => openPanel('settings') : undefined} />}</div>
+        <PromptDock browsing={panel === 'references'} onBrowse={() => openPanel('references')} onCloseAssets={closePanel} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={admin ? () => { setSettingsSection('assistant'); openPanel('settings'); } : undefined} favoriteError={favorites.error} onOpenModels={admin ? () => openPanel('models') : undefined} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
-    {visitedPanels.settings && <StudioDialog panel="settings" open={showSettings} title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
+    {admin && visitedPanels.settings && <StudioDialog panel="settings" open={showSettings} title={onboarding ? 'Set up your studio' : 'Settings'} description="Choose your GPUs and manage generation." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
       <SettingsWorkspace activeWork={pending.length > 0 || dockBusy || assetsBusy || upscaleBusy} active={showSettings} section={settingsSection} onSectionChange={setSettingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
-    {visitedPanels.models && <StudioDialog panel="models" open={showModels} title="Models" description="Manage image and language models." icon={<Boxes size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={modelsTrigger}>
+    {admin && visitedPanels.models && <StudioDialog panel="models" open={showModels} title="Models" description="Manage image and language models." icon={<Boxes size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={modelsTrigger}>
       <ModelLibrary requestedSection={modelsRequest} active={showModels} onConfigureText={() => { setSettingsSection('integrations'); openPanel('settings'); }} onChanged={() => { void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
     {visitedPanels.assets && <AssetsBrowser upscale={upscaleActions} open={panel === 'assets'} triggerRef={assetsTrigger} jobs={assetJobs} models={catalog.models} onClose={closePanel} onReuse={reuse} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} onDeleteOutput={deleteOutput} onInputDeleted={id => setDraft(current => ({ ...current, images: current.images.filter(image => image.id !== id) }))} onSessionExpired={sessionExpired} onBusyChange={setAssetsBusy} />}

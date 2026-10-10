@@ -15,7 +15,7 @@ const known = (value: number | null | undefined): value is number => value != nu
 const residentPhases = new Set(['loaded', 'loading', 'running', 'stopping', 'failed']);
 type ActivityWorker = StudioState['workers'][number];
 
-export function ServerActivity({ state, connected, connectionError = '', onRefresh }: { state: StudioState | null; connected: boolean; connectionError?: string; onRefresh: () => void | Promise<void> }) {
+export function ServerActivity({ state, connected, connectionError = '', onRefresh, admin = false }: { state: StudioState | null; connected: boolean; connectionError?: string; onRefresh: () => void | Promise<void>; admin?: boolean }) {
   const { open, close, triggerProps, popoverProps } = useAnchoredPopover({ width: 368, side: 'bottom', align: 'end' });
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -100,12 +100,12 @@ export function ServerActivity({ state, connected, connectionError = '', onRefre
     const result = await api<LocalTextStatus>('/text/local/unload', { method: 'POST', body: '{}', signal });
     if (mounted.current) { setLocalText(result); setTextError(''); setPollRevision(value => value + 1); }
   });
-  const workerRow = (worker: ActivityWorker) => <WorkerRow key={worker.id} worker={worker} jobs={[...running, ...interrupted].filter(job => job.workerId === worker.id)} acting={acting} requested={requested.includes(worker.id)} onRelease={release} />;
+  const workerRow = (worker: ActivityWorker) => <WorkerRow key={worker.id} worker={worker} jobs={[...running, ...interrupted].filter(job => job.workerId === worker.id)} acting={acting} requested={requested.includes(worker.id)} onRelease={admin ? release : undefined} />;
   const textRow = hasResidentText && localText ? <div className={styles.runtime}>
     <div className={styles.runtimeHeading}>
       <span className={styles.runtimeName}>{localText.model.name}</span>
       <span className={styles.runtimeState} data-busy={localText.busy}>{localText.phase === 'loaded' ? 'Loaded' : localText.phase === 'failed' ? 'Needs attention' : localText.phase}</span>
-      <button type="button" disabled={localText.busy || acting !== null} onClick={() => void unloadText()} aria-label={`Unload ${localText.model.name}`} title={localText.busy ? 'The assistant can unload after its current request finishes.' : 'Unload the model and clear its context cache. The next response will load it again.'} className={styles.release}>{acting === 'text' ? 'Unloading…' : 'Unload'}</button>
+      {admin && <button type="button" disabled={localText.busy || acting !== null} onClick={() => void unloadText()} aria-label={`Unload ${localText.model.name}`} title={localText.busy ? 'The assistant can unload after its current request finishes.' : 'Unload the model and clear its context cache. The next response will load it again.'} className={styles.release}>{acting === 'text' ? 'Unloading…' : 'Unload'}</button>}
     </div>
     {(localText.busy || localText.error) && <p className={localText.error ? styles.warning : styles.detail}>{localText.error || localText.message}</p>}
   </div> : null;
@@ -174,14 +174,14 @@ function JobRow({ job, position, acting, onCancel }: { job: Job; position: numbe
   </li>;
 }
 
-function WorkerRow({ worker, jobs, acting, requested, onRelease }: { worker: ActivityWorker; jobs: Job[]; acting: string | null; requested: boolean; onRelease: (id: string) => void }) {
+function WorkerRow({ worker, jobs, acting, requested, onRelease }: { worker: ActivityWorker; jobs: Job[]; acting: string | null; requested: boolean; onRelease?: (id: string) => void }) {
   const busy = jobs.some(job => ['preparing', 'running'].includes(job.status));
   const uncertain = jobs.some(job => job.status === 'interrupted');
   return <div className={styles.runtime}>
     <div className={styles.runtimeHeading}>
       <span className={styles.runtimeName} title={jobs.length ? jobs.map(job => job.modelName || job.modelId).join(', ') : worker.name}>{jobs.length ? jobs.map(job => job.modelName || job.modelId).join(', ') : worker.name}</span>
       <span className={styles.runtimeState} data-busy={busy}>{worker.connected === false ? 'Unavailable' : uncertain ? 'Needs attention' : busy || worker.status === 'busy' ? 'Working' : 'Idle'}</span>
-      {requested ? <span role="status" className={styles.requested}>Release requested</span> : <button type="button" disabled={!worker.canRelease || acting !== null} onClick={() => onRelease(worker.id)} aria-label={`Release cache for ${worker.name}`} title={worker.canRelease ? 'Ask this image worker to release cached model weights. Memory usage updates when the worker releases them.' : 'Cache can be released when this worker is connected and has no active or uncertain generations.'} className={styles.release}>{acting === `worker:${worker.id}` ? 'Releasing…' : 'Release cache'}</button>}
+      {onRelease && (requested ? <span role="status" className={styles.requested}>Release requested</span> : <button type="button" disabled={!worker.canRelease || acting !== null} onClick={() => onRelease(worker.id)} aria-label={`Release cache for ${worker.name}`} title={worker.canRelease ? 'Ask this image worker to release cached model weights. Memory usage updates when the worker releases them.' : 'Cache can be released when this worker is connected and has no active or uncertain generations.'} className={styles.release}>{acting === `worker:${worker.id}` ? 'Releasing…' : 'Release cache'}</button>)}
     </div>
     {jobs.map(job => <p key={job.id} className={styles.detail}>{job.stage || (job.status === 'preparing' ? 'Loading model' : job.status === 'interrupted' ? 'Connection uncertain' : 'Generating')}</p>)}
     {worker.connected === false && <p className={styles.warning}>{worker.error || 'Worker connection is unavailable.'}</p>}

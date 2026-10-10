@@ -1,7 +1,7 @@
 import type { JobInput } from '../../../../packages/contracts';
 export type { UpscaleInput, UpscaleSource, UpscalerCard } from '../../../../packages/contracts';
 
-export interface Bootstrap { configured: boolean; authenticated: boolean; setupRequired?: boolean; setupKeyRequired?: boolean; user?: { id: string; username: string } }
+export interface Bootstrap { configured: boolean; authenticated: boolean; setupRequired?: boolean; setupKeyRequired?: boolean; user?: { id: string; username: string; role: 'admin' | 'user'; email?: string | null } }
 export type AvatarThemeId = 'studio' | 'lime' | 'mint' | 'blue' | 'violet' | 'rose';
 export interface AccountProfile { revision: number; displayName: string; workspaceName: string; avatarTheme: AvatarThemeId }
 export type ImageBackground = 'auto' | 'opaque' | 'transparent';

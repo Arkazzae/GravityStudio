@@ -7,7 +7,7 @@ import { Popover } from '@/components/ui/Popover';
 import { modelBrand } from '@/lib/model-brand';
 import type { StudioModel } from '@/lib/api';
 
-export function ModelMenu({ models, value, onChange, referenceCount, onManage, disabled = false }: { models: StudioModel[]; value: string; onChange: (id: string) => void; referenceCount: number; onManage: () => void; disabled?: boolean }) {
+export function ModelMenu({ models, value, onChange, referenceCount, onManage, disabled = false }: { models: StudioModel[]; value: string; onChange: (id: string) => void; referenceCount: number; onManage?: () => void; disabled?: boolean }) {
   const installed = models.filter(model => model.installed);
   const selected = installed.find(model => model.id === value);
   const rows: ModelPickerRow[] = installed.map(model => {
@@ -32,7 +32,7 @@ export function ModelMenu({ models, value, onChange, referenceCount, onManage, d
     </Chip>}>
     {close => <>
       <ModelPickerList rows={rows} value={value} onSelect={id => { onChange(id); close(); }} empty="Download a model from Models to start creating." />
-      <div className="mt-1 border-t border-line pt-1"><button type="button" data-manage-models aria-label="Manage image models" onClick={() => { close(); onManage(); }} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-ink-2 hover:bg-white/[0.05] hover:text-ink"><SlidersHorizontal size={15} />Manage models</button></div>
+      {onManage && <div className="mt-1 border-t border-line pt-1"><button type="button" data-manage-models aria-label="Manage image models" onClick={() => { close(); onManage(); }} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-ink-2 hover:bg-white/[0.05] hover:text-ink"><SlidersHorizontal size={15} />Manage models</button></div>}
     </>}
   </Popover>;
 }
