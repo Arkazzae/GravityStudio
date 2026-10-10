@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
+import { Readable } from 'node:stream';
 import { ApiError, type StudioSettings } from "../../packages/contracts/index.ts";
 import { InferenceError } from "../../packages/inference/index.ts";
 import { Engine } from "./engine.ts";
@@ -9,7 +10,7 @@ import { Store, publicJob } from "./store.ts";
 import { cookieToken, createSession, clearSession, digest, hashPassword, identify, LoginLimiter, setupKey, validSetupKey, validateCredentials, verifyPassword } from "./auth.ts";
 import { deleteInput, deleteOutput, inputBytes, outputBytes, MAX_INPUT_BYTES, recoverMediaDeletions, saveInput, saveInputFromOutput } from "./media.ts";
 import { settingsView, validateSettings } from "./settings.ts";
-import { mcpResponse } from "./mcp.ts";
+import { mcpResponse, MCP_INLINE_INPUT_BYTES } from "./mcp.ts";
 import { RuntimeSetup, type ManagedWorkerBinding } from "./runtime.ts";
 import { ModelLibrary } from "./models.ts";
 import { modelRegistry } from "./registry.ts";
@@ -22,6 +23,11 @@ import { Administration, requireActiveUser, requireAdministrator } from "./admin
 import { WorkTimeService, requireWorkTime } from "./work-time.ts";
 import { MailService } from "./mail.ts";
 import { StorageUsageService } from "./storage-usage.ts";
+import { API_SCOPES, type ApiScope } from '../../packages/contracts/access.ts';
+import { httpScopes, tokenOptions } from './access.ts';
+import { ApiMedia, hash } from './api-media.ts';
+import { imageBody, ImageRequestError, OPENAI_IMAGE_BODY_LIMIT, openaiImages } from './openai-images.ts';
+import { openaiChat, parseChatRequest } from './openai-text.ts';
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -80,6 +86,7 @@ export async function createStudioServer(options: ServerOptions) {
   const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
   await localText.initialize();
   const text = new TextService(store, credentials, { fetch: options.textFetch, local: localText });
+  const apiMedia = new ApiMedia(store);
   const runtime = options.runtime ?? new RuntimeSetup(store, engine);
   const models = options.models ?? new ModelLibrary(store, engine, { huggingFaceToken: () => credentials.get("huggingface") });
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
@@ -105,19 +112,29 @@ export async function createStudioServer(options: ServerOptions) {
   }
   const server = createServer(async (request, response) => {
     const requestId = randomUUID();
+    const controller = new AbortController();
+    const abort = () => { if (!response.writableEnded) controller.abort(); };
+    response.once('close', abort);
     response.setHeader("X-Request-Id", requestId);
     try {
       const method = request.method ?? "GET";
-      const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      const originalPath = new URL(request.url ?? "/", "http://localhost").pathname;
+      const path = originalPath === '/api/v1/mcp' || originalPath === '/v1/mcp' ? '/api/mcp' : originalPath.replace(/^\/api\/v1(?=\/|$)/, '/v1');
       const origin = request.headers.origin;
       if (origin && !origins.has(origin)) throw new ApiError(403, "ORIGIN_NOT_ALLOWED", "This browser origin is not allowed. Add it to GRAVITY_ALLOWED_ORIGINS.");
       if (request.headers["sec-fetch-site"] === "cross-site" && !origin) throw new ApiError(403, "ORIGIN_NOT_ALLOWED", "Cross-site requests are not accepted.");
       if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Credentials", "true"); response.setHeader("Vary", "Origin"); }
       if (method === "OPTIONS") {
         if (!origin) throw new ApiError(403, "ORIGIN_NOT_ALLOWED", "Supply an allowed origin.");
-        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename, MCP-Protocol-Version, MCP-Session-Id", ...safeHeaders }); response.end(); return;
+        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename, Prefer, MCP-Protocol-Version, MCP-Session-Id, Mcp-Method, Mcp-Name", ...safeHeaders }); response.end(); return;
       }
+      response.setHeader('Access-Control-Expose-Headers', 'X-Request-Id, Idempotency-Key, X-Gravity-Job-Ids, Location');
       if (path === "/api/health" && method === "GET") return json(response, { status: "ok", version: "0.1.0" });
+      const download = path.match(/^\/api\/downloads\/([a-zA-Z0-9_-]{43})$/);
+      if (download && method === 'GET') {
+        const result = await mediaOperation(() => apiMedia.download(download[1]));
+        response.writeHead(200, { ...safeHeaders, 'Content-Type': result.mimeType, 'Content-Length': result.bytes.length }); response.end(result.bytes); return;
+      }
       const identity = identify(request, store);
       if (path === "/api/bootstrap" && method === "GET") return json(response, { configured: !!store.owner(), authenticated: !!identity, setupRequired: !store.owner(), setupKeyRequired: true, user: identity?.user });
       const secure = !!origin?.startsWith("https://");
@@ -158,12 +175,90 @@ export async function createStudioServer(options: ServerOptions) {
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
       const requireAdmin = () => { requireSession(); requireAdministrator(store.db, user.id); };
+      const hasScope = (scope: ApiScope) => identity.source === 'session' || identity.scopes?.includes(scope) === true;
+      const requireScope = (scope: ApiScope) => {
+        requireActiveUser(store.db, user.id);
+        if (identity.source === 'token') {
+          const access = store.apiTokenAccess(digest(request.headers.authorization!.slice(7)));
+          if (!access) throw new ApiError(401, 'UNAUTHENTICATED', 'This access token expired or was revoked.');
+          if (!access.scopes.includes(scope)) throw new ApiError(403, 'INSUFFICIENT_SCOPE', `This token requires ${scope}.`);
+        }
+      };
+      for (const scope of httpScopes(path, method)) requireScope(scope);
       const adminRoute = path.startsWith("/api/admin/") || /^\/api\/(integrations|runtime|models|settings|hardware|workers)(\/|$)/.test(path)
         || path.startsWith("/api/text/") && !((path === "/api/text/settings" || path === "/api/text/local") && method === "GET");
       if (adminRoute) requireAdmin();
       const readAdminJson = async (limit = 128 * 1024) => { const body = await readJson(request, limit); requireAdmin(); return body; };
-      const readAuthorizedJson = async (limit = 128 * 1024) => { const body = await readJson(request, limit); requireActiveUser(store.db, user.id); if (adminRoute) requireAdmin(); return body; };
+      const readAuthorizedJson = async (limit = 128 * 1024) => { const body = await readJson(request, limit); requireActiveUser(store.db, user.id); for (const scope of httpScopes(path, method)) requireScope(scope); if (adminRoute) requireAdmin(); return body; };
       const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      const textMeter = () => {
+        const taskId = randomUUID(); let metered = false;
+        return { authorize: () => requireScope('text:generate'), begin: () => { requireScope('text:generate'); requireWorkTime(store.db, user.id); workTime.beginTask(user.id, taskId, 'local-llm'); metered = true; }, end: () => { if (metered) { workTime.endTask(taskId); metered = false; } } };
+      };
+      const reply = async (result: Response) => {
+        for (const [key, value] of Object.entries(safeHeaders)) response.setHeader(key, value);
+        result.headers.forEach((value, key) => response.setHeader(key, value));
+        response.writeHead(result.status);
+        if (result.body) await pipeline(Readable.fromWeb(result.body as import('node:stream/web').ReadableStream), response);
+        else response.end();
+      };
+      const discovery = async () => ({
+        scopes: API_SCOPES.filter(hasScope), endpoints: { mcp: '/api/mcp', openai: '/v1', rest: '/api' },
+        models: { images: hasScope('models:read') ? (await engine.catalog()).models.map(({ id, name, ready }) => ({ id, name, ready })) : [], text: hasScope('models:read') ? (await text.gatewayModels(controller.signal)).map(({ id, name }) => ({ id, name, ready: true })) : [] },
+        features: { images: hasScope('jobs:write'), editing: hasScope('jobs:write') && hasScope('assets:write'), upscale: hasScope('jobs:write'), backgroundRemoval: hasScope('jobs:write'), chat: hasScope('text:generate') },
+      });
+      if (path === '/api/access' && method === 'GET') return json(response, await discovery());
+      if (path.startsWith('/v1/')) {
+        if (stopping) throw new ApiError(503, 'STUDIO_STOPPING', 'The Studio is restarting. Try again shortly.');
+        if ((path === '/v1/models' || path.startsWith('/v1/models/')) && method === 'GET') {
+          requireScope('models:read');
+          const [catalog, language] = await Promise.all([engine.catalog(), text.gatewayModels(controller.signal)]);
+          const data = [...catalog.models.map(model => ({ id: model.id, object: 'model', created: 0, owned_by: 'gravity-studio', name: model.name, type: 'image', ready: model.ready, capabilities: model.capabilities })), ...language];
+          requireScope('models:read');
+          if (path === '/v1/models') return json(response, { object: 'list', data });
+          let id: string; try { id = decodeURIComponent(path.slice('/v1/models/'.length)); } catch { throw new ApiError(400, 'INVALID_MODEL_ID', 'Supply a model ID from /v1/models.'); }
+          const model = data.find(model => model.id === id);
+          if (!model) throw new ApiError(404, 'MODEL_NOT_FOUND', 'This model is not available in Studio.');
+          return json(response, model);
+        }
+        if (path === '/v1/chat/completions' && method === 'POST') {
+          requireScope('text:generate'); const body = parseChatRequest(await readAuthorizedJson(1024 * 1024)); requireScope('text:generate');
+          if (text.gatewayLocal(body.model)) requireWorkTime(store.db, user.id);
+          return await reply(await openaiChat(text, body, controller.signal, textMeter()));
+        }
+        if (['/v1/images/generations', '/v1/images/edits'].includes(path) && method === 'POST') {
+          const editing = path.endsWith('/edits');
+          const authorize = () => { requireScope('jobs:write'); requireScope('assets:read'); if (editing) requireScope('assets:write'); };
+          authorize();
+          const body = await imageBody(await readBytes(request, OPENAI_IMAGE_BODY_LIMIT), request.headers['content-type'] || '');
+          const forwardedOrigin = `${request.headers['x-forwarded-proto']}://${request.headers['x-forwarded-host']}`;
+          const publicOrigin = origins.has(forwardedOrigin) ? forwardedOrigin : origin || invitationOrigin || 'http://127.0.0.1:4321';
+          return await mediaOperation(async () => reply(await openaiImages({ engine, store, media: apiMedia, userId: user.id, body, editing, signal: controller.signal, origin: publicOrigin, key: request.headers['idempotency-key'] as string | undefined, asynchronous: typeof request.headers.prefer === 'string' && request.headers.prefer.split(',').some(value => value.trim() === 'respond-async'), authorize })));
+        }
+        if (path === '/v1/files' && method === 'POST') {
+          requireScope('assets:write');
+          const body = await imageBody(await readBytes(request, MAX_INPUT_BYTES + 64 * 1024), request.headers['content-type'] || '');
+          if (!(body.file instanceof File) || body.purpose !== 'vision' || Object.keys(body).some(key => !['file', 'purpose'].includes(key))) throw new ApiError(400, 'INVALID_FILE', 'Upload an image file with purpose=vision.');
+          const suppliedKey = request.headers['idempotency-key'];
+          if (suppliedKey !== undefined && (typeof suppliedKey !== 'string' || !/^[a-zA-Z0-9_.:-]{8,128}$/.test(suppliedKey))) throw new ApiError(400, 'INVALID_REQUEST_KEY', 'Use a request key of 8–128 letters, digits, dots, underscores, colons or dashes.');
+          const file = body.file; requireScope('assets:write');
+          const input = await mediaOperation(async () => apiMedia.upload(user.id, Buffer.from(await file.arrayBuffer()), file.name, `file:${hash(suppliedKey ?? randomUUID())}`));
+          return json(response, { id: input.id, object: 'file', bytes: store.input(input.id, user.id).bytes, created_at: 0, filename: input.name, purpose: 'vision' }, 200);
+        }
+        if (path === '/v1/files' && method === 'GET') {
+          requireScope('assets:read');
+          return json(response, { object: 'list', data: store.inputs(user.id).map(input => ({ id: input.id, object: 'file', bytes: store.input(input.id, user.id).bytes, created_at: 0, filename: input.name, purpose: 'vision' })), has_more: false });
+        }
+        const fileRoute = path.match(/^\/v1\/files\/([a-f0-9-]{36})(\/content)?$/);
+        if (fileRoute && (method === 'GET' || method === 'DELETE' && !fileRoute[2])) {
+          requireScope(method === 'GET' ? 'assets:read' : 'assets:delete');
+          if (method === 'DELETE') { await mediaOperation(() => deleteInput(store, fileRoute[1], user.id)); return json(response, { id: fileRoute[1], object: 'file', deleted: true }); }
+          const input = store.input(fileRoute[1], user.id);
+          if (fileRoute[2]) { const bytes = await mediaOperation(() => inputBytes(store, input.id, user.id)); response.writeHead(200, { ...safeHeaders, 'Content-Type': input.mimeType, 'Content-Length': bytes.length }); response.end(bytes); return; }
+          return json(response, { id: input.id, object: 'file', bytes: input.bytes, created_at: 0, filename: input.name, purpose: 'vision' });
+        }
+        throw new ApiError(404, 'UNSUPPORTED_ENDPOINT', 'This Studio supports models, chat/completions, images/generations, images/edits and image files.');
+      }
       if (path === "/api/work-time" && method === "GET") return json(response, workTime.view(user.id));
       if (path.startsWith("/api/admin/")) {
         requireAdmin();
@@ -229,7 +324,7 @@ export async function createStudioServer(options: ServerOptions) {
         if (method === "PUT") return json(response, saveAccount(store, user, await readAuthorizedJson(4096)));
       }
       if (path.startsWith("/api/text/") || path === "/api/prompts/refine") {
-        requireSession();
+        if (path !== '/api/prompts/refine') requireSession();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
         if (path === '/api/text/local') {
           if (method === 'GET') {
@@ -253,16 +348,12 @@ export async function createStudioServer(options: ServerOptions) {
           response.once("close", abort);
           try {
             const body = path === "/api/prompts/refine" ? await readAuthorizedJson() : undefined;
+            if (body && identity.source === 'token' && body.settingsRevision === undefined) body.settingsRevision = text.settings().revision;
             const local = body && text.settings().assistant?.provider === "local";
             if (local) requireWorkTime(store.db, user.id);
-            let metering = false;
-            const meter = local ? {
-              begin: () => { workTime.beginTask(user.id, requestId, "local-llm", false, text.settings().assistant!.modelId); metering = true; },
-              end: () => { if (metering) workTime.endTask(requestId); },
-            } : undefined;
             const result = path === "/api/text/models"
               ? await text.models(new URL(request.url!, "http://localhost").searchParams.get("provider"), controller.signal, new URL(request.url!, "http://localhost").searchParams.get("refresh") === "true")
-              : await text.refine(body, controller.signal, meter);
+              : await text.refine(body, controller.signal, textMeter());
             if (!controller.signal.aborted) return json(response, result);
             return;
           } finally { response.off("close", abort); }
@@ -328,14 +419,19 @@ export async function createStudioServer(options: ServerOptions) {
       if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readAuthorizedJson(1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
       if (path === "/api/mcp") {
         if (method !== "POST") { response.setHeader("Allow", "POST"); throw new ApiError(405, "METHOD_NOT_ALLOWED", "This stateless MCP endpoint accepts POST requests."); }
-        const body = await readAuthorizedJson();
+        const body = await readAuthorizedJson(Math.ceil(MCP_INLINE_INPUT_BYTES / 3) * 4 + 128 * 1024);
         const headers = new Headers();
-        for (const name of ["content-type", "accept", "mcp-protocol-version", "mcp-session-id"]) {
+        for (const name of ["content-type", "accept", "mcp-protocol-version", "mcp-session-id", "mcp-method", "mcp-name"]) {
           const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
         }
-        const result = await mcpResponse(engine, store, user.id, new Request("http://localhost/api/mcp", { method: "POST", headers, body: JSON.stringify(body) }), body);
-        response.writeHead(result.status, { ...safeHeaders, "Content-Type": result.headers.get("content-type") ?? "application/json" });
-        response.end(Buffer.from(await result.arrayBuffer())); return;
+        const result = await mediaOperation(() => mcpResponse(engine, store, user.id, new Request("http://localhost/api/mcp", { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal }), body, {
+          hasScope, requireScope, signal: controller.signal, mediaOperation, capabilities: discovery,
+          upload: input => apiMedia.inline(user.id, input),
+          textModels: () => text.gatewayModels(controller.signal),
+          chat: async (body, signal) => { requireScope('text:generate'); const parsed = parseChatRequest(body); if (text.gatewayLocal(parsed.model)) requireWorkTime(store.db, user.id); const result = await openaiChat(text, parsed, signal, textMeter()); return result.json(); },
+          refine: (body, signal) => { requireScope('text:generate'); return text.refine({ ...body, settingsRevision: text.settings().revision }, signal, textMeter()); },
+        }));
+        return await reply(result);
       }
       if (path === "/api/logout" && method === "POST") {
         const token = cookieToken(request); if (token) store.revokeSession(digest(token));
@@ -397,7 +493,7 @@ export async function createStudioServer(options: ServerOptions) {
       }
       if (path === "/api/state" && method === "GET") {
         const state = await engine.state(user.id);
-        if (user.role !== "admin") {
+        if (user.role !== "admin" || identity.source === 'token') {
           state.workers = state.workers.map(worker => ({ ...worker, baseUrl: "", deviceIds: [], canRelease: false, error: worker.error ? "Worker unavailable" : undefined }));
           state.hardware = { ...state.hardware, host: { ...state.hardware.host, container: { detected: false, markers: [] } }, diagnostics: [], gpus: state.hardware.gpus.map(gpu => ({ ...gpu, pciAddress: null, uuid: null, driverVersion: null })) };
         }
@@ -409,7 +505,9 @@ export async function createStudioServer(options: ServerOptions) {
         if (method === "POST") {
           const key = request.headers["idempotency-key"];
           if (typeof key !== "string") throw new ApiError(400, "REQUEST_KEY_REQUIRED", "Supply an Idempotency-Key so retries cannot create duplicate generations.");
-          return json(response, { job: await engine.submit(user.id, await readAuthorizedJson(), key) }, 202);
+          const body = await readAuthorizedJson();
+          if (body.images !== undefined || body.maskId !== undefined) requireScope('assets:read');
+          return json(response, { job: await engine.submit(user.id, body, key) }, 202);
         }
       }
       const jobRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})$/);
@@ -475,7 +573,7 @@ export async function createStudioServer(options: ServerOptions) {
           const body = await readAuthorizedJson(4096);
           if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 80) throw new ApiError(400, "INVALID_TOKEN_NAME", "Give this token a name of up to 80 characters.");
           const token = `gs_${randomBytes(32).toString("base64url")}`;
-          return json(response, { ...store.saveApiToken(user.id, body.name.trim(), digest(token)), token }, 201);
+          return json(response, { ...store.saveApiToken(user.id, body.name.trim(), digest(token), tokenOptions(body)), token }, 201);
         }
       }
       const tokenRoute = path.match(/^\/api\/tokens\/([a-f0-9-]{36})$/);
@@ -485,8 +583,10 @@ export async function createStudioServer(options: ServerOptions) {
       if (response.headersSent) { response.destroy(); return; }
       const status = error instanceof ApiError ? error.status : error instanceof InferenceError ? error.code === "COMFY_UNREACHABLE" ? 503 : 400 : 500;
       if (status === 500) console.error("Request failed:", requestId, error);
-      json(response, { error: { code: error instanceof ApiError || error instanceof InferenceError ? error.code : "INTERNAL_ERROR", message: status === 500 ? "The server could not complete this request." : (error as Error).message }, requestId }, status);
-    }
+      if (status === 401) response.setHeader('WWW-Authenticate', 'Bearer realm="gravity-studio"');
+      const compatible = /^\/(?:api\/)?v1(?:\/|$)/.test(request.url ?? '') && !/^\/(?:api\/)?v1\/mcp(?:\?|$)/.test(request.url ?? '');
+      json(response, { error: { code: error instanceof ApiError || error instanceof InferenceError ? error.code : "INTERNAL_ERROR", message: status === 500 ? "The server could not complete this request." : (error as Error).message, ...(compatible ? { type: status === 401 ? 'authentication_error' : status === 403 ? 'permission_error' : status === 429 ? 'rate_limit_error' : status >= 500 ? 'server_error' : 'invalid_request_error', param: null } : {}), ...(error instanceof ImageRequestError ? { job_ids: error.jobIds } : {}) }, requestId }, status);
+    } finally { response.off('close', abort); }
   });
   server.requestTimeout = 60_000;
   server.headersTimeout = 15_000;

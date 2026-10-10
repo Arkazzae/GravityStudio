@@ -404,7 +404,9 @@ test("MCP authenticates every request and exposes generation tools without serve
   const listed = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   assert.equal(listed.status, 200);
   const names = (await message(listed)).result.tools.map((tool: { name: string }) => tool.name).sort();
-  assert.deepEqual(names, ["gravity_background_removal_status", "gravity_background_remove", "gravity_generation_tools_list", "gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list", "gravity_upscale_submit", "gravity_upscalers_list"]);
+  for (const name of ["gravity_background_removal_status", "gravity_background_remove", "gravity_capabilities_get", "gravity_generation_tools_list", "gravity_input_from_output", "gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_job_wait", "gravity_jobs_list", "gravity_model_get", "gravity_models_list", "gravity_output_get", "gravity_output_set_favorite", "gravity_outputs_list", "gravity_upscale_submit", "gravity_upscalers_list", "gravity_work_time_get"]) assert.ok(names.includes(name), name);
+  assert.equal(names.some((name: string) => /admin|settings|runtime|worker/.test(name)), false);
+  assert.equal(names.includes("gravity_text_chat"), false, "Existing image tokens are not silently granted external language-model spending");
   const result = await message(await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "gravity_jobs_list", arguments: {} } }));
   assert.deepEqual(result.result.structuredContent.data, { jobs: [] });
   const rejected = await message(await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "gravity_job_submit", arguments: { request: { modelId: "sdxl-base", prompt: "mountain" }, idempotencyKey: "mcp-request-first" } } }));
