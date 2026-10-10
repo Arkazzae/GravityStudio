@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ApiError, isUpscaleInput, type JobInput, type JobStatus, type Owner, type PublicInput, type PublicJob, type SavedOutput, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
 import type { AssetObjectStore, StoredObject } from "./object-store.ts";
+import { initializeAdministration, requireActiveUser } from "./administration.ts";
+import { initializeWorkTime, requireWorkTime, syncJobWorkTime } from "./work-time.ts";
 
 export interface PlacementSnapshot { worker: WorkerSettings; memory: { ramBytes: number; vramBytes: number } }
 export interface StoredJob extends Omit<PublicJob, "outputs"> {
@@ -43,6 +45,7 @@ export class Store {
   db: DatabaseSync;
   directory: string;
   readonly objectStore: AssetObjectStore | null;
+  readonly inputUploads = new Map<string, number>();
   constructor(directory: string, options: { objectStore?: AssetObjectStore | null } = {}) {
     this.directory = directory;
     this.objectStore = options.objectStore ?? null;
@@ -68,6 +71,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS output_favorites (user_id TEXT NOT NULL REFERENCES users(id), output_id TEXT NOT NULL REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY(user_id,output_id));
       CREATE TABLE IF NOT EXISTS output_deletions (output_id TEXT PRIMARY KEY REFERENCES outputs(id) ON DELETE CASCADE, created_at TEXT NOT NULL);
     `);
+    initializeAdministration(this.db);
+    initializeWorkTime(this.db);
     const locations = this.db.prepare(`SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM inputs WHERE json_type(body,'$.object') IS NOT NULL
       UNION SELECT DISTINCT json_extract(body,'$.object.storeId') AS store_id FROM outputs WHERE json_type(body,'$.object') IS NOT NULL`).all() as Array<{ store_id: string | null }>;
     if (locations.some(location => !this.objectStore || location.store_id !== this.objectStore.id)) {
@@ -76,6 +81,11 @@ export class Store {
     }
   }
   close() { this.db.close(); }
+  beginInputUpload(userId: string): () => void {
+    requireActiveUser(this.db, userId);
+    this.inputUploads.set(userId, (this.inputUploads.get(userId) ?? 0) + 1);
+    return () => { const remaining = (this.inputUploads.get(userId) ?? 1) - 1; if (remaining) this.inputUploads.set(userId, remaining); else this.inputUploads.delete(userId); };
+  }
   metadata<T>(key: string): T | undefined {
     const row = this.db.prepare("SELECT value FROM metadata WHERE key = ?").get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) as T : undefined;
@@ -95,33 +105,36 @@ export class Store {
       return saved;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  owner(): Owner | undefined { return this.db.prepare("SELECT id,username FROM users LIMIT 1").get() as Owner | undefined; }
+  owner(): Owner | undefined { return this.db.prepare("SELECT id,username,role FROM users WHERE id=?").get(this.metadata<string>("owner-id") ?? "") as Owner | undefined; }
   createOwner(username: string, password: string): Owner {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (this.owner()) throw new ApiError(409, "ALREADY_CONFIGURED", "This studio already has an owner. Sign in instead.");
-      const user = { id: randomUUID(), username };
-      this.db.prepare("INSERT INTO users VALUES(?,?,?,?)").run(user.id, username, password, now());
+      const user: Owner = { id: randomUUID(), username, role: "admin" };
+      this.db.prepare("INSERT INTO users(id,username,password,created_at,role) VALUES(?,?,?,?,'admin')").run(user.id, username, password, now());
+      this.setMetadata("owner-id", user.id);
       this.db.exec("COMMIT");
       return user;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  passwordUser(username: string) { return this.db.prepare("SELECT id,username,password FROM users WHERE username=?").get(username) as (Owner & { password: string }) | undefined; }
+  passwordUser(username: string) { return this.db.prepare("SELECT id,username,role,password FROM users WHERE username=? AND status='active'").get(username) as (Owner & { password: string }) | undefined; }
   saveSession(hash: string, userId: string, expiresAt: number) {
+    requireActiveUser(this.db, userId);
     this.db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
     this.db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(hash, userId, expiresAt);
   }
   session(hash: string): Owner | undefined {
-    return this.db.prepare("SELECT users.id,users.username FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>?").get(hash, Date.now()) as Owner | undefined;
+    return this.db.prepare("SELECT users.id,users.username,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>? AND users.status='active'").get(hash, Date.now()) as Owner | undefined;
   }
   revokeSession(hash: string) { this.db.prepare("DELETE FROM sessions WHERE hash=?").run(hash); }
   saveApiToken(userId: string, name: string, hash: string) {
+    requireActiveUser(this.db, userId);
     const token = { id: randomUUID(), name, createdAt: now() };
     this.db.prepare("INSERT INTO api_tokens(id,user_id,name,hash,created_at) VALUES(?,?,?,?,?)").run(token.id, userId, name, hash, token.createdAt);
     return token;
   }
   apiToken(hash: string): Owner | undefined {
-    const user = this.db.prepare("SELECT users.id,users.username FROM api_tokens JOIN users ON users.id=api_tokens.user_id WHERE api_tokens.hash=?").get(hash) as Owner | undefined;
+    const user = this.db.prepare("SELECT users.id,users.username,users.role FROM api_tokens JOIN users ON users.id=api_tokens.user_id WHERE api_tokens.hash=? AND users.status='active'").get(hash) as Owner | undefined;
     if (user) this.db.prepare("UPDATE api_tokens SET last_used_at=? WHERE hash=?").run(now(), hash);
     return user;
   }
@@ -130,6 +143,7 @@ export class Store {
   createJob(userId: string, input: JobInput, snapshot: unknown, placements: PlacementSnapshot[], modelName: string, parameters: Record<string, unknown>, key: string, requestHash: string): StoredJob {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      requireActiveUser(this.db, userId);
       const old = this.db.prepare("SELECT job_id,request_hash FROM idempotency WHERE user_id=? AND key=?").get(userId, key) as { job_id: string; request_hash: string } | undefined;
       if (old) {
         if (old.request_hash !== requestHash) throw new ApiError(409, "IDEMPOTENCY_CONFLICT", "This request key was already used for different settings.");
@@ -137,6 +151,7 @@ export class Store {
         this.db.exec("COMMIT");
         return job;
       }
+      requireWorkTime(this.db, userId);
       // Submission can wait for worker discovery before reaching this transaction.
       // Recheck references here so a concurrent deletion cannot strand a new job.
       const inputIds = isUpscaleInput(input) ? input.source.type === "input" ? [input.source.inputId] : [] : input.images ?? [];
@@ -185,13 +200,26 @@ export class Store {
     return (this.db.prepare("SELECT body FROM jobs WHERE status IN ('queued','preparing','running','interrupted') ORDER BY created_at ASC").all() as { body: string }[]).map(row => JSON.parse(row.body));
   }
   patchJob(id: string, patch: Partial<Pick<StoredJob, "status" | "stage" | "progress" | "error" | "workerId" | "promptId" | "submissionStarted" | "outputs">>): StoredJob {
-    const job = this.job(id);
-    if (patch.status && patch.status !== job.status && !allowedTransitions[job.status].includes(patch.status)) throw new Error(`Invalid job transition ${job.status} → ${patch.status}`);
-    const updated = { ...job, ...patch, updatedAt: now() };
-    this.db.prepare("UPDATE jobs SET status=?,body=?,updated_at=? WHERE id=?").run(updated.status, jobBody(updated), updated.updatedAt, id);
-    return this.job(id);
+    const ownTransaction = !this.db.isTransaction;
+    if (ownTransaction) this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const job = this.job(id);
+      if (patch.status && patch.status !== job.status && !allowedTransitions[job.status].includes(patch.status)) throw new Error(`Invalid job transition ${job.status} → ${patch.status}`);
+      const updated = { ...job, ...patch, updatedAt: now() };
+      syncJobWorkTime(this.db, job, updated);
+      this.db.prepare("UPDATE jobs SET status=?,body=?,updated_at=? WHERE id=?").run(updated.status, jobBody(updated), updated.updatedAt, id);
+      const result = this.job(id);
+      if (ownTransaction) this.db.exec("COMMIT");
+      return result;
+    } catch (error) { if (ownTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
-  saveInput(input: StoredInput) { this.db.prepare("INSERT INTO inputs VALUES(?,?,?)").run(input.id, input.userId, json(input)); }
+  saveInput(input: StoredInput) {
+    // Suspension revokes access immediately, but an upload already admitted while
+    // active must keep its metadata so later account deletion can erase the blob.
+    const admitted = this.inputUploads.has(input.userId) && this.db.prepare("SELECT 1 FROM users WHERE id=? AND status IN ('active','suspended')").get(input.userId);
+    if (!admitted) requireActiveUser(this.db, input.userId);
+    this.db.prepare("INSERT INTO inputs VALUES(?,?,?)").run(input.id, input.userId, json(input));
+  }
   input(id: string, userId: string): StoredInput {
     const row = this.db.prepare("SELECT body FROM inputs WHERE id=? AND user_id=?").get(id, userId) as { body: string } | undefined;
     if (!row) throw new ApiError(404, "INPUT_NOT_FOUND", "This reference image does not exist.");

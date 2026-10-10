@@ -64,8 +64,8 @@ test('HTTP media keeps private URLs and validates ownership before fetching or d
   const list = await (await f.request('/api/jobs')).text();
   for (const privateField of ['storeId', 'fixture/', '"object"', '"path"']) assert.equal(list.includes(privateField), false);
   const foreignId = randomUUID();
-  f.store.db.prepare('INSERT INTO users VALUES(?,?,?,?)').run(foreignId, 'other', 'fixture', new Date().toISOString());
-  const foreignCookie = createSession(f.store, { id: foreignId, username: 'other' }, false).split(';')[0];
+  f.store.db.prepare('INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)').run(foreignId, 'other', 'fixture', new Date().toISOString());
+  const foreignCookie = createSession(f.store, { id: foreignId, username: 'other', role: 'user' }, false).split(';')[0];
   const reads = f.objects.gets.length;
   for (const url of [input.url, output.url]) assert.equal((await f.request(url, { headers: { Cookie: foreignCookie } })).status, 404);
   assert.equal((await f.request(output.url, { method: 'DELETE', headers: { Cookie: foreignCookie } })).status, 404);

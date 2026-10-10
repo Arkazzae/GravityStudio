@@ -100,7 +100,7 @@ export interface PublicJob {
   error: string | null;
 }
 export interface PublicInput { id: string; url: string; name: string; width: number; height: number; mimeType: string }
-export interface Owner { id: string; username: string }
+export interface Owner { id: string; username: string; role: "admin" | "user" }
 export class ApiError extends Error {
   status: number;
   code: string;

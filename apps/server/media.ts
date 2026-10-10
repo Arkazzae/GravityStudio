@@ -24,6 +24,11 @@ async function readStored(store: Store, record: StoredInput | StoredOutput, loca
   return readFile(record.path);
 }
 export async function saveInput(store: Store, userId: string, bytes: Buffer, suppliedName: string): Promise<PublicInput> {
+  const finish = store.beginInputUpload(userId);
+  try { return await storeInput(store, userId, bytes, suppliedName); }
+  finally { finish(); }
+}
+async function storeInput(store: Store, userId: string, bytes: Buffer, suppliedName: string): Promise<PublicInput> {
   if (!bytes.length || bytes.length > MAX_INPUT_BYTES) throw new ApiError(413, "INPUT_TOO_LARGE", "Choose a reference image smaller than 20 MiB.");
   let data: Buffer, width: number, height: number;
   try {

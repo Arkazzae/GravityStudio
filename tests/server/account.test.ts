@@ -145,7 +145,8 @@ test("account metadata survives restart and remains scoped to each owner", async
   let store = new Store(directory);
   try {
     const owner = store.createOwner("owner", "fixture-password-hash");
-    const anotherOwner = { id: "another-owner", username: "another" };
+    const anotherOwner = { id: "another-owner", username: "another", role: "user" as const };
+    store.db.prepare("INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)").run(anotherOwner.id, anotherOwner.username, "fixture", new Date().toISOString());
     const saved = saveAccount(store, owner, { ...initial, displayName: "Persistent profile", avatarTheme: "lime" });
     assert.deepEqual(accountView(store, anotherOwner), { ...initial, displayName: "another" });
     const otherSaved = saveAccount(store, anotherOwner, { ...initial, displayName: "Other profile", avatarTheme: "violet" });

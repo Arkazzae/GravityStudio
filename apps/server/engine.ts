@@ -11,6 +11,7 @@ import { inputBytes, outputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
 import { modelRegistry } from "./registry.ts";
 import { BIREFNET_MEMORY } from "../../packages/inference/index.ts";
+import { requireWorkTime, WorkTimeService } from "./work-time.ts";
 
 interface WorkerState {
   connected: boolean;
@@ -28,6 +29,9 @@ const canonical = (value: unknown): string => {
   return JSON.stringify(value);
 };
 const message = (error: unknown) => error instanceof Error ? error.message : "The worker request failed.";
+const workTimeWait = (error: unknown): string | undefined => error instanceof ApiError
+  ? error.code === "SERVER_TIME_EXHAUSTED" ? "Waiting for more server time" : error.code === "ACCOUNT_UNAVAILABLE" ? "Waiting for this account to be reactivated" : undefined
+  : undefined;
 const hostKey = (worker: WorkerSettings) => worker.location === "local" ? "local" : new URL(worker.baseUrl).hostname;
 const deviceKey = (worker: WorkerSettings) => worker.deviceIds[0] ?? `remote:${hostKey(worker)}:unidentified`;
 const workersOverlap = (a: WorkerSettings, b: WorkerSettings) => a.id === b.id || a.baseUrl === b.baseUrl || (hostKey(a) === hostKey(b) && (!a.deviceIds.length || !b.deviceIds.length || deviceKey(a) === deviceKey(b)));
@@ -48,6 +52,7 @@ async function localArtifactsInstalled(directory: string, artifacts: ModelArtifa
 
 export class Engine {
   store: Store;
+  readonly workTime: WorkTimeService;
   hardware: HardwareInventory | null = null;
   hardwareAt = 0;
   workers = new Map<string, WorkerState>();
@@ -79,6 +84,7 @@ export class Engine {
   setTextEviction(evict: () => Promise<boolean>) { this.evictText = evict; }
   constructor(store: Store, options: { detect?: () => Promise<HardwareInventory>; pollMs?: number; reconcileMs?: number } = {}) {
     this.store = store; this.detect = options.detect ?? detectHardware; this.pollMs = options.pollMs ?? 1500;
+    this.workTime = new WorkTimeService(store);
     this.reconcileMs = options.reconcileMs ?? Math.max(this.pollMs, 1000);
   }
   client(worker: WorkerSettings) {
@@ -187,6 +193,7 @@ export class Engine {
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
     if (old) return publicJob(old);
+    requireWorkTime(this.store.db, userId);
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const original = source.type === "input" ? this.store.input(source.inputId, userId) : this.store.output(source.jobId, source.outputId, userId);
     const model = UPSCALER_MODELS.find(item => item.id === input.modelId);
@@ -237,6 +244,7 @@ export class Engine {
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
     if (old) return publicJob(old);
+    requireWorkTime(this.store.db, userId);
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const input = structuredClone(value) as GenerationInput;
     if (input.images !== undefined && (!Array.isArray(input.images) || input.images.some(id => typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)))) throw new ApiError(400, "INVALID_INPUTS", "Choose reference images uploaded to this studio.");
@@ -503,9 +511,17 @@ export class Engine {
     this.ticking = true;
     this.tickReleasedHosts.clear();
     try {
+      this.workTime.heartbeat();
       for (const job of this.store.activeJobs()) {
         if (this.stopping) break;
         if (job.status !== "queued" || this.flights.has(job.id)) continue;
+        try { requireWorkTime(this.store.db, job.userId); }
+        catch (error) {
+          const stage = workTimeWait(error);
+          if (!stage) throw error;
+          if (job.stage !== stage) this.store.patchJob(job.id, { stage });
+          continue;
+        }
         let reason = "Waiting for an available worker";
         const rejected = new Set<string>();
         const reclaimable: PlacementSnapshot[] = [];
@@ -541,7 +557,15 @@ export class Engine {
               if (decision.ramPressure) ramPressure.add(placement.worker.id); else ramPressure.delete(placement.worker.id);
               continue;
             }
-            this.store.patchJob(job.id, { status: "preparing", workerId: placement.worker.id, stage: "Checking model files", error: null });
+            try { this.store.patchJob(job.id, { status: "preparing", workerId: placement.worker.id, stage: "Checking model files", error: null }); }
+            catch (error) {
+              // The user's time or status may change while admission awaits
+              // telemetry. The atomic job transition is the final authority.
+              const stage = workTimeWait(error);
+              if (!stage) throw error;
+              this.store.patchJob(job.id, { stage });
+              reason = ""; break;
+            }
             this.launch(job.id, () => this.execute(job.id, placement));
             reason = ""; break;
           }
@@ -717,6 +741,7 @@ export class Engine {
     loop();
   }
   async stop() {
+    this.workTime.heartbeat();
     this.stopping = true; clearTimeout(this.timer);
     await this.loopFlight;
     while (this.ticking) await delay(10);

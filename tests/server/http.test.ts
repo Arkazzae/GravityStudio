@@ -254,7 +254,8 @@ test("favorite routes validate mutations and expose only the owner's selected ge
   assert.equal(favorites.jobs.length, 1);
   assert.deepEqual(favorites.jobs[0].outputs.map((output: { id: string }) => output.id), [outputs[0].id]);
 
-  api.store.db.prepare("INSERT INTO users VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  api.store.db.prepare("INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  api.engine.workTime.adjust(owner.id, "foreign-owner", 60_000, "Fixture allowance", "foreign-allowance");
   const foreign = api.store.createJob("foreign-owner", { modelId: "sdxl-base", prompt: "Private image" }, {}, [], "SDXL", {}, "foreign-job", "foreign-job");
   const privateOutput = await saveOutput(api.store, foreign.id, 0, PNG);
   api.store.patchJob(foreign.id, { status: "preparing" });
@@ -294,7 +295,8 @@ test("output deletion is owner scoped, protects active jobs and removes one imag
   outputs.forEach(output => api.store.setOutputFavorite(job.id, output.id, owner.id, true));
   const original = api.store.job(job.id);
 
-  api.store.db.prepare("INSERT INTO users VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  api.store.db.prepare("INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)").run("foreign-owner", "foreign", "fixture-hash", new Date().toISOString());
+  api.engine.workTime.adjust(owner.id, "foreign-owner", 60_000, "Fixture allowance", "foreign-delete-allowance");
   const foreign = api.store.createJob("foreign-owner", { modelId: "sdxl-base", prompt: "Private image" }, {}, [], "SDXL", {}, "foreign-delete", "foreign-delete");
   const privateOutput = await saveOutput(api.store, foreign.id, 0, PNG);
   api.store.patchJob(foreign.id, { status: "cancelled", outputs: [privateOutput] });

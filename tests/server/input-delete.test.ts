@@ -149,8 +149,8 @@ test('submission rechecks input deletion after asynchronous worker discovery', a
 test('HTTP input deletion checks ownership, browser origin, active references and shutdown', async t => {
   const objects = new FakeObjectStore(), f = await fixture(t, objects);
   const input = await f.upload(), { request, url, cookie, server } = await f.serve();
-  const foreign = randomUUID(); f.store.db.prepare('INSERT INTO users VALUES(?,?,?,?)').run(foreign, 'other', 'fixture', new Date().toISOString());
-  const foreignCookie = createSession(f.store, { id: foreign, username: 'other' }, false).split(';')[0];
+  const foreign = randomUUID(); f.store.db.prepare('INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)').run(foreign, 'other', 'fixture', new Date().toISOString());
+  const foreignCookie = createSession(f.store, { id: foreign, username: 'other', role: 'user' }, false).split(';')[0];
   assert.equal((await fetch(`${url}${input.url}`, { method: 'DELETE' })).status, 401);
   assert.equal((await fetch(`${url}${input.url}`, { method: 'DELETE', headers: { Cookie: cookie } })).status, 403);
   assert.equal((await request(input.url, { method: 'DELETE', headers: { Origin: 'https://other.example' } })).status, 403);

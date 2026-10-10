@@ -1,6 +1,7 @@
 import { AVATAR_THEME_IDS, type AccountProfile, type AvatarThemeId } from "../../packages/contracts/account.ts";
 import { ApiError, type Owner } from "../../packages/contracts/index.ts";
 import type { Store } from "./store.ts";
+import { requireActiveUser } from "./administration.ts";
 
 const fields = new Set(["revision", "displayName", "workspaceName", "avatarTheme"]);
 const unavailable = () => new ApiError(503, "ACCOUNT_UNAVAILABLE", "Account preferences are unavailable. Try again shortly.");
@@ -40,6 +41,7 @@ export function saveAccount(store: Store, owner: Owner, value: unknown): Account
   try {
     store.db.exec("BEGIN IMMEDIATE");
     transaction = true;
+    requireActiveUser(store.db, owner.id);
     const current = accountView(store, owner);
     if (current.revision !== proposed.revision) throw new ApiError(409, "ACCOUNT_CHANGED", "Your account preferences changed in another window. Reload before saving.");
     if (current.revision === Number.MAX_SAFE_INTEGER) throw unavailable();

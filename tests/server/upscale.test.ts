@@ -64,6 +64,8 @@ test("upscale validates ownership, source shape, operation, scale and size befor
   const fixture = await engineFixture(); t.after(fixture.close); install(fixture);
   const input = await request(fixture);
   const other = { id: randomUUID() };
+  fixture.store.db.prepare("INSERT INTO users(id,username,password,created_at) VALUES(?,?,?,?)").run(other.id, "other", "fixture", new Date().toISOString());
+  fixture.engine.workTime.adjust(fixture.owner.id, other.id, 60_000, "Fixture allowance", "other-allowance");
   await assert.rejects(queue(fixture, input, randomUUID(), other.id), { code: "INPUT_NOT_FOUND" });
   for (const bad of [{ ...input, operation: "reference" }, { ...input, source: { ...input.source, url: "https://example.com/image.png" } }, { ...input, source: { type: "url", url: "https://example.com/image.png" } }, { ...input, prompt: "unexpected" }, { ...input, scale: 3 }, { ...input, seed: -1 }]) {
     await assert.rejects(queue(fixture, bad));
