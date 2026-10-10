@@ -37,6 +37,8 @@ BiRefNet requires the optional `background_removal/birefnet.safetensors` artifac
 
 `GENERATION_EXTENSIONS` contains pinned Krea style/reference weights, SDXL ReVision’s CLIP Vision G and the SDXL Refiner checkpoint. SDXL LoRAs patch model and CLIP; compatible Klein, Qwen and Krea LoRAs patch the model. Extension manifests and files are frozen in each snapshot and included in worker capability checks and resource reservations. Selecting a family declares architecture compatibility; the downloader validates safetensors structure and digest, not the training provenance of an imported adapter.
 
+LoRA choices retain request order when constructing the loader chain and hashing the execution snapshot. `effectiveModelLoraLimit()` combines the recipe's supported stack size with an optional narrower `maxLoras` in the checkpoint manifest. The shared request ceiling is 32; Ideogram currently permits none. A preset import freezes its effective limit. This policy bounds graph size; the server separately accounts for the entire stack's estimated memory on one assigned worker.
+
 Standalone `compileBackgroundRemoval()` uses BiRefNet on an existing image, preserves dimensions and multiplies the foreground opacity by the source opacity. The server runs it through the durable queue with owned inputs/outputs and protects its source from deletion until the job terminates.
 
 ## Install weights

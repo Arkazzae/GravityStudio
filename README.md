@@ -95,6 +95,8 @@ Qwen supports up to ten references, including transparency; Klein supports four.
 
 Download Krea's style-reference adapter and nine official style LoRAs, SDXL ReVision CLIP Vision, or SDXL Refiner in **Settings → Models → Tools**. Imported Hugging Face LoRAs require an explicit compatible family. LoRA import supports SDXL, Klein 4B/9B, Qwen and Krea; Ideogram's dual-model workflow is excluded. Installed files enable a feature only when an assigned worker supports its complete workflow. ReVision provides conceptual image guidance rather than identity locking.
 
+Advanced settings allow an ordered stack of compatible LoRAs with individual strengths. Move adapters up or down to change their application order. The selected model advertises its stack limit; supported recipes currently allow up to 32, and a checkpoint may impose a lower limit. This is a workflow bound, not a guarantee that the stack fits your GPU. Admission includes every adapter's configured RAM and VRAM budget. Switching compatible checkpoints retains the stack, while the new model's worker readiness is checked again.
+
 **Remove background** in an image preview creates a separate BiRefNet job for an imported or generated image. It retains the original dimensions and intersects the existing transparency with the foreground mask. Download BiRefNet in Tools first.
 
 ### Disk and object storage usage
