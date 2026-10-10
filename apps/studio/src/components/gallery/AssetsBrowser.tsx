@@ -11,6 +11,7 @@ import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { DeleteImageButton } from './DeleteImageButton';
 import { InputViewer } from './InputViewer';
 import { OutputViewer, type ViewerEntry } from './OutputViewer';
+import type { UpscaleActions } from './UpscaleAction';
 import dialogStyles from '@/components/studio/StudioDialog.module.css';
 import libraryStyles from '@/components/prompt/ReferencePicker.module.css';
 import styles from './AssetsBrowser.module.css';
@@ -24,7 +25,7 @@ const categories = [
 ] as const;
 const dayLabel = (day: string) => day === 'imports' ? 'Imported images' : new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
-export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse, onFavorite, favoriteBusy, favoriteError, onDeleteOutput, onInputDeleted, onSessionExpired, onBusyChange }: {
+export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse, onFavorite, favoriteBusy, favoriteError, onDeleteOutput, onInputDeleted, onSessionExpired, onBusyChange, upscale }: {
   open: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
   jobs: Job[];
@@ -38,6 +39,7 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
   onInputDeleted: (id: string) => void;
   onSessionExpired: () => void;
   onBusyChange: (busy: boolean) => void;
+  upscale: UpscaleActions;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -189,7 +191,7 @@ export function AssetsBrowser({ open, triggerRef, jobs, models, onClose, onReuse
         {dragging && <FileDropOverlay target="assets" title="Add images to your library" detail={uploading ? 'Wait for the current upload to finish.' : 'Drop PNG, JPEG or WebP images up to 20 MiB each.'} />}
       </div>
     </dialog>
-    {viewer?.source === 'generated' && <OutputViewer dialogId="assets-output-viewer" items={outputs} open={open && viewer.open} openId={viewer.id} models={models} onClose={closeViewer} onSelect={selectViewer} onReuse={job => { onReuse(job); onClose(); }} onFavorite={onFavorite} favoriteBusy={imageBusy} favoriteError={favoriteError} onDelete={removeOutput} />}
-    {viewer?.source === 'import' && <InputViewer items={inputImages} open={open && viewer.open} openId={viewer.id} onClose={closeViewer} onSelect={selectViewer} onDelete={removeInput} />}
+    {viewer?.source === 'generated' && <OutputViewer dialogId="assets-output-viewer" items={outputs} open={open && viewer.open} openId={viewer.id} models={models} onClose={closeViewer} onSelect={selectViewer} onReuse={job => { onReuse(job); onClose(); }} onFavorite={onFavorite} favoriteBusy={imageBusy} favoriteError={favoriteError} onDelete={removeOutput} upscale={upscale} />}
+    {viewer?.source === 'import' && <InputViewer items={inputImages} open={open && viewer.open} openId={viewer.id} onClose={closeViewer} onSelect={selectViewer} onDelete={removeInput} upscale={upscale} />}
   </>;
 }

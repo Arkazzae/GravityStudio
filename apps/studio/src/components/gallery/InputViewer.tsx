@@ -7,14 +7,16 @@ import { cn } from '@/lib/utils';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { DeleteImageButton } from './DeleteImageButton';
 import { ZoomableImage } from './ZoomableImage';
+import { UpscaleAction, type UpscaleActions } from './UpscaleAction';
 
-export function InputViewer({ items, open, openId, onSelect, onClose, onDelete }: {
+export function InputViewer({ items, open, openId, onSelect, onClose, onDelete, upscale }: {
   items: InputImage[];
   open: boolean;
   openId: string;
   onSelect: (id: string) => void;
   onClose: () => void;
   onDelete: (input: InputImage) => Promise<void>;
+  upscale: UpscaleActions;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const previousIndex = useRef(0);
@@ -76,6 +78,7 @@ export function InputViewer({ items, open, openId, onSelect, onClose, onDelete }
         </div>
         <footer className="flex flex-col gap-2 border-t border-line p-4">
           {deleteError?.id === item.id && deleteError.message && <p role="alert" className="error-notice text-xs">{deleteError.message}</p>}
+          <UpscaleAction key={`upscale-${item.id}`} source={{ type: 'input', inputId: item.id }} width={item.width} height={item.height} actions={upscale} onReady={onClose} />
           <div className="flex gap-2">
             <a href={item.url} download={`${item.name.replace(/\.(png|jpe?g|webp)$/i, '')}.png`} aria-label="Download image" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11]"><Download className="size-[18px]" strokeWidth={1.8} />Download</a>
             <a href={item.url} target="_blank" rel="noopener noreferrer" aria-label="Open the file in a new tab" title="Open the file in a new tab" className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/[0.06] text-ink-2 transition-colors hover:bg-white/[0.11] hover:text-ink"><ExternalLink className="size-[18px]" strokeWidth={1.8} /></a>

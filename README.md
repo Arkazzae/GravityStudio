@@ -11,6 +11,7 @@ A self-hosted image studio for your GPU server. Write a prompt, add reference im
 - Family recipes for SDXL / Illustrious, FLUX.2 Klein, Krea 2, Qwen Image 2.1 and Ideogram 4. The catalog includes SDXL Base, WAI Illustrious v17, Klein 4B, Krea 2 Turbo, Qwen Image 2.1 and Ideogram 4 FP8.
 - AMD and NVIDIA detection, GPU selection with automatic runtime setup, and configurable RAM / VRAM reserves.
 - A model library with Hugging Face downloads and SDXL / Illustrious checkpoint imports.
+- Image upscaling with Nomos2 HQ and SeedVR2 3B / 7B on the same ComfyUI workers.
 - Durable SQLite jobs, retry protection and recovery after a server restart or lost ComfyUI connection.
 - Private S3 media storage with a provided RustFS container and verified migration of existing images.
 - Owner login, revocable API tokens, a REST API and an MCP endpoint.
@@ -68,6 +69,12 @@ The installer builds one shared image per backend, CUDA or ROCm, and starts one 
 
 See [runtime installation](deploy/comfyui/README.md) for device permissions, selecting GPUs, verification and stopping workers. See [model files and recipes](packages/inference/README.md) for the required weights and their sources.
 
+### Upscale an image
+
+Download **Nomos2 HQ**, **SeedVR2 3B** or **SeedVR2 7B** under **Models → Tools**. Open a generated or imported image and choose **Upscale**, then select a downloaded model and 2× or 4×. Output is limited to 4096 pixels per side. The action becomes available when a connected worker has all required weights and nodes.
+
+Upscaling creates a separate queued job and saves a new image, preserving the original and its transparency. It shares generation's worker selection, memory reservations, restart recovery and private media storage. Source images cannot be deleted while an upscale is active. Nomos2 runs a native 4× restoration and reduces it for 2× output; SeedVR2 uses the native ComfyUI diffusion workflow. Memory requirements are estimates and vary with source size and hardware. No additional container or custom node installation is required.
+
 ### Different hardware
 
 Each GPU has its own memory budget. Three 24 GiB cards remain three separate devices; the scheduler does not treat them as a 72 GiB GPU. Multiple independent jobs can run concurrently when the configured concurrency limit and host RAM allow it. Adjust these limits under **Settings → Advanced settings**.
@@ -82,7 +89,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 Create a token under **Settings → Advanced settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an owner browser session.
 
-The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model listing, image submission, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its generation.
+The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model and upscaler listing, image generation and upscaling, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
 
 See [API usage](apps/server/README.md) for requests and response behavior.
 

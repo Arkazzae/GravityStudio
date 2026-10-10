@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Boxes, Check, Download, ExternalLink, HardDrive, LoaderCircle, Wand2 } from '@/components/ui/icons';
+import { Boxes, Check, Download, ExternalLink, HardDrive, LoaderCircle, SlidersHorizontal, Wand2 } from '@/components/ui/icons';
 import { LanguageModels } from './LanguageModels';
 import { ProviderSettings } from './IntegrationsSettings';
 import { TabbedWorkspace, type WorkspaceSection } from '@/components/studio/TabbedWorkspace';
@@ -8,9 +8,9 @@ import { api, errorMessage, type IntegrationStatus, type LibraryModel, type Mode
 
 const downloadBusy = (download?: ModelDownload | null) => !!download && !['succeeded', 'failed'].includes(download.status);
 const size = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
-type ModelsSection = 'library' | 'installed' | 'huggingface' | 'downloads' | 'language';
+export type ModelsSection = 'library' | 'installed' | 'tools' | 'huggingface' | 'downloads' | 'language';
 
-export function ModelLibrary({ onChanged, onConfigureText, active = true }: { onChanged: () => void; onConfigureText: () => void; active?: boolean }) {
+export function ModelLibrary({ onChanged, onConfigureText, active = true, requestedSection }: { onChanged: () => void; onConfigureText: () => void; active?: boolean; requestedSection?: { section: ModelsSection; revision: number } }) {
   const [section, setSection] = useState<ModelsSection>('library');
   const [languageVisited, setLanguageVisited] = useState(false);
   const [library, setLibrary] = useState<ModelLibraryState | null>(null);
@@ -80,6 +80,7 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true }: { on
     return () => { read.current?.abort(); read.current = null; };
   }, [active, submitting, load]);
   useEffect(() => { if (section === 'language') setLanguageVisited(true); }, [section]);
+  useEffect(() => { if (requestedSection) setSection(requestedSection.section); }, [requestedSection]);
   const downloading = downloadBusy(library?.download);
   useEffect(() => {
     if (!active || !downloading || submitting) return;
@@ -169,11 +170,14 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true }: { on
   const sections: readonly WorkspaceSection<ModelsSection>[] = [
     { id: 'library', label: 'Library', icon: Boxes },
     { id: 'installed', label: 'Installed', icon: HardDrive },
+    { id: 'tools', label: 'Tools', icon: SlidersHorizontal },
     { id: 'huggingface', label: 'Hugging Face', icon: ExternalLink },
     { id: 'downloads', label: 'Downloads', icon: downloading ? LoaderCircle : Download, busy: downloading },
     { id: 'language', label: 'Language', icon: Wand2 },
   ];
   const installed = library?.models.filter(model => model.installed) || [];
+  const imageModels = library?.models.filter(model => model.kind !== 'utility') || [];
+  const tools = library?.models.filter(model => model.kind === 'utility') || [];
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-chip bg-chip px-4 text-sm font-medium hover:bg-chip-hi disabled:cursor-default disabled:opacity-50';
 
   function modelList(models: LibraryModel[]) {
@@ -187,7 +191,7 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true }: { on
         {!model.downloadable && !model.installed && <p className="mt-2 break-words text-xs leading-relaxed text-ink-2">{model.unavailableReason || 'This model is not available for automatic download.'}</p>}
         {access[model.id] && <AccessReport result={access[model.id]} onConfigureToken={() => configureToken(model.name)} />}
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 @xl:flex-col @xl:items-stretch @xl:pt-1">{model.enabled ? <span className="inline-flex min-h-11 items-center gap-2 text-sm text-volt"><Check size={16} />{model.kind === 'utility' ? 'Downloaded' : 'Ready to use'}</span>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 @xl:flex-col @xl:items-stretch @xl:pt-1">{model.enabled || model.kind === 'utility' && model.installed ? <span className="inline-flex min-h-11 items-center gap-2 text-sm text-volt"><Check size={16} />{model.kind === 'utility' ? 'Downloaded' : 'Ready to use'}</span>
         : <button disabled={busy || (!model.installed && !model.downloadable)} onClick={() => void (model.installed ? activate(model) : download({ modelId: model.id }, model.id))} className={actionClass}>
           {submitting === model.id && action !== 'check' || (downloading && downloadState?.modelId === model.id) ? <LoaderCircle size={15} className="animate-spin" /> : model.installed ? null : <Download size={15} />}
           {submitting === model.id && action === 'download-check' ? 'Checking access…' : model.installed ? 'Use model' : downloading && downloadState?.modelId === model.id ? 'Downloading…' : 'Download'}
@@ -208,10 +212,14 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true }: { on
     </div>}
     <div hidden={section !== 'library'} id="models-panel-library" role="tabpanel" aria-labelledby="models-tab-library" tabIndex={0}>
       <h2 className="text-lg font-medium">Model library</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Download a supported model and its required files. Add your own SDXL checkpoint in Hugging Face.</p>
-      {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading models…</p> : library.models.length ? modelList(library.models) : <div className="mt-6"><p className="mb-4 text-sm text-ink-2">No models in the library yet.</p><button type="button" className={actionClass} onClick={() => openSection('huggingface')}>Add from Hugging Face</button></div>}
+      {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading models…</p> : imageModels.length ? modelList(imageModels) : <div className="mt-6"><p className="mb-4 text-sm text-ink-2">No models in the library yet.</p><button type="button" className={actionClass} onClick={() => openSection('huggingface')}>Add from Hugging Face</button></div>}
+    </div>
+    <div hidden={section !== 'tools'} id="models-panel-tools" role="tabpanel" aria-labelledby="models-tab-tools" tabIndex={0}>
+      <h2 className="text-lg font-medium">Image tools</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Download an upscaler, then open any image and choose Upscale. Background removal is used by the Transparent setting.</p>
+      {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading tools…</p> : tools.length ? modelList(tools) : <p className="mt-6 text-sm text-ink-2">No image tools are available yet.</p>}
     </div>
     <div hidden={section !== 'installed'} id="models-panel-installed" role="tabpanel" aria-labelledby="models-tab-installed" tabIndex={0}>
-      <h2 className="text-lg font-medium">Installed models</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Models with all required files downloaded. Activate a model to make it available in Image.</p>
+      <h2 className="text-lg font-medium">Installed models</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Models and tools with all required files downloaded. Activate a generation model to make it available in Image.</p>
       {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading installed models…</p> : installed.length ? modelList(installed) : <div className="mt-6"><p className="mb-4 text-sm text-ink-2">No models installed yet. Choose a model from the library to get started.</p><button type="button" className={actionClass} onClick={() => openSection('library')}>Browse library</button></div>}
     </div>
     <div hidden={section !== 'huggingface'} id="models-panel-huggingface" role="tabpanel" aria-labelledby="models-tab-huggingface" tabIndex={0}>

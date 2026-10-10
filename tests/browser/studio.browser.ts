@@ -351,9 +351,9 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await browser.clickText('Browse models');
   await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-library')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-library article h3')", 'Models opens its Library section');
   assert.equal(await browser.evaluate("document.querySelector('#models-dialog').matches(':modal') && location.pathname === '/image'"), true, 'Gallery opens Models without navigating away');
-  const modelSections = ['library', 'installed', 'huggingface', 'downloads', 'language'];
+  const modelSections = ['library', 'installed', 'tools', 'huggingface', 'downloads', 'language'];
   assert.equal(await browser.evaluate("document.querySelector('[role=tablist][aria-label=\"Model sections\"]').getAttribute('aria-orientation')"), 'vertical');
-  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Hugging Face', 'Downloads', 'Language']);
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('[role=tablist][aria-label=\"Model sections\"] [role=tab]')).map(tab => tab.textContent.trim())"), ['Library', 'Installed', 'Tools', 'Hugging Face', 'Downloads', 'Language']);
   async function modelSectionKey(key: string, section: string) {
     await browser.key(key);
     await browser.until(`document.querySelector('#models-tab-${section}')?.getAttribute('aria-selected') === 'true' && document.querySelector('#models-panel-${section}')?.getClientRects().length > 0`, `${key} opens Models ${section}`);
@@ -376,6 +376,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
   await modelFrame(false);
   await modelSectionKey('ArrowDown', 'installed');
   assert.equal(await browser.evaluate("document.querySelectorAll('#models-panel-installed article').length"), 0, 'Installed excludes every checkpoint before the first download');
+  await modelFrame(false);
+  await modelSectionKey('ArrowDown', 'tools');
   await modelFrame(false);
   await modelSectionKey('ArrowDown', 'huggingface');
   await browser.fill('input[name="checkpoint-url"]', checkpointUrl);
@@ -2245,6 +2247,132 @@ test('file drops route to references or Assets without claiming text or navigati
   }
   assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this prompt while importing files.');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'Import checks never submit generation jobs');
+  assert.deepEqual(browser.errors, []);
+});
+
+test('Upscale queues independent results from outputs and imports with model and size recovery', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort(), origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'upscale-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => { child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await close(server); await fixture.close(); });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Upscale frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await browser.send('Network.enable');
+  await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
+  const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
+  const png = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect x="64" y="64" width="384" height="384" rx="32" fill="#d1fe17"/></svg>')).png().toBuffer();
+  const imageUrl = `data:image/png;base64,${png.toString('base64')}`;
+  // Images and upscale responses are synthetic. No model download, upload or
+  // generation request reaches the server; this isolates the UI contract.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__upscaleInstalled = false; window.__upscaleRequests = []; window.__upscaleEvents = []; window.__upscaleFailOnce = true;
+    window.__upscaleOriginal = {id:'upscale-original-job',modelId:'wai-illustrious-v17',modelName:'Original generation',prompt:'Keep this original image',input:{modelId:'wai-illustrious-v17',prompt:'Keep this original image'},parameters:{width:512,height:512,steps:20,cfg:5,seed:7},status:'succeeded',stage:'Complete',progress:1,createdAt:'2026-01-01T12:00:00.000Z',outputs:[{id:'upscale-original-output',url:${JSON.stringify(imageUrl)},width:512,height:512,mimeType:'image/png'}],error:null};
+    window.__upscaleJobs = [window.__upscaleOriginal];
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href), method = String(options.method || 'GET').toUpperCase();
+      if (url.origin !== location.origin) return originalFetch(input, options);
+      if (url.pathname === '/api/upscalers') return Response.json({models:[{id:'fixture-upscaler',name:'Fixture Upscaler',description:'Enlarge image details without changing the source.',scales:[2,4],maxOutputDimension:4096,installed:window.__upscaleInstalled,ready:window.__upscaleInstalled,missingReasons:[]},{id:'fixture-offline-upscaler',name:'Offline Upscaler',description:'A downloaded model on a disconnected worker.',scales:[2,4],maxOutputDimension:4096,installed:window.__upscaleInstalled,ready:false,missingReasons:['Connect the worker that provides this upscaler.']}]});
+      if (url.pathname === '/api/inputs' && method === 'GET') return Response.json({inputs:[{id:'upscale-import',name:'Large imported image.png',url:${JSON.stringify(imageUrl)},width:1536,height:1024}]});
+      if (url.pathname === '/api/upscale' && method === 'POST') {
+        const body = JSON.parse(options.body); window.__upscaleRequests.push({body,key:new Headers(options.headers).get('Idempotency-Key')});
+        if (window.__upscaleFailOnce) { window.__upscaleFailOnce = false; return Response.json({error:'Worker temporarily unavailable. Try again.'},{status:503}); }
+        const imported = body.source.type === 'input', width = imported ? 1536 : 512, height = imported ? 1024 : 512;
+        const job = {id:'upscale-result-' + window.__upscaleJobs.length,modelId:body.modelId,modelName:'Fixture Upscaler',prompt:'Upscale ' + body.scale + '×',input:body,parameters:{width:width*body.scale,height:height*body.scale,scale:body.scale,sourceWidth:width,sourceHeight:height},status:'queued',stage:'Waiting in queue',progress:null,createdAt:new Date().toISOString(),outputs:[],error:null};
+        window.__upscaleJobs.unshift(job); return Response.json({job});
+      }
+      if (url.pathname === '/api/models/access' && method === 'POST') { window.__upscaleEvents.push(url.pathname); return Response.json({available:true,hasToken:false,checkedAt:new Date().toISOString(),repositories:[]}); }
+      if (url.pathname === '/api/models/download' && method === 'POST') { window.__upscaleEvents.push(url.pathname); window.__upscaleInstalled = true; return Response.json({id:'upscale-model-download',modelId:'fixture-upscaler',modelName:'Fixture Upscaler',status:'succeeded',stage:'Downloaded',completedFiles:1,totalFiles:1,receivedBytes:32,totalBytes:32,startedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}); }
+      const response = await originalFetch(input, options);
+      if (method !== 'GET' || !response.ok) return response;
+      if (url.pathname === '/api/state') return Response.json({...await response.json(),jobs:window.__upscaleJobs});
+      if (url.pathname === '/api/models/library') return Response.json({...await response.json(),models:[{id:'fixture-upscaler',name:'Fixture Upscaler',familyId:'upscale',family:'Upscale',kind:'utility',category:'upscale',description:'Enlarge image details without changing the source.',repositories:[],source:'catalog',installed:window.__upscaleInstalled,enabled:window.__upscaleInstalled,downloadable:true,artifacts:[]}]});
+      return response;
+    };
+  ` });
+  const popover = '[popover]:popover-open[aria-label="Upscale image"]';
+  async function openUpscale(viewer = '#output-viewer') {
+    await browser.click(`${viewer} button[aria-label="Upscale image"]`);
+    await browser.until(`document.querySelector(${JSON.stringify(popover)}) && getComputedStyle(document.querySelector(${JSON.stringify(popover)})).visibility === 'visible' && !document.querySelector(${JSON.stringify(`${popover} [role=status]`)})`, 'Upscale options finish loading');
+    await browser.evaluate(`Promise.all(document.querySelector(${JSON.stringify(popover)}).getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)`);
+  }
+  const scaleButton = (value: number) => `${popover} [aria-label="Upscale size"] button:nth-child(${value === 2 ? 1 : 2})`;
+  const submit = `${popover} button.bg-volt`;
+  async function capture(surface: string) {
+    for (const width of [1440, 390, 320]) {
+      await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width === 1440 ? 960 : 844, deviceScaleFactor: 1, mobile: width < 768 });
+      await browser.evaluate(`Promise.all([document.fonts.ready,...document.querySelector(${JSON.stringify(popover)}).getAnimations().map(animation => animation.finished.catch(() => {}))]).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))`);
+      assert.equal(await browser.evaluate(`(() => {const panel=document.querySelector(${JSON.stringify(popover)}),rect=panel.getBoundingClientRect();return rect.left>=0 && rect.right<=innerWidth+1 && rect.top>=0 && rect.bottom<=innerHeight+1 && panel.scrollWidth<=panel.clientWidth+1 && document.documentElement.scrollWidth<=innerWidth;})()`), true, `${surface} fits ${width}px`);
+      await browser.screenshot(join(output, `upscale-${surface}-${width}.png`));
+    }
+  }
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('main figure button[aria-label=\"Open Original generation output\"]')", 'The original generated output is available');
+  await browser.fill('#image-prompt', 'Keep this draft unchanged');
+  await browser.click('main figure button[aria-label="Open Original generation output"]');
+  await openUpscale();
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(popover)}).textContent`), /Download an upscaler/);
+  await browser.click(`${popover} [data-upscale-manage]`);
+  await browser.until("document.querySelector('#models-dialog[open]') && document.querySelector('#models-tab-tools')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#models-panel-tools article')", 'Empty state opens Models directly in Tools');
+  assert.equal(await browser.evaluate("document.querySelectorAll('#models-panel-library article[data-model-id=fixture-upscaler]').length"), 0, 'Upscalers stay outside the generation library');
+  await browser.click('#models-panel-tools article button');
+  await browser.until("document.querySelector('#models-tab-downloads')?.getAttribute('aria-selected') === 'true'", 'Tool downloads use the existing download flow');
+  assert.deepEqual(await browser.evaluate('window.__upscaleEvents'), ['/api/models/access', '/api/models/download'], 'A tool download still checks repository access first');
+  await browser.click('#models-tab-tools');
+  await browser.until("document.querySelector('#models-panel-tools article')?.textContent.includes('Downloaded')", 'A downloaded tool needs no generation activation');
+  await browser.click('button[aria-label="Close models"]');
+  await browser.click('main figure button[aria-label="Open Original generation output"]');
+  await openUpscale();
+  await browser.fill(`${popover} select`, 'fixture-offline-upscaler');
+  await browser.until(`document.querySelector(${JSON.stringify(popover)}).textContent.includes('Connect the worker')`, 'Downloaded but unavailable models explain worker recovery');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(submit)}).disabled`), true);
+  await browser.fill(`${popover} select`, 'fixture-upscaler');
+  await browser.click(scaleButton(4));
+  assert.match(await browser.evaluate<string>(`document.querySelector(${JSON.stringify(popover)}).textContent`), /512 × 512 → 2048 × 2048/);
+  await capture('output');
+  await browser.click(submit);
+  await browser.until(`document.querySelector(${JSON.stringify(`${popover} [role=alert]`)})?.textContent.includes('temporarily unavailable')`, 'A failed submission retains its choices for retry');
+  await browser.click(submit);
+  await browser.until("!document.querySelector('#output-viewer[open]') && document.querySelector('main').textContent.includes('Waiting in queue')", 'Successful upscale closes the preview and enters the existing queue');
+  assert.deepEqual(await browser.evaluate('window.__upscaleRequests.map(request=>request.body)'), [1, 2].map(() => ({ operation: 'upscale', modelId: 'fixture-upscaler', source: { type: 'output', jobId: 'upscale-original-job', outputId: 'upscale-original-output' }, scale: 4 })), 'Generated output references its stored source without upload');
+  assert.equal(await browser.evaluate('window.__upscaleRequests[0].key === window.__upscaleRequests[1].key && !!window.__upscaleRequests[0].key'), true, 'Retry keeps its idempotency key');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this draft unchanged');
+  assert.equal(await browser.evaluate('window.__upscaleOriginal.outputs.length'), 1, 'The original image remains saved');
+  await browser.evaluate(`Object.assign(window.__upscaleJobs[0],{status:'succeeded',stage:'Complete',progress:1,outputs:[{id:'upscale-finished-output',url:${JSON.stringify(imageUrl)},width:2048,height:2048,mimeType:'image/png'}]})`);
+  await browser.until("!!document.querySelector('main figure button[aria-label=\"Open Fixture Upscaler output\"]')", 'Completed upscales become normal gallery assets');
+  assert.equal(await browser.evaluate("document.querySelector('main figure button[aria-label=\"Open Fixture Upscaler output\"]').closest('figure').querySelector('[aria-label=\"Use these settings\"]') === null"), true, 'Upscale tiles cannot load generation settings');
+  await browser.click('main figure button[aria-label="Open Fixture Upscaler output"]');
+  await browser.until("!!document.querySelector('#output-viewer[open]')", 'The upscaled image opens');
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#output-viewer button')).some(button=>button.textContent.includes('Use these settings'))"), false);
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('#output-viewer dt')).some(label=>label.textContent==='Scale') && !Array.from(document.querySelectorAll('#output-viewer dt')).some(label=>['Steps','Guidance','Seed'].includes(label.textContent))"), true, 'Upscale details show scaling instead of generation parameters');
+  await browser.click('#output-viewer button[aria-label="Close preview"]');
+  await browser.click('header button[aria-label="Assets"]');
+  await browser.until("!!document.querySelector('#assets-browser-dialog article[data-asset-id=upscale-import]')", 'Imported sources remain available');
+  await browser.click('#assets-browser-dialog article[data-asset-id=upscale-import] > button');
+  await openUpscale('#assets-input-viewer');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(scaleButton(4))}).disabled`), true, 'The oversized 4× output is blocked before submitting');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(scaleButton(2))}).disabled`), false, 'A safe 2× output remains available');
+  await capture('import-limit');
+  await browser.click(submit);
+  await browser.until("!document.querySelector('#assets-input-viewer[open]') && !document.querySelector('#assets-browser-dialog[open]')", 'Submitting an imported image returns to the queue workspace');
+  assert.deepEqual(await browser.evaluate('window.__upscaleRequests.at(-1).body'), { operation: 'upscale', modelId: 'fixture-upscaler', source: { type: 'input', inputId: 'upscale-import' }, scale: 2 }, 'Imported images keep their original input reference');
+  assert.equal(await browser.evaluate("document.querySelector('#image-prompt').value"), 'Keep this draft unchanged');
+  assert.equal(await browser.evaluate('window.__upscaleJobs.length'), 3, 'Each upscale creates a separate result');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0); assert.equal(fixture.workers[0].state.submissions.length, 0);
   assert.deepEqual(browser.errors, []);
 });
 
