@@ -1,7 +1,7 @@
 import { isRelativeFile } from "./catalog.ts";
 import { snapshotHash, validateInputImage } from "./compiler.ts";
 import { InferenceError } from "./types.ts";
-import type { ArtifactRole, ModelArtifact, UpscaleParameters, UpscaleRequest, UpscaleSnapshot, UpscalerManifest, WorkflowGraph } from "./types.ts";
+import type { GraphLink, ArtifactRole, ModelArtifact, UpscaleParameters, UpscaleRequest, UpscaleSnapshot, UpscalerManifest, WorkflowGraph } from "./types.ts";
 
 const GiB = 1024 ** 3;
 const seedSource = "https://huggingface.co/Comfy-Org/SeedVR2/resolve/df48879708206a403d2a61acd55578c2e80fd233";
@@ -120,6 +120,23 @@ function upscaleGraph(model: UpscalerManifest, p: UpscaleParameters, image: stri
   graph.alpha = { class_type: "JoinImageWithAlpha", inputs: { image: [model.familyId === "nomos2" ? "resize" : "postprocess", 0], alpha: ["input_image", 1] } };
   graph.output = { class_type: "SaveImage", inputs: { images: ["alpha", 0], filename_prefix: "grav-upscale" } };
   return graph;
+}
+
+/** Append the same native restoration recipe to an existing image tensor. */
+export function appendUltraGraph(graph: WorkflowGraph, model: UpscalerManifest, parameters: { width: number; height: number; seed: number }): void {
+  validateUpscaler(model);
+  if (model.id !== "seedvr2-7b" || model.familyId !== "seedvr2") throw new InferenceError("INVALID_MODEL", "Ultra requires the pinned SeedVR2 7B upscaler.");
+  const source = graph.output.inputs.images as GraphLink;
+  graph.ultra_source = { class_type: "SplitImageWithAlpha", inputs: { image: source } };
+  const restoration = upscaleGraph(model, { ...parameters, scale: 2, sourceWidth: 1, sourceHeight: 1 }, "unused.png");
+  delete restoration.input_image;
+  const rename = ([node, output]: GraphLink): GraphLink => [node === "input_image" ? "ultra_source" : `ultra_${node}`, output];
+  for (const [id, node] of Object.entries(restoration)) {
+    graph[id === "output" ? "output" : `ultra_${id}`] = {
+      ...node, inputs: Object.fromEntries(Object.entries(node.inputs).map(([key, value]) => [key, Array.isArray(value) ? rename(value) : value])),
+    };
+  }
+  graph.output.inputs.filename_prefix = "grav-ultra";
 }
 
 export function compileUpscale(request: UpscaleRequest, model?: UpscalerManifest): UpscaleSnapshot {

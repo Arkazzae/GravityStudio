@@ -67,6 +67,7 @@ export interface InputImage {
 }
 
 export interface GenerationRequest {
+  quality?: "ultra";
   modelId: string;
   operation?: Operation;
   prompt: string;
@@ -86,6 +87,7 @@ export interface GenerationRequest {
 }
 
 export interface ResolvedParameters extends SamplingDefaults {
+  quality?: "ultra";
   prompt: string;
   seed: number;
   denoise: number;
@@ -150,6 +152,8 @@ export interface GenerationSnapshot extends SnapshotBase {
   recipe: { familyId: FamilyId; revision: string; operation: Operation };
   model: ModelManifest;
   parameters: ResolvedParameters;
+  /** Pinned restoration recipe; native sampling dimensions remain in parameters. */
+  postprocess?: { model: UpscalerManifest; width: number; height: number };
 }
 
 export interface UpscaleSnapshot extends SnapshotBase {

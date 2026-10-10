@@ -1,7 +1,9 @@
 import { createHash, randomInt } from "node:crypto";
 import { BIREFNET_ARTIFACT, FAMILY_RECIPES, getModel, isRelativeFile, validateModel } from "./catalog.ts";
+import { fitImageSize, ultraOutputSize } from "../contracts/image-size.ts";
+import { appendUltraGraph, getUpscaler } from "./upscale.ts";
 import { InferenceError } from "./types.ts";
-import type { ArtifactRole, ExecutionSnapshot, GenerationRequest, GenerationSnapshot, GraphLink, InputImage, ModelManifest, ResolvedParameters, UpscaleSnapshot, WorkflowGraph } from "./types.ts";
+import type { ArtifactRole, ExecutionSnapshot, GenerationRequest, GenerationSnapshot, GraphLink, InputImage, ModelManifest, ResolvedParameters, UpscalerManifest, UpscaleSnapshot, WorkflowGraph } from "./types.ts";
 
 export function canonicalJson(value: unknown): string {
   if (value === undefined) return "null";
@@ -25,7 +27,7 @@ function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new InferenceError("INVALID_INPUT", message);
 }
 
-const requestKeys = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "seed", "steps", "cfg", "sampler", "scheduler", "clipSkip", "denoise", "images", "background"]);
+const requestKeys = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "seed", "steps", "cfg", "sampler", "scheduler", "clipSkip", "denoise", "images", "background", "quality"]);
 
 export function validateInputImage(image: InputImage): void {
   check(image && typeof image === "object" && Object.keys(image).every(key => ["filename", "subfolder", "type"].includes(key)), "Invalid input image reference.");
@@ -35,6 +37,30 @@ export function validateInputImage(image: InputImage): void {
 
 function imageName(image: InputImage): string {
   return image.subfolder ? `${image.subfolder}/${image.filename}` : image.filename;
+}
+
+/** Preserve exact preset canvases; settle other shapes on the model's High grid. */
+export function highImageSize(model: ModelManifest, width: number, height: number): { width: number; height: number } {
+  const family = FAMILY_RECIPES[model.familyId];
+  const preset = family.qualityPresets.find(item => item.id === "high")!;
+  const dimensions = { ...family.dimensions, min: Math.max(family.dimensions.min, preset.minSide ?? 0) };
+  const defaults = { ...family.defaults, ...model.defaults };
+  const sizeModel = { defaults, dimensions };
+  for (const ratio of [1, 3 / 2, 2 / 3, 16 / 9, 9 / 16, 4 / 3, 3 / 4, 21 / 9, defaults.width / defaults.height]) {
+    const size = fitImageSize(sizeModel, ratio, preset.pixels);
+    if (size?.width === width && size.height === height) return size;
+  }
+  const ratio = width / height;
+  let size = fitImageSize(sizeModel, ratio, preset.pixels);
+  check(size, "This aspect ratio cannot fit the model's High resolution.");
+  const seen = new Set<string>();
+  while (!seen.has(`${size.width}:${size.height}`)) {
+    seen.add(`${size.width}:${size.height}`);
+    const next = fitImageSize(sizeModel, size.width / size.height, preset.pixels);
+    if (!next || Math.abs(next.width / next.height / ratio - 1) > .02) break;
+    size = next;
+  }
+  return size;
 }
 
 function parametersFor(request: GenerationRequest, model: ModelManifest): ResolvedParameters {
@@ -55,6 +81,8 @@ function parametersFor(request: GenerationRequest, model: ModelManifest): Resolv
   const { min, max, multiple, maxPixels } = family.dimensions;
   check(["auto", "opaque", "transparent"].includes(p.background), "Choose an automatic, opaque or transparent background.");
   for (const value of [p.width, p.height]) check(Number.isInteger(value) && value >= min && value <= max && value % multiple === 0, `Dimensions must be multiples of ${multiple}, from ${min} to ${max}.`);
+  check(request.quality === undefined || request.quality === "ultra", "Choose Ultra or omit the quality parameter.");
+  if (request.quality === "ultra") Object.assign(p, highImageSize(model, p.width, p.height), { quality: "ultra" });
   check(p.width * p.height <= maxPixels, `This recipe supports at most ${maxPixels.toLocaleString("en")} pixels.`);
   check(Number.isSafeInteger(p.seed) && p.seed >= 0, "Seed must be a nonnegative safe integer.");
   check(Number.isInteger(p.steps) && p.steps >= 1 && p.steps <= 100, "Steps must be an integer from 1 to 100.");
@@ -194,7 +222,7 @@ function ideogram4Graph(model: ModelManifest, p: ResolvedParameters): WorkflowGr
   };
 }
 
-export function compileGeneration(request: GenerationRequest, model?: ModelManifest): GenerationSnapshot {
+export function compileGeneration(request: GenerationRequest, model?: ModelManifest, upscaler?: UpscalerManifest): GenerationSnapshot {
   check(request && typeof request === "object" && !Array.isArray(request) && Object.keys(request).every(key => requestKeys.has(key)), "Unknown generation parameter.");
   check(Object.values(request).every(value => value !== null), "Generation parameters cannot be null.");
   model ??= getModel(request.modelId);
@@ -227,12 +255,19 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
     graph.background_opaque = { class_type: "ImageCompositeMasked", inputs: { destination: ["background_white", 0], source: ["background_split", 0], mask: ["background_opacity", 0], x: 0, y: 0, resize_source: false } };
     graph.output.inputs.images = ["background_opaque", 0];
   }
+  const postprocess = parameters.quality === "ultra" ? {
+    model: structuredClone(upscaler ?? getUpscaler("seedvr2-7b")), ...ultraOutputSize(parameters.width, parameters.height),
+  } : undefined;
+  if (postprocess) appendUltraGraph(graph, postprocess.model, { width: postprocess.width, height: postprocess.height, seed: parameters.seed });
+  const auxiliaryArtifacts = [...(cutout ? [structuredClone(BIREFNET_ARTIFACT)] : []), ...(postprocess?.model.artifacts ?? [])]
+    .filter((item, index, artifacts) => !model.artifacts.some(base => base.folder === item.folder && base.filename === item.filename) && artifacts.findIndex(other => other.folder === item.folder && other.filename === item.filename) === index);
   const content: Omit<GenerationSnapshot, "hash"> = {
     schemaVersion: 1,
     recipe: { familyId: family.id, revision: family.revision, operation },
     model: structuredClone(model), parameters, inputs: structuredClone(images),
     graph,
-    ...(cutout ? { auxiliaryArtifacts: [structuredClone(BIREFNET_ARTIFACT)] } : {}),
+    ...(auxiliaryArtifacts.length ? { auxiliaryArtifacts } : {}),
+    ...(postprocess ? { postprocess } : {}),
     outputs: [{ node: "output", field: "images" }],
   };
   return { ...content, hash: snapshotHash(content) };

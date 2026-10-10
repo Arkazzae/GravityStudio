@@ -38,6 +38,8 @@ export interface IntegrationStatus {
 }
 export interface IntegrationTestResult { ok: true; message: string }
 export interface GenerationInput {
+  /** High native resolution followed by SeedVR2 7B to a 4096px longest edge. */
+  quality?: "ultra";
   modelId: string;
   background?: "auto" | "opaque" | "transparent";
   operation?: "text-to-image" | "image-to-image" | "reference";

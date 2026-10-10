@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ApiError, isUpscaleInput, type GenerationInput, type UpscaleInput, type UpscalerCard, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
-import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
+import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type GenerationSnapshot, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
 import { inputBytes, outputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
@@ -38,8 +38,21 @@ const workersOverlap = (a: WorkerSettings, b: WorkerSettings) => a.id === b.id |
 const workerIdentity = (worker: WorkerSettings) => canonical({ id: worker.id, baseUrl: worker.baseUrl, location: worker.location, deviceIds: worker.deviceIds });
 const modelIdentity = (snapshot: ExecutionSnapshot) => canonical({
   recipe: { familyId: snapshot.recipe.familyId, revision: snapshot.recipe.revision },
-  model: { familyId: snapshot.model.familyId, revision: snapshot.model.revision, artifacts: [...snapshot.model.artifacts].sort((a, b) => a.role.localeCompare(b.role)) },
+  model: { familyId: snapshot.model.familyId, revision: snapshot.model.revision, artifacts: [...snapshot.model.artifacts, ...(snapshot.auxiliaryArtifacts ?? [])].sort((a, b) => `${a.folder}/${a.filename}`.localeCompare(`${b.folder}/${b.filename}`)) },
+  ...(!isUpscaleSnapshot(snapshot) && snapshot.postprocess ? { postprocess: snapshot.postprocess.model } : {}),
 });
+function generationMemory(snapshot: GenerationSnapshot, configuration: ModelConfiguration) {
+  const base = { ...FAMILY_RECIPES[snapshot.model.familyId].defaults, ...snapshot.model.defaults };
+  const scale = Math.max(1, snapshot.parameters.width * snapshot.parameters.height / (base.width * base.height));
+  const cutout = snapshot.auxiliaryArtifacts?.some(artifact => artifact.role === "background-removal") ? BIREFNET_MEMORY : { ramBytes: 0, vramBytes: 0 };
+  const generation = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale) + cutout.ramBytes, vramBytes: Math.ceil(configuration.memory.vramBytes * scale) + cutout.vramBytes };
+  if (!snapshot.postprocess) return generation;
+  // Comfy's normal memory mode offloads previous models before the next sampler
+  // and stores intermediate tensors on CPU. Keep both stages' RAM reservations;
+  // the shared GPU needs the larger stage, not simultaneous model allocations.
+  return { ramBytes: generation.ramBytes + snapshot.postprocess.model.memory.ramBytes,
+    vramBytes: Math.max(generation.vramBytes, snapshot.postprocess.model.memory.vramBytes) };
+}
 type Admission = { kind: "ready" } | { kind: "wait" | "reject"; reason: string; reclaimable?: boolean; ramPressure?: boolean };
 
 async function localArtifactsInstalled(directory: string, artifacts: ModelArtifact[]): Promise<boolean> {
@@ -214,6 +227,13 @@ export class Engine {
   async catalog() {
     await this.refreshWorkers();
     const settings = settingsView(this.store);
+    const capacity = new Map<string, ReturnType<Engine["telemetry"]>>();
+    const fits = async (worker: WorkerSettings, memory: { ramBytes: number; vramBytes: number }) => {
+      if (!capacity.has(worker.id)) capacity.set(worker.id, this.telemetry(worker).catch(() => null));
+      const telemetry = await capacity.get(worker.id)!;
+      const gpu = telemetry?.gpus[deviceKey(worker)];
+      return !!telemetry && !!gpu && memory.ramBytes + settings.policy.ramReserveBytes <= telemetry.ram.totalBytes && memory.vramBytes + settings.policy.vramReserveBytes <= gpu.totalBytes;
+    };
     const models = await Promise.all(modelRegistry(this.store).map(async model => {
       const configuration = settings.modelConfigurations.find(item => item.modelId === model.id)!;
       const resolved = configuredModel(configuration, this.store);
@@ -225,13 +245,25 @@ export class Engine {
       const transparentWorkers = this.availableWorkers(configuration, transparent);
       const background = { native: !!family.nativeTransparency, available: transparentWorkers.length > 0,
         ...(!transparentWorkers.length ? { reason: !available.length ? "Connect a ready worker for this model." : "Download BiRefNet in Models and use a worker with background removal support." } : {}) };
+      const ultraSnapshot = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, quality: "ultra" }, resolved);
+      const ultraWorkers = this.availableWorkers(configuration, ultraSnapshot);
+      // Catalog has no selected aspect ratio: only the fixed restoration stage
+      // has a shape-independent capacity requirement. Admission checks the full
+      // frozen generation + restoration budget for the submitted canvas.
+      const ultraMemory = ultraSnapshot.postprocess!.model.memory;
+      const fittingWorkers = (await Promise.all(ultraWorkers.map(async worker => await fits(worker, ultraMemory) ? worker : null))).filter(worker => worker !== null);
+      const transparentUltra = compileGeneration({ modelId: model.id, prompt: "Capability check", seed: 0, quality: "ultra", background: "transparent" }, resolved);
+      const transparentMemory = ultraMemory;
+      const transparentAvailable = (await Promise.all(this.availableWorkers(configuration, transparentUltra).map(worker => fits(worker, transparentMemory)))).some(Boolean);
+      const ultra = { available: fittingWorkers.length > 0, transparentAvailable, modelId: "seedvr2-7b" as const, maxDimension: 4096 as const,
+        ...(!fittingWorkers.length ? { reason: !ultraWorkers.length ? "Download SeedVR2 7B in Models → Tools and connect a compatible worker for this image model." : `SeedVR2 7B needs ${(ultraMemory.ramBytes / 1024 ** 3).toFixed(1)} GiB RAM and ${(ultraMemory.vramBytes / 1024 ** 3).toFixed(1)} GiB VRAM, plus the configured reserve. No connected worker has enough measured capacity.` } : {}) };
       const installed = await localArtifactsInstalled(this.store.directory, resolved.artifacts) || settings.workers.some(worker => {
         const state = this.workers.get(worker.id);
         return state?.identity === workerIdentity(worker) && !!state.discovery && resolved.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
       });
       return { ...card, installed, unavailableReason: card.missingReasons.join(" "),
         limits: { width: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.width }, height: { min: family.dimensions.min, max: family.dimensions.max, step: family.dimensions.multiple, default: card.defaults.height }, steps: { min: 1, max: 100, default: card.defaults.steps }, cfg: { min: 0, max: 30, default: card.defaults.cfg }, maxImages: family.maxReferences },
-        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background },
+        capabilities: { ...card.capabilities, imageInput: family.maxReferences > 0, negativePrompt: model.familyId === "sdxl" || model.familyId === "qwen-image-2.1", background, ultra },
       };
     }));
     return { models, families: Object.values(FAMILY_RECIPES).map(({ id, name }) => ({ id, name })) };
@@ -239,7 +271,7 @@ export class Engine {
   async submit(userId: string, value: unknown, key: string) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(400, "INVALID_JOB", "Provide generation settings.");
     if (!/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) throw new ApiError(400, "INVALID_REQUEST_KEY", "Supply an Idempotency-Key between 8 and 128 characters.");
-    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images", "background"]);
+    const allowed = new Set(["modelId", "operation", "prompt", "negativePrompt", "width", "height", "steps", "cfg", "seed", "denoise", "sampler", "scheduler", "images", "background", "quality"]);
     if (Object.keys(value).some(field => !allowed.has(field))) throw new ApiError(400, "INVALID_JOB", "The request contains an unsupported generation parameter.");
     const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
     const old = this.store.idempotentJob(userId, key, requestHash);
@@ -255,6 +287,7 @@ export class Engine {
     const operation = input.operation ?? ((input.images?.length ?? 0) ? FAMILY_RECIPES[model.familyId].operations.includes("image-to-image") ? "image-to-image" : "reference" : "text-to-image");
     const snapshot = compileGeneration({ ...input, operation, images: (input.images ?? []).map(id => ({ filename: `${id}.png`, subfolder: "", type: "input" as const })) }, model);
     input.seed = snapshot.parameters.seed; input.operation = operation;
+    if (snapshot.parameters.quality === "ultra") { input.width = snapshot.parameters.width; input.height = snapshot.parameters.height; }
     await this.refreshWorkers();
     const workers = this.availableWorkers(configuration, snapshot);
     if (!workers.length) {
@@ -264,13 +297,7 @@ export class Engine {
       });
       throw new ApiError(409, "MODEL_UNAVAILABLE", issues[0] ?? "Connect a compatible worker with the required model files.");
     }
-    const base = model.defaults ?? FAMILY_RECIPES[model.familyId].defaults;
-    const pixels = snapshot.parameters.width * snapshot.parameters.height;
-    const defaultPixels = (base.width ?? 1024) * (base.height ?? 1024);
-    // Until a larger canvas is calibrated, use a conservative growth estimate.
-    const scale = Math.max(1, pixels / defaultPixels);
-    const cutout = snapshot.auxiliaryArtifacts?.length ? BIREFNET_MEMORY : { ramBytes: 0, vramBytes: 0 };
-    const memory = { ramBytes: Math.ceil(configuration.memory.ramBytes * scale) + cutout.ramBytes, vramBytes: Math.ceil(configuration.memory.vramBytes * scale) + cutout.vramBytes };
+    const memory = generationMemory(snapshot, configuration);
     const placements: PlacementSnapshot[] = workers.map(worker => ({ worker: structuredClone(worker), memory }));
     if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
     const job = this.store.createJob(userId, input, snapshot, placements, model.name, { ...snapshot.parameters }, key, requestHash);
@@ -624,7 +651,7 @@ export class Engine {
         inputs.push(await client.uploadImage(bytes, { filename: `${inputId}.png`, mediaType: "image/png", jobId: id }));
       }
       if (inputs.length) {
-        snapshot = compileGeneration({ ...job.input, images: inputs }, snapshot.model);
+        snapshot = compileGeneration({ ...job.input, images: inputs }, snapshot.model, snapshot.postprocess?.model);
         this.store.saveExecution(id, snapshot);
       }
     }
@@ -644,8 +671,9 @@ export class Engine {
     const progress = client.watchProgress(job.id, update => {
       const current = this.store.job(job.id);
       if (current.status !== "running") return;
-      if (update.type === "progress") this.store.patchJob(job.id, { progress: null, stage: `Sampling step ${update.value} of ${update.max}${update.node ? ` · ${update.node.slice(0, 80)}` : ""}` });
-      else if (update.type === "executing") this.store.patchJob(job.id, { progress: null, stage: "Executing workflow" });
+      const restoring = update.node?.startsWith("ultra_");
+      if (update.type === "progress") this.store.patchJob(job.id, { progress: null, stage: restoring ? `Upscaling to 4K · step ${update.value} of ${update.max}` : `Sampling step ${update.value} of ${update.max}${update.node ? ` · ${update.node.slice(0, 80)}` : ""}` });
+      else if (update.type === "executing") this.store.patchJob(job.id, { progress: null, stage: restoring ? "Upscaling to 4K" : "Executing workflow" });
     });
     try {
       while (!this.stopping) {
@@ -658,7 +686,7 @@ export class Engine {
             try {
               const output = await client.fetchOutput(job.promptId!, reference, snapshot);
               if (terminal.has(this.store.job(job.id).status)) return;
-              outputs.push(await saveOutput(this.store, job.id, index, output.bytes, isUpscaleSnapshot(snapshot) ? snapshot.parameters : undefined));
+              outputs.push(await saveOutput(this.store, job.id, index, output.bytes, isUpscaleSnapshot(snapshot) ? snapshot.parameters : snapshot.postprocess));
             }
             catch (error) {
               const invalid = error instanceof ApiError && error.code === "INVALID_OUTPUT" || error instanceof InferenceError && ["INVALID_OUTPUT", "RESPONSE_TOO_LARGE"].includes(error.code);
