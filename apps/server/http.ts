@@ -282,6 +282,12 @@ export async function createStudioServer(options: ServerOptions) {
         return json(response, await engine.releaseWorkerMemory(workerId));
       }
       if (path === "/api/catalog" && method === "GET") return json(response, await engine.catalog());
+      if (path === "/api/upscalers" && method === "GET") return json(response, await engine.upscalers());
+      if (path === "/api/upscale" && method === "POST") {
+        const key = request.headers["idempotency-key"];
+        if (typeof key !== "string") throw new ApiError(400, "REQUEST_KEY_REQUIRED", "Supply an Idempotency-Key so retries cannot create duplicate upscales.");
+        return json(response, { job: await engine.submitUpscale(user.id, await readJson(request), key) }, 202);
+      }
       if (path === "/api/state" && method === "GET") return json(response, await engine.state(user.id));
       if (path === "/api/favorites" && method === "GET") return json(response, { jobs: store.favorites(user.id).map(publicJob) });
       if (path === "/api/jobs") {

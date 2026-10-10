@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ApiError, type GenerationInput, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
+import { ApiError, isUpscaleInput, type GenerationInput, type UpscaleInput, type UpscalerCard, type ModelConfiguration, type WorkerSettings } from "../../packages/contracts/index.ts";
 import { detectHardware, checkAdmission, inventoryTelemetry } from "../../packages/hardware/src/index.ts";
 import type { HardwareInventory, ResourceLease, ResourceTelemetry } from "../../packages/hardware/src/types.ts";
-import { ComfyClient, compileGeneration, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
+import { ComfyClient, compileGeneration, compileUpscale, isUpscaleSnapshot, UPSCALER_MODELS, checkCapabilities, FAMILY_RECIPES, InferenceError, isRelativeFile, type ExecutionSnapshot, type ComfyDiscovery, type ComfySystemStats, type ModelArtifact } from "../../packages/inference/index.ts";
 import { configuredModel, modelCard, settingsView, validateWorkerUrl } from "./settings.ts";
-import { inputBytes, saveOutput } from "./media.ts";
+import { inputBytes, outputBytes, saveOutput } from "./media.ts";
 import { Store, publicJob, type PlacementSnapshot, type StoredJob } from "./store.ts";
 import { modelRegistry } from "./registry.ts";
 import { BIREFNET_MEMORY } from "../../packages/inference/index.ts";
@@ -150,6 +150,59 @@ export class Engine {
       const state = this.workers.get(worker.id);
       return worker.enabled && configuration.workerIds.includes(worker.id) && state?.connected && state.discovery && checkCapabilities(snapshot, state.discovery).available;
     });
+  }
+  private upscaleWorkers(snapshot: ExecutionSnapshot): WorkerSettings[] {
+    return this.store.settings().workers.filter(worker => {
+      const state = this.workers.get(worker.id);
+      return worker.enabled && state?.identity === workerIdentity(worker) && state.connected && state.discovery && checkCapabilities(snapshot, state.discovery).available;
+    });
+  }
+  async upscalers(): Promise<{ models: UpscalerCard[] }> {
+    await this.refreshWorkers();
+    const models = await Promise.all(UPSCALER_MODELS.map(async model => {
+      const snapshot = compileUpscale({ modelId: model.id, scale: 2, sourceWidth: 512, sourceHeight: 512, seed: 0, image: { filename: "capability.png", subfolder: "", type: "input" } }, model);
+      const ready = this.upscaleWorkers(snapshot).length > 0;
+      const installed = await localArtifactsInstalled(this.store.directory, model.artifacts) || this.store.settings().workers.some(worker => {
+        const state = this.workers.get(worker.id);
+        return state?.identity === workerIdentity(worker) && state.discovery && model.artifacts.every(artifact => state.discovery!.models[artifact.folder]?.includes(artifact.filename));
+      });
+      const issues = this.store.settings().workers.filter(worker => worker.enabled).flatMap(worker => {
+        const state = this.workers.get(worker.id);
+        return state?.connected && state.discovery ? checkCapabilities(snapshot, state.discovery).issues.map(issue => issue.message) : [];
+      });
+      return { id: model.id, name: model.name, description: model.description, scales: [...model.scales], maxOutputDimension: model.maxOutputDimension, installed, ready,
+        missingReasons: ready ? [] : [!installed ? "Download this upscaler in Models → Tools." : issues[0] ?? "Connect an image worker with this upscaler's files."] };
+    }));
+    return { models };
+  }
+  async submitUpscale(userId: string, value: unknown, key: string) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(field => !["operation", "modelId", "source", "scale", "seed"].includes(field))) throw new ApiError(400, "INVALID_UPSCALE", "Choose an upscaler, source image and scale.");
+    if (!/^[a-zA-Z0-9_.:-]{8,128}$/.test(key)) throw new ApiError(400, "INVALID_REQUEST_KEY", "Supply an Idempotency-Key between 8 and 128 characters.");
+    const input = structuredClone(value) as UpscaleInput;
+    if (input.operation !== "upscale") throw new ApiError(400, "INVALID_UPSCALE", "Use the upscale operation.");
+    const source = input.source;
+    const uuid = (id: unknown): id is string => typeof id === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id);
+    if (!source || typeof source !== "object" || Array.isArray(source) || !(source.type === "input" && Object.keys(source).length === 2 && uuid(source.inputId) || source.type === "output" && Object.keys(source).length === 3 && uuid(source.jobId) && typeof source.outputId === "string" && /^[a-f0-9]{32}$/.test(source.outputId))) throw new ApiError(400, "INVALID_UPSCALE_SOURCE", "Choose an imported image or saved output owned by this account.");
+    // Share the idempotency namespace with generation while binding the operation.
+    const requestHash = createHash("sha256").update(canonical(value)).digest("hex");
+    const old = this.store.idempotentJob(userId, key, requestHash);
+    if (old) return publicJob(old);
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
+    const original = source.type === "input" ? this.store.input(source.inputId, userId) : this.store.output(source.jobId, source.outputId, userId);
+    const model = UPSCALER_MODELS.find(item => item.id === input.modelId);
+    if (!model) throw new ApiError(400, "UNKNOWN_UPSCALER", "Choose an upscaler from this studio's catalog.");
+    const snapshot = compileUpscale({ modelId: model.id, scale: input.scale, sourceWidth: original.width!, sourceHeight: original.height!, ...(input.seed === undefined ? {} : { seed: input.seed }), image: { filename: "source.png", subfolder: "", type: "input" } }, model);
+    if (snapshot.parameters.seed !== undefined) input.seed = snapshot.parameters.seed;
+    await this.refreshWorkers();
+    const workers = this.upscaleWorkers(snapshot);
+    if (!workers.length) throw new ApiError(409, "UPSCALER_UNAVAILABLE", "Download this upscaler in Models → Tools and connect a compatible image worker.");
+    // Recipes provide conservative estimates, including native intermediate
+    // images. Upscale participates in the same image/text resource leases.
+    const placements: PlacementSnapshot[] = workers.map(worker => ({ worker: structuredClone(worker), memory: { ...model.memory } }));
+    if (this.runtimeSetupActive) throw new ApiError(409, "RUNTIME_BUSY", "Image generation is being set up. Try again when setup finishes.");
+    const job = this.store.createJob(userId, input, snapshot, placements, model.name, { ...snapshot.parameters }, key, requestHash);
+    void this.tick();
+    return publicJob(job);
   }
   async catalog() {
     await this.refreshWorkers();
@@ -527,15 +580,29 @@ export class Engine {
     let snapshot = job.snapshot as ExecutionSnapshot;
     const capability = checkCapabilities(snapshot, discovery);
     if (!capability.available) throw new ApiError(409, "MODEL_UNAVAILABLE", capability.issues[0].message);
-    const inputs = [];
-    for (const inputId of job.input.images ?? []) {
-      this.store.patchJob(id, { stage: "Uploading reference images" });
-      const bytes = await inputBytes(this.store, inputId, job.userId);
-      inputs.push(await client.uploadImage(bytes, { filename: `${inputId}.png`, mediaType: "image/png", jobId: id }));
-    }
-    if (inputs.length) {
-      snapshot = compileGeneration({ ...job.input, images: inputs }, snapshot.model);
+    if (isUpscaleSnapshot(snapshot)) {
+      if (!isUpscaleInput(job.input)) throw new Error("The upscale source is missing from the saved job.");
+      this.store.patchJob(id, { stage: "Uploading source image" });
+      const source = job.input.source;
+      const original = source.type === "input" ? this.store.input(source.inputId, job.userId) : this.store.output(source.jobId, source.outputId, job.userId);
+      const bytes = source.type === "input" ? await inputBytes(this.store, source.inputId, job.userId) : await outputBytes(this.store, source.jobId, source.outputId, job.userId);
+      const extension = original.mimeType === "image/jpeg" ? "jpg" : original.mimeType === "image/webp" ? "webp" : "png";
+      const image = await client.uploadImage(bytes, { filename: `source.${extension}`, mediaType: original.mimeType, jobId: id });
+      const { scale, sourceWidth, sourceHeight, seed } = snapshot.parameters;
+      snapshot = compileUpscale({ modelId: snapshot.model.id, scale, sourceWidth, sourceHeight, seed, image }, snapshot.model);
       this.store.saveExecution(id, snapshot);
+    } else {
+      if (isUpscaleInput(job.input)) throw new Error("The saved job has an incompatible execution snapshot.");
+      const inputs = [];
+      for (const inputId of job.input.images ?? []) {
+        this.store.patchJob(id, { stage: "Uploading reference images" });
+        const bytes = await inputBytes(this.store, inputId, job.userId);
+        inputs.push(await client.uploadImage(bytes, { filename: `${inputId}.png`, mediaType: "image/png", jobId: id }));
+      }
+      if (inputs.length) {
+        snapshot = compileGeneration({ ...job.input, images: inputs }, snapshot.model);
+        this.store.saveExecution(id, snapshot);
+      }
     }
     this.store.patchJob(id, { stage: "Submitting workflow", submissionStarted: true });
     try {
@@ -567,7 +634,7 @@ export class Engine {
             try {
               const output = await client.fetchOutput(job.promptId!, reference, snapshot);
               if (terminal.has(this.store.job(job.id).status)) return;
-              outputs.push(await saveOutput(this.store, job.id, index, output.bytes));
+              outputs.push(await saveOutput(this.store, job.id, index, output.bytes, isUpscaleSnapshot(snapshot) ? snapshot.parameters : undefined));
             }
             catch (error) {
               const invalid = error instanceof ApiError && error.code === "INVALID_OUTPUT" || error instanceof InferenceError && ["INVALID_OUTPUT", "RESPONSE_TOO_LARGE"].includes(error.code);

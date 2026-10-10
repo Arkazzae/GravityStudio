@@ -358,6 +358,24 @@ test("generation requires an idempotency key and logout invalidates the session"
   assert.equal((await fetch(`${api.url}/api/jobs`, { headers: { Cookie: oldCookie } })).status, 401);
 });
 
+test("upscale endpoints authenticate clients and require an idempotency key", async t => {
+  const api = await fixture(t);
+  assert.equal((await api.request("/upscalers")).status, 401);
+  assert.equal((await api.request("/upscale", "POST", {})).status, 401);
+  await api.setup();
+  const models = await (await api.request("/upscalers")).json();
+  assert.equal(models.models.length, 3);
+  assert(models.models.every((model: { ready: boolean; installed: boolean }) => !model.ready && !model.installed));
+  assert.equal((await api.request("/upscale", "POST", {})).status, 400);
+  assert.equal((await fetch(`${api.url}/api/upscale`, { method: "POST", headers: { Cookie: api.cookie(), "Content-Type": "application/json" }, body: "{}" })).status, 403);
+  const created = await (await api.request("/tokens", "POST", { name: "Upscale client" })).json();
+  const headers = { Authorization: `Bearer ${created.token}`, "Content-Type": "application/json", "Idempotency-Key": "upscale-api-test" };
+  assert.equal((await fetch(`${api.url}/api/upscalers`, { headers })).status, 200);
+  const rejected = await fetch(`${api.url}/api/upscale`, { method: "POST", headers, body: JSON.stringify({ operation: "upscale", modelId: "nomos2-hq", scale: 2, source: { type: "input", inputId: "00000000-0000-4000-8000-000000000000" } }) });
+  assert.equal(rejected.status, 404);
+  assert.equal((await rejected.json()).error.code, "INPUT_NOT_FOUND");
+});
+
 test("MCP authenticates every request and exposes generation tools without server administration", async t => {
   const api = await fixture(t); await api.setup();
   const created = await (await api.request("/tokens", "POST", { name: "MCP client" })).json();
@@ -379,12 +397,16 @@ test("MCP authenticates every request and exposes generation tools without serve
   const listed = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   assert.equal(listed.status, 200);
   const names = (await message(listed)).result.tools.map((tool: { name: string }) => tool.name).sort();
-  assert.deepEqual(names, ["gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list"]);
+  assert.deepEqual(names, ["gravity_inputs_list", "gravity_job_cancel", "gravity_job_get", "gravity_job_submit", "gravity_jobs_list", "gravity_models_list", "gravity_upscale_submit", "gravity_upscalers_list"]);
   const result = await message(await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "gravity_jobs_list", arguments: {} } }));
   assert.deepEqual(result.result.structuredContent.data, { jobs: [] });
   const rejected = await message(await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "gravity_job_submit", arguments: { request: { modelId: "sdxl-base", prompt: "mountain" }, idempotencyKey: "mcp-request-first" } } }));
   assert.equal(rejected.result.isError, true);
   assert.equal(JSON.parse(rejected.result.content[0].text).error.code, "MODEL_DISABLED");
+  const upscalers = await message(await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "gravity_upscalers_list", arguments: {} } }));
+  assert.equal(upscalers.result.structuredContent.data.models.length, 3);
+  const invalidUpscale = await message(await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "gravity_upscale_submit", arguments: { request: { operation: "upscale", modelId: "nomos2-hq", scale: 2, source: { type: "input", inputId: "00000000-0000-4000-8000-000000000000" } }, idempotencyKey: "mcp-upscale-test" } } }));
+  assert.equal(JSON.parse(invalidUpscale.result.content[0].text).error.code, "INPUT_NOT_FOUND");
   await api.request(`/tokens/${created.id}`, "DELETE");
   assert.equal((await rpc(init)).status, 401);
 });

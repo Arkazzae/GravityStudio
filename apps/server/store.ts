@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ApiError, type GenerationInput, type JobStatus, type Owner, type PublicInput, type PublicJob, type SavedOutput, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
+import { ApiError, isUpscaleInput, type JobInput, type JobStatus, type Owner, type PublicInput, type PublicJob, type SavedOutput, type StudioSettings, type WorkerSettings } from "../../packages/contracts/index.ts";
 import type { AssetObjectStore, StoredObject } from "./object-store.ts";
 
 export interface PlacementSnapshot { worker: WorkerSettings; memory: { ramBytes: number; vramBytes: number } }
@@ -127,7 +127,7 @@ export class Store {
   }
   apiTokens(userId: string) { return this.db.prepare("SELECT id,name,created_at AS createdAt,last_used_at AS lastUsedAt FROM api_tokens WHERE user_id=? ORDER BY created_at DESC").all(userId); }
   revokeApiToken(userId: string, id: string) { this.db.prepare("DELETE FROM api_tokens WHERE user_id=? AND id=?").run(userId, id); }
-  createJob(userId: string, input: GenerationInput, snapshot: unknown, placements: PlacementSnapshot[], modelName: string, parameters: Record<string, unknown>, key: string, requestHash: string): StoredJob {
+  createJob(userId: string, input: JobInput, snapshot: unknown, placements: PlacementSnapshot[], modelName: string, parameters: Record<string, unknown>, key: string, requestHash: string): StoredJob {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const old = this.db.prepare("SELECT job_id,request_hash FROM idempotency WHERE user_id=? AND key=?").get(userId, key) as { job_id: string; request_hash: string } | undefined;
@@ -139,12 +139,18 @@ export class Store {
       }
       // Submission can wait for worker discovery before reaching this transaction.
       // Recheck references here so a concurrent deletion cannot strand a new job.
-      for (const id of input.images ?? []) {
+      const inputIds = isUpscaleInput(input) ? input.source.type === "input" ? [input.source.inputId] : [] : input.images ?? [];
+      for (const id of inputIds) {
         this.input(id, userId);
         if (this.db.prepare("SELECT 1 FROM input_deletions WHERE input_id=?").get(id)) throw new ApiError(409, "INPUT_DELETION_PENDING", "This reference image is being deleted. Choose another image.");
       }
+      if (isUpscaleInput(input) && input.source.type === "output") {
+        this.output(input.source.jobId, input.source.outputId, userId);
+        if (this.db.prepare("SELECT 1 FROM output_deletions WHERE output_id=?").get(input.source.outputId)) throw new ApiError(409, "OUTPUT_DELETION_PENDING", "This image is being deleted. Choose another image.");
+      }
       const at = now();
-      const job: StoredJob = { id: randomUUID(), userId, input, snapshot, placements, modelId: input.modelId, modelName, prompt: input.prompt, parameters, status: "queued", stage: "Waiting for a worker", progress: null, createdAt: at, updatedAt: at, workerId: null, outputs: [], error: null, promptId: null, submissionStarted: false };
+      const prompt = isUpscaleInput(input) ? `Upscale ${input.scale}×` : input.prompt;
+      const job: StoredJob = { id: randomUUID(), userId, input, snapshot, placements, modelId: input.modelId, modelName, prompt, parameters, status: "queued", stage: "Waiting for a worker", progress: null, createdAt: at, updatedAt: at, workerId: null, outputs: [], error: null, promptId: null, submissionStarted: false };
       this.db.prepare("INSERT INTO jobs VALUES(?,?,?,?,?,?)").run(job.id, userId, job.status, json(job), at, at);
       this.db.prepare("INSERT INTO idempotency VALUES(?,?,?,?)").run(userId, key, requestHash, job.id);
       this.db.exec("COMMIT");
@@ -199,7 +205,7 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const input = this.input(id, userId);
-      const referenced = this.db.prepare("SELECT 1 FROM jobs, json_each(jobs.body, '$.input.images') AS image WHERE jobs.status IN ('queued','preparing','running','interrupted') AND image.value=? LIMIT 1").get(id);
+      const referenced = this.db.prepare("SELECT 1 FROM jobs WHERE jobs.status IN ('queued','preparing','running','interrupted') AND (EXISTS (SELECT 1 FROM json_each(jobs.body, '$.input.images') AS image WHERE image.value=?) OR (json_extract(body, '$.input.operation')='upscale' AND json_extract(body, '$.input.source.type')='input' AND json_extract(body, '$.input.source.inputId')=?)) LIMIT 1").get(id, id);
       if (referenced) throw new ApiError(409, "INPUT_IN_USE", "Wait for generations using this image to finish, or cancel queued jobs, before deleting it.");
       this.db.prepare("INSERT INTO input_deletions(input_id,created_at) VALUES(?,?) ON CONFLICT(input_id) DO NOTHING").run(id, now());
       this.db.exec("COMMIT");
@@ -236,6 +242,8 @@ export class Store {
   beginOutputDeletion(jobId: string, id: string, userId: string): StoredOutput {
     const output = this.output(jobId, id, userId);
     if (!["succeeded", "failed", "cancelled"].includes(this.job(jobId, userId).status)) throw new ApiError(409, "JOB_ACTIVE", "Wait for this generation to finish before deleting its images.");
+    const referenced = this.db.prepare("SELECT 1 FROM jobs WHERE status IN ('queued','preparing','running','interrupted') AND json_extract(body, '$.input.operation')='upscale' AND json_extract(body, '$.input.source.type')='output' AND json_extract(body, '$.input.source.jobId')=? AND json_extract(body, '$.input.source.outputId')=? LIMIT 1").get(jobId, id);
+    if (referenced) throw new ApiError(409, "OUTPUT_IN_USE", "Wait for upscales using this image to finish, or cancel queued jobs, before deleting it.");
     this.db.prepare("INSERT INTO output_deletions(output_id,created_at) VALUES(?,?) ON CONFLICT(output_id) DO NOTHING").run(id, now());
     return output;
   }

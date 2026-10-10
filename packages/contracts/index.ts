@@ -1,6 +1,6 @@
 export const JOB_STATUSES = ["queued", "preparing", "running", "succeeded", "failed", "cancelled", "interrupted"] as const;
 export type JobStatus = typeof JOB_STATUSES[number];
-export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras" | "background_removal";
+export type ArtifactFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "loras" | "background_removal" | "upscale_models";
 export interface WorkerSettings {
   id: string;
   name: string;
@@ -62,13 +62,33 @@ export interface SavedOutput {
   bytes: number;
   sha256: string;
 }
+export type UpscaleSource = { type: "input"; inputId: string } | { type: "output"; jobId: string; outputId: string };
+export interface UpscaleInput {
+  operation: "upscale";
+  modelId: string;
+  source: UpscaleSource;
+  scale: 2 | 4;
+  seed?: number;
+}
+export type JobInput = GenerationInput | UpscaleInput;
+export function isUpscaleInput(input: JobInput): input is UpscaleInput { return input.operation === "upscale"; }
+export interface UpscalerCard {
+  id: string;
+  name: string;
+  description: string;
+  scales: (2 | 4)[];
+  maxOutputDimension: number;
+  installed: boolean;
+  ready: boolean;
+  missingReasons: string[];
+}
 export interface PublicOutput extends SavedOutput { favorite: boolean }
 export interface PublicJob {
   id: string;
   modelId: string;
   modelName: string;
   prompt: string;
-  input: GenerationInput;
+  input: JobInput;
   parameters: Record<string, unknown>;
   status: JobStatus;
   stage: string;

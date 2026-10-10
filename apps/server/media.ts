@@ -82,7 +82,7 @@ export async function deleteInput(store: Store, id: string, userId: string): Pro
   }
   store.finishInputDeletion(id, userId);
 }
-export async function saveOutput(store: Store, jobId: string, ordinal: number, bytes: Uint8Array): Promise<SavedOutput> {
+export async function saveOutput(store: Store, jobId: string, ordinal: number, bytes: Uint8Array, expectedSize?: { width: number; height: number }): Promise<SavedOutput> {
   if (!bytes.length || bytes.length > MAX_OUTPUT_BYTES) throw new ApiError(502, "INVALID_OUTPUT", "The worker returned an image outside the supported size limit.");
   let width: number, height: number, mimeType: string, extension: string;
   try {
@@ -96,6 +96,7 @@ export async function saveOutput(store: Store, jobId: string, ordinal: number, b
     // stats decodes the pixels without retaining an additional full raw-image buffer.
     await source.stats();
   } catch { throw new ApiError(502, "INVALID_OUTPUT", "The worker returned an unreadable image."); }
+  if (expectedSize && (width !== expectedSize.width || height !== expectedSize.height)) throw new ApiError(502, "INVALID_OUTPUT", "The upscaler returned an image with unexpected dimensions.");
   const id = createHash("sha256").update(`${jobId}:${ordinal}`).digest("hex").slice(0, 32);
   if (["succeeded", "failed", "cancelled"].includes(store.job(jobId).status)) throw new ApiError(409, "JOB_FINISHED", "A finished generation cannot save additional images.");
   const output: SavedOutput = { id, url: `/api/jobs/${jobId}/outputs/${id}`, mimeType, width, height, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ModelLibrary } from "../../apps/server/models.ts";
 import { BIREFNET_ARTIFACT, BIREFNET_MEMORY, type NodeInfo } from "../../packages/inference/index.ts";
 import { engineFixture, until } from "./helpers/engine-fixture.ts";
+import { isUpscaleInput } from "../../packages/contracts/index.ts";
 
 const nodes = JSON.parse(await readFile(new URL("../inference/fixtures/background-object-info.json", import.meta.url), "utf8")) as Record<string, NodeInfo>;
 function installCutout(fixture: Awaited<ReturnType<typeof engineFixture>>, index: number) {
@@ -34,9 +35,12 @@ test("transparent jobs require BiRefNet on the assigned worker without blocking 
   assert.equal(cutout.placements[0].memory.ramBytes, plain.placements[0].memory.ramBytes + BIREFNET_MEMORY.ramBytes);
   assert.equal(cutout.placements[0].memory.vramBytes, plain.placements[0].memory.vramBytes + BIREFNET_MEMORY.vramBytes);
   assert.equal(transparent.parameters.background, "transparent");
+  assert(!isUpscaleInput(transparent.input));
   assert.equal(transparent.input.background, "transparent");
   await fixture.restart();
-  assert.equal(fixture.store.job(transparent.id).input.background, "transparent");
+  const restored = fixture.store.job(transparent.id).input;
+  assert(!isUpscaleInput(restored));
+  assert.equal(restored.background, "transparent");
 });
 
 test("removing background support after queueing fails before ComfyUI submission", async t => {

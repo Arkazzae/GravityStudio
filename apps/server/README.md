@@ -71,6 +71,25 @@ Worker cache release is coordinated with scheduling. Busy workers, interrupted g
 
 Downloads run on the server and continue when the browser page closes. The library accepts Hugging Face safetensors files, checks sizes and file structure, and verifies catalog checksums when available. Imports currently support complete SDXL / Illustrious checkpoints; other families use their catalog's complete artifact set. Imported files receive a recorded SHA-256 digest. Completed downloads are activated when a configured managed worker can see the files; otherwise activate them after setting up generation. For gated models, accept the model license and save a Hugging Face token in **Settings → Integrations**. A saved token takes precedence over the legacy `HF_TOKEN` environment variable. Authorization is sent only to `huggingface.co`, never its redirected storage hosts.
 
+## Upscaling
+
+`GET /api/upscalers` lists installed upscalers, worker readiness, supported scales and the maximum output dimension. `POST /api/upscale` accepts an owner session or bearer token and requires an `Idempotency-Key`. For example:
+
+```json
+{
+  "operation": "upscale",
+  "modelId": "nomos2-hq",
+  "source": { "type": "output", "jobId": "<source-job-uuid>", "outputId": "<source-output-id>" },
+  "scale": 2
+}
+```
+
+For an imported image, use `"source": { "type": "input", "inputId": "<input-uuid>" }`. Sources must belong to the authenticated account; URLs and filesystem paths are not accepted. Supported model IDs are `nomos2-hq`, `seedvr2-3b` and `seedvr2-7b`. Scale is 2 or 4, with a maximum output of 4096 pixels per side. An optional nonnegative integer `seed` defaults to 42 for reproducible SeedVR2 restoration.
+
+Submission returns HTTP 202 with `{ job }`. Read `/api/jobs/:id`, cancel queued work and retrieve private outputs using the existing job endpoints. Upscale jobs have `input.operation: "upscale"` and report source dimensions, output dimensions and scale in `parameters`. They preserve source images and save results separately. An active job prevents deletion of its source. Identical retries return the same job, including after restart; reusing a key with a different request returns HTTP 409.
+
+MCP exposes `gravity_upscalers_list` and `gravity_upscale_submit` (arguments `{ request, idempotencyKey }`). Upscaler downloads use the session-only model library endpoints and become usable automatically on compatible workers after all files are present. Upscalers are utility models and do not appear in the generation catalog.
+
 ## Integrations
 
 These endpoints require the owner's browser session. Mutations and access checks require an allowed `Origin`. Responses use `Cache-Control: private, no-store`; no operation returns a saved secret. Keys must contain 8–4096 visible ASCII characters without internal whitespace; surrounding whitespace is trimmed.
