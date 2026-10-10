@@ -82,9 +82,19 @@ See [runtime installation](deploy/comfyui/README.md) for device permissions, sel
 
 ### Image quality
 
-Choose an aspect ratio for the shape, then **Fast**, **Standard** or **High** for that model family's native resolution. These presets change the canvas size while retaining your sampling settings.
+Choose an aspect ratio for the shape, then **Fast**, **Standard** or **High** for that model family's native resolution and sampling profile. You can override steps and guidance afterwards in Advanced. Distilled models keep their recommended short sampling schedule.
 
-**Ultra** generates at High resolution and finishes with **SeedVR2 7B** in the same job. The final image has a 4096-pixel longest edge, with the shorter edge rounded to an even pixel count; transparency is preserved. Install SeedVR2 7B under **Settings → Models → Tools**. Ultra requires a connected worker with the generation and upscaler files, compatible nodes and sufficient configured memory capacity. It does not silently substitute another upscaler. Reusing an Ultra image restores its native generation canvas and the Ultra finish.
+**Ultra** generates at High resolution and finishes with **SeedVR2 7B** in the same job. The final image has a 4096-pixel longest edge, with the shorter edge rounded to an even pixel count; transparency is preserved. Source-matched and masked edits keep their source canvas before the final upscale. Install SeedVR2 7B under **Settings → Models → Tools**. Ultra requires a connected worker with the generation and upscaler files, compatible nodes and sufficient configured memory capacity. It does not silently substitute another upscaler. Reusing an Ultra image restores its native generation canvas and the Ultra finish.
+
+### Edit and guide images
+
+Attach a reference and open its thumbnail to paint a mask or extend the canvas. White mask pixels are regenerated; the protected source is composited back after sampling. Source matching fits the original aspect ratio to the model's grid and size limits. Saved drafts and reused generations retain their source, mask and extension settings.
+
+Qwen supports up to ten references, including transparency; Klein supports four. Ideogram provides image-to-image and an experimental single-reference mode using a fixed 1024-square output. Its internal reference canvas is larger and needs a separate memory check. Advanced also accepts the publisher's structured JSON caption; the prompt assistant can prepare it through the configured language provider.
+
+Download Krea's style-reference adapter and nine official style LoRAs, SDXL ReVision CLIP Vision, or SDXL Refiner in **Settings → Models → Tools**. Imported Hugging Face LoRAs require an explicit compatible family. LoRA import supports SDXL, Klein 4B/9B, Qwen and Krea; Ideogram's dual-model workflow is excluded. Installed files enable a feature only when an assigned worker supports its complete workflow. ReVision provides conceptual image guidance rather than identity locking.
+
+**Remove background** in an image preview creates a separate BiRefNet job for an imported or generated image. It retains the original dimensions and intersects the existing transparency with the foreground mask. Download BiRefNet in Tools first.
 
 ### Disk and object storage usage
 
@@ -112,7 +122,7 @@ External workers are supported. Their reported memory is checked before admissio
 
 Create a token under **Settings → API access**. Use it as an `Authorization: Bearer` header. Tokens can generate and read images; runtime setup and model downloads require an administrator browser session.
 
-The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model and upscaler listing, image generation and upscaling, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
+The MCP endpoint is **`http://127.0.0.1:4321/api/mcp`**, using Streamable HTTP. It exposes model, adapter and upscaler listing, image generation and editing, upscaling, background removal, job status, queued-job cancellation and reference image listing. Each submission needs an idempotency key. Disconnecting a client does not cancel its job.
 
 See [API usage](apps/server/README.md) for requests and response behavior.
 

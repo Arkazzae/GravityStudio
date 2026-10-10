@@ -10,6 +10,8 @@ On one host with two Radeon AI PRO R9700 GPUs (`gfx1201`), both workers passed t
 
 Successful image generations covered WAI Illustrious through the SDXL recipe, FLUX.2 Klein 4B and Krea 2 Turbo. Klein reference-image generation and WAI image-to-image generation also completed, with the latter exercising the second GPU.
 
+Additional synthetic-image checks covered standalone BiRefNet with existing alpha, WAI masked editing at 512×512, outpainting to 640×512 and Qwen source-matched RGBA editing at 512×512. Qwen source matching and masked editing also completed at 1024×1024 with the internal 1056×1056 pad/crop workaround. Masked/outpainted protected RGB pixels matched their source; alpha differed by at most one 8-bit level through ComfyUI's float conversion and PNG export. These are execution and compositing checks, not image-quality evaluations.
+
 These results cover that installation and those workloads. Other AMD configurations and physical NVIDIA execution remain unverified. They do not establish model quality, maximum resolution, peak memory or performance guarantees; the project remains a development preview.
 
 ## Set up from the studio

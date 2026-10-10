@@ -6,20 +6,20 @@ This package compiles portable image requests into ComfyUI API graphs. A family 
 
 | Family | Operations | Default catalog models |
 | --- | --- | --- |
-| SDXL | Text to image; image to image | SDXL Base 1.0, WAI Illustrious v17 |
+| SDXL | Text to image; image to image; ReVision references; masks/outpaint; optional refiner | SDXL Base 1.0, WAI Illustrious v17 |
 | FLUX.2 Klein 4B | Text to image; reference editing | FLUX.2 Klein 4B distilled |
 | FLUX.2 Klein 9B | Text to image; reference editing | Family recipe only; supply a compatible manifest |
-| Krea 2 | Text to image | Krea 2 Turbo FP8 |
+| Krea 2 | Text to image; style references; style LoRAs | Krea 2 Turbo FP8 |
 | Qwen Image 2.1 | Text to image; reference editing | Qwen Image 2.1 BF16 |
-| Ideogram 4 | Text to image | Ideogram 4 FP8 |
+| Ideogram 4 | Text to image; image to image; masks/outpaint; experimental reference | Ideogram 4 FP8 |
 
-SDXL image-to-image scales and center-crops the input to the selected dimensions before encoding it. Klein accepts up to four references. Its native scheduler uses the output dimensions; this recipe does not expose a negative prompt. Krea reference editing, inpainting and arbitrary LoRA chains are not implemented by these recipes.
+SDXL image-to-image scales and center-crops the input to the selected dimensions before encoding it. Klein accepts up to four references. Its native scheduler uses the output dimensions; this recipe does not expose a negative prompt. Krea accepts up to two style references with its optional official style-reference adapter. Its nine official style LoRAs are separate downloads; compatible imported LoRAs may be chained up to four at a time.
 
 Qwen Image 2.1 accepts up to ten references in order; address them as `<image1>`, `<image2>`, and so on in the prompt. Reference encoding preserves aspect ratio at approximately one megapixel per image, while the output uses the dimensions selected in Studio. Choose an output aspect ratio close to the first reference to preserve the composition. The recipe follows the official custom-size workflow, supports dimensions in multiples of 32 up to 4.4 million pixels, and defaults to 25 steps with Euler/simple and guidance 1. Negative prompts take effect when guidance exceeds 1. Set `background: "transparent"` to include its native RGBA instructions automatically. The optional prompt enhancement model is not loaded.
 
-Qwen recipe revision 2 works around [reported noisy reference edits](https://github.com/Comfy-Org/ComfyUI/issues/16435) on certain sampling grids. References use a 992-pixel resolution budget. When the requested latent grid contains a multiple of 2,048 tokens, sampling adds 32 pixels to each dimension and bicubic scaling restores the requested output dimensions. This remains within the recipe's sampling pixel budget; text-to-image is unchanged.
+Qwen recipe revision 3 works around [reported noisy reference edits](https://github.com/Comfy-Org/ComfyUI/issues/16435) on certain sampling grids. Ordinary references use a 992-pixel resolution budget. When the requested latent grid contains a multiple of 2,048 tokens, sampling adds 32 pixels to each dimension. Ordinary reference outputs are scaled back; source-matched, masked and outpainted inputs instead receive temporary right/bottom padding, cropped away before the protected source is composited. This preserves the editing geometry. Scheduling includes the larger internal canvas; text-to-image is unchanged.
 
-Ideogram 4 FP8 supports text-to-image with 20 steps, Euler sampling and guidance 7 by default. It uses a native resolution-aware schedule and lowers guidance late in sampling. Studio converts a plain prompt into the publisher's minimal caption format locally; it does not call Magic Prompt or another hosted service. Reference images and negative prompts are unavailable in this recipe. Dimensions use a 16-pixel grid, from 256 to 2048 per side, with aspect ratios up to 6:1. Initial memory budgets are estimates of 48 GiB RAM and 28 GiB VRAM at 1024×1024; larger images reserve more memory. These estimates do not establish that generation will fit on a particular GPU.
+Ideogram 4 FP8 supports text-to-image with 20 steps, Euler sampling and guidance 7 by default. It uses a native resolution-aware schedule and uses the publisher's separate final polishing sampler. Fast/Standard/High select 12/20/48 total steps and 1/2/3 polishing steps respectively. Studio converts a plain prompt into the publisher's minimal caption format locally; it does not call Magic Prompt or another hosted service. Image-to-image uses the source latent and a denoising fraction. Experimental reference mode locks a source panel in a 2048×1024 internal canvas and crops the generated 1024×1024 panel; it is distinct from native multimodal image conditioning. Negative prompts remain unavailable. Dimensions use a 16-pixel grid, from 256 to 2048 per side, with aspect ratios up to 6:1. Initial memory budgets are estimates of 48 GiB RAM and 28 GiB VRAM at 1024×1024; larger images reserve more memory. These estimates do not establish that generation will fit on a particular GPU.
 
 The managed runtime pins [ComfyUI v0.39.0](https://github.com/Comfy-Org/ComfyUI/tree/b0b743566f65daafc423b4fea8a2fbda94b3384a). These recipes use its built-in nodes and do not require custom node packs. The [schema regression fixture](../../tests/inference/fixtures/comfy-v0.39.0-signatures.json) records the pinned source file digests, socket types and loader enums. Tests cover graph compatibility and the HTTP/WebSocket protocol. GPU execution and model quality still require a real generation on the selected hardware.
 
@@ -30,6 +30,14 @@ Requests accept `background: "auto" | "opaque" | "transparent"`; omitted values 
 Opaque requests leave RGB model graphs unchanged. For Qwen, they request an opaque scene and composite any remaining alpha over white after the final output resize, producing RGB pixels. The generated image can still depict patterns or objects described by the prompt; background mode controls actual alpha rather than recognizing simulated checkerboards.
 
 BiRefNet requires the optional `background_removal/birefnet.safetensors` artifact from [the pinned Comfy-Org repository](https://huggingface.co/Comfy-Org/BiRefNet/tree/5a1bd8ae750548f8cd42e3c8afa854fd3eba0fb1). Its digest is exported as `BIREFNET_ARTIFACT`. Only cutout snapshots include this file in `auxiliaryArtifacts`; ordinary generation and native Qwen transparency do not require it. `BIREFNET_MEMORY` reserves an estimated additional 4 GiB RAM and 2 GiB VRAM for scheduling. The core model processes a 1024-pixel canvas and restores its soft mask to the requested dimensions.
+
+## Editing and adapters
+
+`mask` is a separate input image with white RGB pixels indicating the edit region. `outpaint` supplies grid-aligned padding and is mutually exclusive with a mask. The server resolves `sourceSize` from the owned first input; API callers cannot override this metadata. Source matching preserves aspect ratio within the family’s grid and pixel limits, without center-cropping. Masked SDXL, Klein, Qwen and Ideogram graphs protect latent regions and composite the original source back outside the mask, including its alpha. Ultra restoration runs after this composite and may refine the whole final image.
+
+`GENERATION_EXTENSIONS` contains pinned Krea style/reference weights, SDXL ReVision’s CLIP Vision G and the SDXL Refiner checkpoint. SDXL LoRAs patch model and CLIP; compatible Klein, Qwen and Krea LoRAs patch the model. Extension manifests and files are frozen in each snapshot and included in worker capability checks and resource reservations. Selecting a family declares architecture compatibility; the downloader validates safetensors structure and digest, not the training provenance of an imported adapter.
+
+Standalone `compileBackgroundRemoval()` uses BiRefNet on an existing image, preserves dimensions and multiplies the foreground opacity by the source opacity. The server runs it through the durable queue with owned inputs/outputs and protects its source from deletion until the job terminates.
 
 ## Install weights
 
