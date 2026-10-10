@@ -1636,21 +1636,21 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         if (model.short === 'long') {
           assert.ok(bounds.model.width <= 320.5 && bounds.model.width <= viewport.width, 'A long model name is capped at the available toolbar width');
           assert.ok(label.scrollWidth > label.clientWidth, 'A long name truncates inside its chip');
-        } else {
+        } else if (!viewport.mobile) {
           assert.ok(label.scrollWidth <= label.clientWidth + 1, 'Ordinary model names fit their natural chip width');
           intrinsicWidths.push({ width: bounds.model.width, textWidth: label.textWidth });
         }
         assert.ok(bounds.aspect.width > 44 && bounds.aspect.width < 80, 'The aspect chip fits its icon and label without a fixed width');
         assert.ok(bounds.quality.width > 60 && bounds.quality.width < 120 && Math.abs(bounds.quality.height - 36) < .1, 'Quality fits its label at the same height as the other chips');
+        assert.ok(Math.abs(bounds.quality.x - bounds.aspect.x - bounds.aspect.width - 6) < .1, 'Quality sits immediately to the right of the aspect ratio with a 6px gap');
+        assert.ok(Math.abs(bounds.quality.y - bounds.aspect.y) < .1 && Math.abs(bounds.quality.y - bounds.model.y) < .1, 'Model, aspect ratio and Quality share one row');
         if (viewport.mobile) {
           assert.equal(await browser.evaluate(`(() => {
-            const model = document.querySelector('button[aria-label^="Model:"]'), aspect = document.querySelector('button[aria-label^="Aspect ratio:"]');
+            const model = document.querySelector('button[aria-label^="Model:"]'), aspect = document.querySelector('button[aria-label^="Aspect ratio:"]'), quality = document.querySelector('button[aria-label^="Quality:"]');
             const row = model.parentElement.parentElement, visible = row.getBoundingClientRect();
-            return row.scrollLeft === 0 && [model, aspect].every(button => { const rect = button.getBoundingClientRect(); return rect.left >= visible.left - 1 && rect.right <= visible.right + 1 && rect.left >= 0 && rect.right <= innerWidth; });
-          })()`), true, `${model.name}: the model and Auto controls are fully visible without scrolling on mobile`);
+            return row.scrollLeft === 0 && [model, aspect, quality].every(button => { const rect = button.getBoundingClientRect(); return rect.left >= visible.left - 1 && rect.right <= visible.right + 1 && rect.left >= 0 && rect.right <= innerWidth; });
+          })()`), true, `${model.name}: the model, Auto and Quality controls are fully visible without scrolling on mobile`);
           assert.ok(bounds.advanced.y >= bounds.model.y + bounds.model.height, 'Mobile assistant and advanced actions use their own row');
-          assert.ok(bounds.quality.y >= bounds.model.y + bounds.model.height, 'Quality uses the second mobile row so ordinary model names keep their natural width');
-          assert.ok(bounds.quality.x >= 0 && bounds.quality.x + bounds.quality.width <= viewport.width, 'The Quality control is fully visible on mobile');
           assert.ok(Math.abs(bounds.generate.height - 64) < .1, 'Wrapping mobile actions preserves the fixed Generate height');
         }
         assert.ok(Math.abs(bounds.model.height - 36) < .1); assert.ok(Math.abs(bounds.aspect.height - 36) < .1);
@@ -1714,9 +1714,11 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         await screenshotPopover(`advanced-${model.short}-${viewport.name}.png`);
         await browser.key('Escape');
       }
-      assert.ok(Math.max(...intrinsicWidths.map(item => item.width)) - Math.min(...intrinsicWidths.map(item => item.width)) > 8, 'Shorter and longer model names have different chip widths');
-      const chromeWidth = intrinsicWidths[0].width - intrinsicWidths[0].textWidth;
-      for (const measured of intrinsicWidths) assert.ok(Math.abs(measured.width - measured.textWidth - chromeWidth) <= 2, 'Chip width follows its model label while retaining consistent icon spacing');
+      if (!viewport.mobile) {
+        assert.ok(Math.max(...intrinsicWidths.map(item => item.width)) - Math.min(...intrinsicWidths.map(item => item.width)) > 8, 'Shorter and longer model names have different chip widths');
+        const chromeWidth = intrinsicWidths[0].width - intrinsicWidths[0].textWidth;
+        for (const measured of intrinsicWidths) assert.ok(Math.abs(measured.width - measured.textWidth - chromeWidth) <= 2, 'Chip width follows its model label while retaining consistent icon spacing');
+      }
     }
     await browser.evaluate("window.__gravityViewerBrandFixture = true; document.dispatchEvent(new Event('visibilitychange'));");
     await browser.until("!!document.querySelector('button[aria-label=\"Open Qwen Image 2.1 output\"]')", 'The visual viewer fixture uses a known model publisher');

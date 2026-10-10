@@ -112,15 +112,13 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
           <ImageReferenceInput browseRef={referenceTrigger} images={draft.images} maxImages={maxImages} uploading={uploading} onUpload={files => { void upload(files); }} onRemove={id => update({ images: draft.images.filter(image => image.id !== id) })} onClear={() => update({ images: [] })} onBrowse={onBrowse} />
           <label htmlFor="image-prompt" className="sr-only">{draft.images.length ? 'Edit instructions' : 'Image prompt'}</label><textarea ref={prompt} id="image-prompt" value={draft.prompt} maxLength={16000} onChange={event => update({ prompt: event.target.value })} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} rows={1} placeholder={draft.images.length > 1 ? 'Describe how to use these references. Refer to them by number.' : draft.images.length ? 'Describe what you want to change in this image.' : 'Describe the shot you want.'} className="max-h-40 min-h-10 min-w-0 w-full resize-none bg-transparent py-2 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-2" />
         </div>
-        <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1.5 max-sm:[&>div:first-child]:min-w-0 max-sm:[&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
+        <div className="flex min-w-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center"><div className="@container -mb-1.5 flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1.5 [&>div:first-child]:min-w-0 [&>div:first-child>button]:max-w-[min(20rem,100%)] sm:w-auto sm:flex-1">
           <ModelMenu disabled={uploading} onManage={onOpenModels} models={models} value={draft.modelId} referenceCount={draft.images.length} onChange={id => { const next = models.find(model => model.id === id); if (next) setDraft(modelDraft(draft, next)); }} />
           <ImageAspectRatioMenu model={model} draft={draft} onChange={update} />
-        </div><div className="flex shrink-0 items-center justify-between gap-1.5">
           <ImageQualityMenu model={model} draft={draft} onChange={update} />
-          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:border-l sm:border-white/[0.06] sm:pl-1.5">
+        </div><div className="flex shrink-0 items-center gap-0.5 self-end sm:self-auto sm:border-l sm:border-white/[0.06] sm:pl-1.5">
           <PromptAssistant draft={draft} setDraft={setDraft} model={model} connected={connected} submitting={busy || uploading} sessionIdentity={sessionIdentity} onBusyChange={setAssistantBusy} onSessionExpired={onSessionExpired} onOpenSettings={onOpenAssistantSettings} />
           <DockSettings model={model} draft={draft} busy={busy} onChange={update} onReset={() => { if (model) setDraft(modelDraft(draft, model)); }} />
-          </div>
         </div></div>
         {error || sizeError ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError}</p> : connected && !model?.ready ? <p className="px-1 text-xs text-ink-2">Choose a model in Models. Manage your GPUs in Settings.</p> : null}
       </div>
