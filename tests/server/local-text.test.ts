@@ -9,6 +9,9 @@ import { Store } from '../../apps/server/store.ts';
 import type { Engine } from '../../apps/server/engine.ts';
 import { LocalTextRuntime, type LocalTextOptions } from '../../apps/server/local-text.ts';
 import { LOCAL_TEXT_MODEL } from '../../apps/server/text-models.ts';
+import { CredentialVault } from '../../apps/server/credentials.ts';
+import { TextService } from '../../apps/server/text.ts';
+import { WorkTimeService } from '../../apps/server/work-time.ts';
 import type { TextRuntimeStatus } from '../../scripts/text-runtime.ts';
 import runtimeLock from '../../deploy/llamacpp/runtime.lock.json' with { type: 'json' };
 import { GiB, inventory } from './helpers/engine-fixture.ts';
@@ -32,6 +35,7 @@ async function fixture(t: TestContext, options: { installed?: boolean; revision?
     containerId: 'container-0', proofs: [] as Array<{ identity: string; bytes: number }>,
     events: [] as string[], failStop: false,
     stopGate: undefined as Promise<void> | undefined,
+    reserveHook: undefined as (() => Promise<void>) | undefined,
     admitHook: undefined as (() => Promise<void>) | undefined,
     recoverHook: undefined as (() => Promise<void>) | undefined,
     startHook: undefined as (() => Promise<void>) | undefined,
@@ -44,6 +48,7 @@ async function fixture(t: TestContext, options: { installed?: boolean; revision?
     async hardwareReport() { return structuredClone(hardware); },
     async reserveTextGpu(ids: string[], _memory: unknown, signal: AbortSignal) {
       signal.throwIfAborted();
+      await state.reserveHook?.(); signal.throwIfAborted();
       assert(ids.length > 0, 'the runtime must select a supported physical GPU');
       assert.equal(state.alive, false, 'a new lease cannot replace an unconfirmed old stop');
       state.reserves++; state.alive = true; state.events.push('reserve');
@@ -102,6 +107,75 @@ test('two refinements reuse one warm container and recheck its memory before eac
   assert.deepEqual(f.state.proofs[0], { identity: 'container-1', bytes: 9 * GiB });
   assert.equal((await f.runtime.status()).phase, 'loaded');
   assert.equal(JSON.stringify(await f.runtime.status()).includes('fixture-runtime-secret'), false);
+});
+
+test('local work time excludes reservation and warm admission waits but includes cold model loading', async t => {
+  const f = await fixture(t), owner = f.store.createOwner('owner', 'unused');
+  let now = 1000;
+  const clock = new WorkTimeService(f.store, { now: () => now });
+  const waiting = deferred(), reserved = deferred(), loading = deferred(), loaded = deferred();
+  const admission = deferred(), admitted = deferred();
+  let generating = deferred(), generated = deferred();
+  f.state.reserveHook = () => { waiting.resolve(); return reserved.promise; };
+  f.state.startHook = () => { loading.resolve(); return loaded.promise; };
+  const service = new TextService(f.store, new CredentialVault(f.store, { key: Buffer.alloc(32, 7).toString('base64') }), {
+    local: f.runtime,
+    fetch: async () => { generating.resolve(); await generated.promise; return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{"prompt":"A teapot in warm evening light."}' } }] }); },
+  });
+  await service.saveAssistant({ revision: 0, provider: 'local', modelId: LOCAL_TEXT_MODEL.id });
+  const input = { settingsRevision: service.settings().revision, imageModelId: 'sdxl-base', prompt: 'A teapot.' };
+  const meter = (taskId: string) => ({ begin: () => clock.beginTask(owner.id, taskId, 'local-llm'), end: () => clock.endTask(taskId) });
+  const cold = service.refine(input, undefined, meter('cold-request'));
+  let warm: ReturnType<TextService['refine']> | undefined;
+  try {
+    await waiting.promise; now += 500;
+    assert.equal(clock.view(owner.id).balance.activeTasks, 0);
+    assert.equal(clock.view(owner.id).balance.usedMs, 0);
+    reserved.resolve(); await loading.promise;
+    assert.equal(clock.view(owner.id).balance.activeTasks, 1, 'billing starts before the model is loaded');
+    now += 300; loaded.resolve(); await generating.promise;
+    now += 200; generated.resolve(); await cold;
+    assert.equal(clock.view(owner.id).balance.usedMs, 500);
+    assert.equal(clock.view(owner.id).balance.activeTasks, 0);
+
+    now += 1000; generating = deferred(); generated = deferred();
+    f.state.admitHook = () => { admission.resolve(); return admitted.promise; };
+    warm = service.refine(input, undefined, meter('warm-request'));
+    await admission.promise; now += 700;
+    assert.equal(clock.view(owner.id).balance.activeTasks, 0);
+    assert.equal(clock.view(owner.id).balance.usedMs, 500, 'warm admission waiting consumes no work time');
+    admitted.resolve(); await generating.promise;
+    assert.equal(clock.view(owner.id).balance.activeTasks, 1);
+    now += 100; generated.resolve(); await warm;
+    assert.equal(clock.view(owner.id).balance.usedMs, 600);
+    assert.equal(clock.view(owner.id).balance.activeTasks, 0);
+    assert.equal(f.state.starts, 1);
+  } finally { reserved.resolve(); loaded.resolve(); admitted.resolve(); generated.resolve(); await cold.catch(() => {}); await warm?.catch(() => {}); await service.close(); }
+});
+
+test('failed local startup ends its work-time task even when container cleanup fails', async t => {
+  const f = await fixture(t), owner = f.store.createOwner('owner', 'unused');
+  let now = 1000;
+  const clock = new WorkTimeService(f.store, { now: () => now });
+  f.state.failStop = true;
+  f.state.startHook = async () => {
+    assert.equal(clock.view(owner.id).balance.activeTasks, 1);
+    now += 300;
+    throw new Error('startup failed');
+  };
+  const service = new TextService(f.store, new CredentialVault(f.store, { key: Buffer.alloc(32, 8).toString('base64') }), {
+    local: f.runtime, fetch: async () => { assert.fail('failed startup must not call inference'); },
+  });
+  try {
+    await service.saveAssistant({ revision: 0, provider: 'local', modelId: LOCAL_TEXT_MODEL.id });
+    await assert.rejects(service.refine({ settingsRevision: service.settings().revision, imageModelId: 'sdxl-base', prompt: 'A teapot.' }, undefined, {
+      begin: () => clock.beginTask(owner.id, 'failed-request', 'local-llm'), end: () => clock.endTask('failed-request'),
+    }), { code: 'LOCAL_TEXT_FAILED' });
+    assert.equal(f.state.alive, true, 'unconfirmed cleanup still holds the runtime memory lease');
+    assert.equal(clock.view(owner.id).balance.activeTasks, 0, 'the failed nonresumable request has ended');
+    now += 1000;
+    assert.equal(clock.view(owner.id).balance.usedMs, 300);
+  } finally { await service.close(); }
 });
 
 test('active inference cannot be evicted, unloaded, reconfigured or overlapped', async t => {

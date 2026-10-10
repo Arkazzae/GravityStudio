@@ -128,12 +128,13 @@ export class LocalTextRuntime {
     return { provider: 'local', models: this.ready ? [this.model()] : [] };
   }
   private model(): TextModel { return { id: LOCAL_TEXT_MODEL.id, name: LOCAL_TEXT_MODEL.name, inputTokenLimit: LOCAL_TEXT_MODEL.contextTokens - 2048 - 256, outputTokenLimit: 2048 }; }
-  async run<T>(modelId: string, signal: AbortSignal, work: (connection: TextConnection, model: TextModel) => Promise<T>): Promise<T> {
+  async run<T>(modelId: string, signal: AbortSignal, work: (connection: TextConnection, model: TextModel) => Promise<T>, onAdmitted?: () => void): Promise<T> {
     this.open();
     if (!this.ready || modelId !== LOCAL_TEXT_MODEL.id) throw new ApiError(409, 'LOCAL_TEXT_NOT_READY', 'Download and prepare MiMo in Models → Language first.');
     if (this.requestActive || this.setupFlight || this.changing || this.unloadFlight) throw new ApiError(409, 'LOCAL_TEXT_BUSY', 'The local language model is busy. Try again shortly.');
     this.requestActive = true; this.error = null; clearTimeout(this.maintenance);
     const combined = AbortSignal.any([signal, this.controller.signal]);
+    let admitted = false;
     try {
       combined.throwIfAborted();
       if (this.phase === 'failed' && this.reservation) await this.unload();
@@ -148,12 +149,14 @@ export class LocalTextRuntime {
         const { hardware, eligible } = await this.candidates();
         this.phase = 'loading'; this.message = 'Loading MiMo on an available GPU';
         this.reservation = await this.engine.reserveTextGpu(eligible.map(gpu => gpu.id), memory, combined);
+        onAdmitted?.(); admitted = true;
         const gpu = hardware.gpus.find(item => item.id === this.reservation!.gpuId)!;
         this.endpoint = await this.container.start(gpu, hardware, this.files.path, combined);
       }
       this.reservation!.resident(this.endpoint.containerId, this.endpoint.allocatedVramBytes);
       await this.reservation!.admit();
       combined.throwIfAborted();
+      if (!admitted) onAdmitted?.();
       this.phase = 'running'; this.message = 'MiMo is refining your prompt';
       this.scheduleMaintenance();
       const result = await work({ provider: 'openai-compatible', baseUrl: this.endpoint.baseUrl, apiKey: this.endpoint.apiKey }, this.model());

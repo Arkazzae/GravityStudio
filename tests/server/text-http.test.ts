@@ -8,6 +8,7 @@ import { Store } from '../../apps/server/store.ts';
 import { Engine } from '../../apps/server/engine.ts';
 import { createStudioServer } from '../../apps/server/http.ts';
 import { digest } from '../../apps/server/auth.ts';
+import { WorkTimeService } from '../../apps/server/work-time.ts';
 
 const origin = 'http://localhost:4321';
 async function fixture(t: TestContext, textFetch: typeof fetch) {
@@ -26,7 +27,7 @@ async function fixture(t: TestContext, textFetch: typeof fetch) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
   const cookie = 'gravity_session=fixture-session';
   const request = (path: string, method = 'GET', body?: unknown, signal?: AbortSignal) => fetch(`${base}${path}`, { method, signal, headers: { Origin: origin, Cookie: cookie, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  return { store, server, base, cookie, request };
+  return { store, owner, server, base, cookie, request };
 }
 const listed = () => Response.json({ data: [{ id: 'fixture-text' }] });
 
@@ -81,6 +82,10 @@ test('owner configures a text endpoint and refines with a pinned settings revisi
   assert.equal(result.originalPrompt, input.prompt); assert.equal(result.modelId, 'fixture-text');
   assert.equal(result.provider, 'openai-compatible'); assert.equal(completions, 1);
   assert.equal(api.store.jobs().length, 0, 'Refining must not submit an image generation');
+  const usage = new WorkTimeService(api.store).view(api.owner.id);
+  assert.equal(usage.balance.usedMs, 0, 'external provider requests do not consume local server time');
+  assert.equal(usage.balance.activeTasks, 0);
+  assert.equal(usage.sessions.length, 0);
 });
 
 test('disconnecting the browser aborts the upstream refinement and frees its concurrency slot', async t => {

@@ -18,6 +18,9 @@ import { INTEGRATION_PROVIDERS, integrationProvider, testIntegration } from "./i
 import { TextService } from "./text.ts";
 import { LocalTextRuntime } from "./local-text.ts";
 import { accountView, saveAccount } from "./account.ts";
+import { Administration, requireActiveUser, requireAdministrator } from "./administration.ts";
+import { WorkTimeService, requireWorkTime } from "./work-time.ts";
+import { MailService } from "./mail.ts";
 
 const safeHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 function json(response: ServerResponse, data: unknown, status = 200) {
@@ -62,12 +65,16 @@ export interface ServerOptions {
   models?: Pick<ModelLibrary, "view" | "checkAccess" | "start" | "activate" | "busy" | "close">;
   integrationFetch?: typeof fetch;
   textFetch?: typeof fetch;
+  mail?: Pick<MailService, "view" | "save" | "removeSecret" | "sendInvitation" | "sendTest" | "close">;
   localText?: Pick<LocalTextRuntime, 'initialize' | 'status' | 'prepare' | 'configure' | 'release' | 'models' | 'run' | 'evictIdle' | 'close'>;
 }
 export async function createStudioServer(options: ServerOptions) {
   const { store, engine } = options;
   await recoverMediaDeletions(store, { remote: false });
   const credentials = new CredentialVault(store);
+  const workTime = new WorkTimeService(store);
+  const administration = new Administration(store, workTime);
+  const mail = options.mail ?? new MailService(store, credentials);
   const localText = options.localText ?? new LocalTextRuntime(store, engine, { huggingFaceToken: () => credentials.get('huggingface') });
   await localText.initialize();
   const text = new TextService(store, credentials, { fetch: options.textFetch, local: localText });
@@ -76,6 +83,7 @@ export async function createStudioServer(options: ServerOptions) {
   const bootstrapSecret = options.setupSecret ?? await setupKey(store.directory);
   const limiter = new LoginLimiter();
   const origins = new Set(options.allowedOrigins.map(origin => new URL(origin).origin));
+  const invitationOrigin = options.allowedOrigins[0] ? new URL(options.allowedOrigins[0]).origin : undefined;
   const integrationChecks = new Map<string, Promise<unknown>>();
   const mediaOperations = new Set<Promise<unknown>>();
   const mediaOperation = async <T,>(run: () => Promise<T>): Promise<T> => {
@@ -88,7 +96,7 @@ export async function createStudioServer(options: ServerOptions) {
   let deletionRecovery: Promise<void> | undefined;
   function retryRemoteDeletions() {
     if (stopping || deletionRecovery) return;
-    deletionRecovery = recoverMediaDeletions(store, { local: false, continue: () => !stopping }).finally(() => {
+    deletionRecovery = recoverMediaDeletions(store, { local: false, continue: () => !stopping }).then(async () => { if (!stopping) await administration.recoverDeletions(); }).finally(() => {
       deletionRecovery = undefined;
       if (!stopping) { deletionTimer = setTimeout(retryRemoteDeletions, 30_000); deletionTimer.unref(); }
     });
@@ -105,12 +113,24 @@ export async function createStudioServer(options: ServerOptions) {
       if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Credentials", "true"); response.setHeader("Vary", "Origin"); }
       if (method === "OPTIONS") {
         if (!origin) throw new ApiError(403, "ORIGIN_NOT_ALLOWED", "Supply an allowed origin.");
-        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename, MCP-Protocol-Version, MCP-Session-Id", ...safeHeaders }); response.end(); return;
+        response.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, Idempotency-Key, X-Filename, MCP-Protocol-Version, MCP-Session-Id", ...safeHeaders }); response.end(); return;
       }
       if (path === "/api/health" && method === "GET") return json(response, { status: "ok", version: "0.1.0" });
       const identity = identify(request, store);
       if (path === "/api/bootstrap" && method === "GET") return json(response, { configured: !!store.owner(), authenticated: !!identity, setupRequired: !store.owner(), setupKeyRequired: true, user: identity?.user });
       const secure = !!origin?.startsWith("https://");
+      if (["/api/setup", "/api/login", "/api/invitations/inspect", "/api/invitations/accept"].includes(path) && method === "POST" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Supply an allowed browser Origin header.");
+      if (path === "/api/invitations/inspect" && method === "POST") {
+        limiter.check(`invitation-inspect:${request.socket.remoteAddress}`);
+        const body = await readJson(request, 1024);
+        return json(response, { invitation: administration.inspectInvitation(body.token) });
+      }
+      if (path === "/api/invitations/accept" && method === "POST") {
+        limiter.check(`invitation-accept:${request.socket.remoteAddress}`);
+        const user = await administration.acceptInvitation(await readJson(request, 4096));
+        response.setHeader("Set-Cookie", createSession(store, user, secure));
+        return json(response, { user }, 201);
+      }
       if (path === "/api/setup" && method === "POST") {
         limiter.check(`setup:${request.socket.remoteAddress}`);
         if (store.owner()) throw new ApiError(409, "ALREADY_CONFIGURED", "This studio already has an owner. Sign in instead.");
@@ -129,42 +149,113 @@ export async function createStudioServer(options: ServerOptions) {
         if (!await verifyPassword(credentials.password, user?.password)) throw new ApiError(401, "INVALID_CREDENTIALS", "The username or password is incorrect.");
         limiter.reset(clientId);
         response.setHeader("Set-Cookie", createSession(store, user!, secure));
-        return json(response, { user: { id: user!.id, username: user!.username } });
+        return json(response, { user: { id: user!.id, username: user!.username, role: user!.role } });
       }
       if (!identity) throw new ApiError(401, "UNAUTHENTICATED", "Sign in to use this studio.");
       const { user } = identity;
       if (!["GET", "HEAD"].includes(method) && identity.source === "session" && !origin) throw new ApiError(403, "ORIGIN_REQUIRED", "Browser changes require an allowed Origin header. Use a bearer token for API clients.");
       const requireSession = () => { if (identity.source !== "session") throw new ApiError(403, "SESSION_REQUIRED", "Sign in through the studio to change server settings."); };
+      const requireAdmin = () => { requireSession(); requireAdministrator(store.db, user.id); };
+      const adminRoute = path.startsWith("/api/admin/") || /^\/api\/(integrations|runtime|models|settings|hardware|workers)(\/|$)/.test(path)
+        || path.startsWith("/api/text/") && !((path === "/api/text/settings" || path === "/api/text/local") && method === "GET");
+      if (adminRoute) requireAdmin();
+      const readAdminJson = async (limit = 128 * 1024) => { const body = await readJson(request, limit); requireAdmin(); return body; };
+      const readAuthorizedJson = async (limit = 128 * 1024) => { const body = await readJson(request, limit); requireActiveUser(store.db, user.id); if (adminRoute) requireAdmin(); return body; };
       const requireRuntimeIdle = () => { if (runtime.status().busy) throw new ApiError(409, "RUNTIME_BUSY", "Wait for image generation setup to finish before changing settings or models."); };
+      if (path === "/api/work-time" && method === "GET") return json(response, workTime.view(user.id));
+      if (path.startsWith("/api/admin/")) {
+        requireAdmin();
+        if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
+        if (path === "/api/admin/users" && method === "GET") return json(response, { users: administration.users() });
+        const adminUserRoute = path.match(/^\/api\/admin\/users\/([a-f0-9-]{36})(\/work-time)?$/);
+        if (adminUserRoute) {
+          const id = adminUserRoute[1];
+          if (adminUserRoute[2]) {
+            administration.user(id);
+            if (method === "GET") return json(response, workTime.view(id));
+            if (method === "POST") {
+              const body = await readAdminJson(4096);
+              return json(response, workTime.adjust(user.id, id, body.deltaMs as number, body.reason as string, body.idempotencyKey as string));
+            }
+          } else {
+            if (method === "PATCH") return json(response, { user: administration.update(user.id, id, await readAdminJson(4096)) });
+            if (method === "DELETE") {
+              const body = await readAdminJson(4096);
+              await mediaOperation(() => administration.deleteUser(user.id, id, body));
+              return json(response, { deleted: true });
+            }
+          }
+        }
+        if (path === "/api/admin/work-time" && method === "GET") return json(response, { users: workTime.list() });
+        if (path === "/api/admin/invitations") {
+          if (method === "GET") return json(response, { invitations: administration.invitations() });
+          if (method === "POST") {
+            const publicOrigin = origin ?? invitationOrigin;
+            if (!publicOrigin) throw new ApiError(503, "INVITATION_ORIGIN_REQUIRED", "Configure the public Studio address in GRAVITY_ALLOWED_ORIGINS before creating invitations.");
+            const created = administration.createInvitation(user.id, await readAdminJson(4096));
+            let invitation = created.invitation, deliveryError: string | undefined;
+            if (created.sendEmail) {
+              try {
+                await mail.sendInvitation({ to: invitation.email!, inviteId: invitation.id, token: created.token, expiresAt: invitation.expiresAt }, publicOrigin);
+                invitation = administration.delivery(invitation.id, "sent");
+              } catch {
+                invitation = administration.delivery(invitation.id, "failed");
+                deliveryError = "The email could not be confirmed as sent. Copy the invitation link, or check Mail settings before creating another invitation.";
+              }
+            }
+            return json(response, { invitation, url: `${publicOrigin}/invite#token=${created.token}`, ...(deliveryError ? { deliveryError } : {}) }, 201);
+          }
+        }
+        const inviteRoute = path.match(/^\/api\/admin\/invitations\/([a-f0-9-]{36})$/);
+        if (inviteRoute && method === "DELETE") { administration.revokeInvitation(user.id, inviteRoute[1]); return json(response, { revoked: true }); }
+        if (path === "/api/admin/mail") {
+          if (method === "GET") return json(response, mail.view());
+          if (method === "PUT") return json(response, mail.save(await readAdminJson(16_384)));
+        }
+        const mailCredentialRoute = path.match(/^\/api\/admin\/mail\/credentials\/([^/]+)$/);
+        if (mailCredentialRoute && method === "DELETE") { const body = await readAdminJson(1024); return json(response, mail.removeSecret(mailCredentialRoute[1], body.revision)); }
+        if (path === "/api/admin/mail/test" && method === "POST") return json(response, await mail.sendTest(await readAdminJson(1024)));
+      }
       if (path === "/api/account") {
         requireSession();
         if (method === "GET") return json(response, accountView(store, user));
-        if (method === "PUT") return json(response, saveAccount(store, user, await readJson(request, 4096)));
+        if (method === "PUT") return json(response, saveAccount(store, user, await readAuthorizedJson(4096)));
       }
       if (path.startsWith("/api/text/") || path === "/api/prompts/refine") {
         requireSession();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
         if (path === '/api/text/local') {
-          if (method === 'GET') return json(response, await localText.status());
-          if (method === 'POST') return json(response, await localText.prepare(await readJson(request, 1024)), 202);
-          if (method === 'PUT') return json(response, await localText.configure(await readJson(request, 8192)));
+          if (method === 'GET') {
+            const status = await localText.status();
+            return json(response, user.role === "admin" ? status : { ...status, error: status.error ? "The local assistant is unavailable. Contact your administrator." : null, message: status.busy ? "The local assistant is busy" : status.ready ? "The local assistant is ready" : "The local assistant is unavailable", gpuId: null, gpuIds: [], gpus: [] });
+          }
+          if (method === 'POST') return json(response, await localText.prepare(await readAuthorizedJson(1024)), 202);
+          if (method === 'PUT') return json(response, await localText.configure(await readAuthorizedJson(8192)));
         }
         if (path === '/api/text/local/unload' && method === 'POST') {
-          const body = await readJson(request, 1024);
+          const body = await readAuthorizedJson(1024);
           if (Object.keys(body).length) throw new ApiError(400, 'INVALID_LOCAL_TEXT_REQUEST', 'Unload the local model with an empty object.');
           return json(response, await localText.release());
         }
-        if (path === "/api/text/settings" && method === "GET") return json(response, text.settings());
-        if (path === "/api/text/connection" && method === "PUT") return json(response, text.saveConnection(await readJson(request, 8192)));
-        if (path === "/api/text/assistant" && method === "PUT") return json(response, await text.saveAssistant(await readJson(request, 2048)));
+        if (path === "/api/text/settings" && method === "GET") { const settings = text.settings(); return json(response, user.role === "admin" ? settings : { revision: settings.revision, assistant: settings.assistant }); }
+        if (path === "/api/text/connection" && method === "PUT") return json(response, text.saveConnection(await readAuthorizedJson(8192)));
+        if (path === "/api/text/assistant" && method === "PUT") return json(response, await text.saveAssistant(await readAuthorizedJson(2048)));
         if ((path === "/api/text/models" && method === "GET") || (path === "/api/prompts/refine" && method === "POST")) {
           const controller = new AbortController();
           const abort = () => { if (!response.writableEnded) controller.abort(); };
           response.once("close", abort);
           try {
+            const body = path === "/api/prompts/refine" ? await readAuthorizedJson() : undefined;
+            const local = body && text.settings().assistant?.provider === "local";
+            if (local) requireWorkTime(store.db, user.id);
+            let metering = false;
+            const meter = local ? {
+              begin: () => { workTime.beginTask(user.id, requestId, "local-llm", false, text.settings().assistant!.modelId); metering = true; },
+              end: () => { if (metering) workTime.endTask(requestId); },
+            } : undefined;
             const result = path === "/api/text/models"
               ? await text.models(new URL(request.url!, "http://localhost").searchParams.get("provider"), controller.signal, new URL(request.url!, "http://localhost").searchParams.get("refresh") === "true")
-              : await text.refine(await readJson(request), controller.signal);
+              : await text.refine(body, controller.signal, meter);
             if (!controller.signal.aborted) return json(response, result);
             return;
           } finally { response.off("close", abort); }
@@ -180,14 +271,14 @@ export async function createStudioServer(options: ServerOptions) {
         const provider = integrationProvider(integrationRoute[1]);
         const view = () => ({ ...INTEGRATION_PROVIDERS.find(item => item.id === provider)!, credential: credentials.status(provider) });
         if (!integrationRoute[2] && method === "PUT") {
-          const body = await readJson(request, 8192);
+          const body = await readAuthorizedJson(8192);
           if (Object.keys(body).length !== 1 || !("apiKey" in body)) throw new ApiError(400, "INVALID_INTEGRATION_KEY", "Supply only the API key with { apiKey: string }.");
           credentials.set(provider, body.apiKey);
           return json(response, view());
         }
         if (!integrationRoute[2] && method === "DELETE") { credentials.delete(provider); return json(response, view()); }
         if (integrationRoute[2] && method === "POST") {
-          const body = await readJson(request, 1024);
+          const body = await readAuthorizedJson(1024);
           if (Object.keys(body).length) throw new ApiError(400, "INVALID_INTEGRATION_TEST", "Check the saved API key with an empty object.");
           if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
           if (integrationChecks.has(provider)) throw new ApiError(409, "INTEGRATION_CHECK_BUSY", "This connection is already being checked. Wait for the result.");
@@ -206,9 +297,10 @@ export async function createStudioServer(options: ServerOptions) {
         requireSession();
         if (method === "GET") return json(response, runtime.status());
         if (method === "POST") {
-          const body = await readJson(request, 16384);
+          const body = await readAuthorizedJson(16384);
           if (models.busy()) throw new ApiError(409, "MODEL_DOWNLOAD_BUSY", "Wait for the model download to finish before changing GPUs.");
           await localText.evictIdle();
+          requireAdmin();
           return json(response, runtime.start(body), 202);
         }
       }
@@ -220,16 +312,16 @@ export async function createStudioServer(options: ServerOptions) {
         const abort = () => { if (!response.writableEnded) controller.abort(); };
         response.once("close", abort);
         try {
-          const result = await models.checkAccess(await readJson(request, 8192), controller.signal);
+          const result = await models.checkAccess(await readAuthorizedJson(8192), controller.signal);
           if (!controller.signal.aborted) return json(response, result);
           return;
         } finally { response.off("close", abort); }
       }
-      if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readJson(request, 8192); requireRuntimeIdle(); return json(response, models.start(body), 202); }
-      if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readJson(request, 1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
+      if (path === "/api/models/download" && method === "POST") { requireSession(); const body = await readAuthorizedJson(8192); requireRuntimeIdle(); return json(response, models.start(body), 202); }
+      if (path === "/api/models/activate" && method === "POST") { requireSession(); const body = await readAuthorizedJson(1024); requireRuntimeIdle(); return json(response, await models.activate(body)); }
       if (path === "/api/mcp") {
         if (method !== "POST") { response.setHeader("Allow", "POST"); throw new ApiError(405, "METHOD_NOT_ALLOWED", "This stateless MCP endpoint accepts POST requests."); }
-        const body = await readJson(request);
+        const body = await readAuthorizedJson();
         const headers = new Headers();
         for (const name of ["content-type", "accept", "mcp-protocol-version", "mcp-session-id"]) {
           const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
@@ -248,9 +340,10 @@ export async function createStudioServer(options: ServerOptions) {
         if (method === "GET") return json(response, { ...settingsView(store), managedWorkers: await runtime.managedWorkers() });
         if (method === "PUT") {
           requireRuntimeIdle();
-          const body = await readJson(request);
+          const body = await readAuthorizedJson();
           const [hardware, managedWorkers] = await Promise.all([engine.hardwareReport(true), runtime.managedWorkers()]);
           const settings = validateSettings(body, hardware, modelRegistry(store));
+          requireAdmin();
           requireRuntimeIdle();
           const current = store.settings();
           protectManagedWorkers(current, settings, managedWorkers);
@@ -264,7 +357,7 @@ export async function createStudioServer(options: ServerOptions) {
       }
       if (path === "/api/workers/probe" && method === "POST") {
         requireSession();
-        const body = await readJson(request, 4096);
+        const body = await readAuthorizedJson(4096);
         return json(response, await engine.probe(String(body.baseUrl ?? "")));
       }
       const unloadWorkerRoute = path.match(/^\/api\/workers\/([^/]+)\/unload$/);
@@ -272,7 +365,7 @@ export async function createStudioServer(options: ServerOptions) {
         requireSession();
         if (stopping) throw new ApiError(503, "STUDIO_STOPPING", "The studio is restarting. Try again shortly.");
         requireRuntimeIdle();
-        const body = await readJson(request, 1024);
+        const body = await readAuthorizedJson(1024);
         if (Object.keys(body).length) throw new ApiError(400, "INVALID_WORKER_RELEASE", "Release worker memory with an empty object.");
         let workerId: string;
         try { workerId = decodeURIComponent(unloadWorkerRoute[1]); }
@@ -286,26 +379,33 @@ export async function createStudioServer(options: ServerOptions) {
       if (path === "/api/upscale" && method === "POST") {
         const key = request.headers["idempotency-key"];
         if (typeof key !== "string") throw new ApiError(400, "REQUEST_KEY_REQUIRED", "Supply an Idempotency-Key so retries cannot create duplicate upscales.");
-        return json(response, { job: await engine.submitUpscale(user.id, await readJson(request), key) }, 202);
+        return json(response, { job: await engine.submitUpscale(user.id, await readAuthorizedJson(), key) }, 202);
       }
-      if (path === "/api/state" && method === "GET") return json(response, await engine.state(user.id));
+      if (path === "/api/state" && method === "GET") {
+        const state = await engine.state(user.id);
+        if (user.role !== "admin") {
+          state.workers = state.workers.map(worker => ({ ...worker, baseUrl: "", deviceIds: [], canRelease: false, error: worker.error ? "Worker unavailable" : undefined }));
+          state.hardware = { ...state.hardware, host: { ...state.hardware.host, container: { detected: false, markers: [] } }, diagnostics: [], gpus: state.hardware.gpus.map(gpu => ({ ...gpu, pciAddress: null, uuid: null, driverVersion: null })) };
+        }
+        return json(response, state);
+      }
       if (path === "/api/favorites" && method === "GET") return json(response, { jobs: store.favorites(user.id).map(publicJob) });
       if (path === "/api/jobs") {
         if (method === "GET") return json(response, { jobs: store.jobs(user.id).map(publicJob) });
         if (method === "POST") {
           const key = request.headers["idempotency-key"];
           if (typeof key !== "string") throw new ApiError(400, "REQUEST_KEY_REQUIRED", "Supply an Idempotency-Key so retries cannot create duplicate generations.");
-          return json(response, { job: await engine.submit(user.id, await readJson(request), key) }, 202);
+          return json(response, { job: await engine.submit(user.id, await readAuthorizedJson(), key) }, 202);
         }
       }
       const jobRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})$/);
       if (jobRoute && method === "GET") return json(response, { job: publicJob(store.job(jobRoute[1], user.id)) });
       const cancelRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/cancel$/);
-      if (cancelRoute && method === "POST") { await readJson(request, 1024); return json(response, { job: engine.cancel(user.id, cancelRoute[1]) }); }
+      if (cancelRoute && method === "POST") { await readAuthorizedJson(1024); return json(response, { job: engine.cancel(user.id, cancelRoute[1]) }); }
       const resolveRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/resolve$/);
       if (resolveRoute && method === "POST") {
         requireSession();
-        const body = await readJson(request, 1024);
+        const body = await readAuthorizedJson(1024);
         if (body.acknowledge !== true || Object.keys(body).some(key => key !== "acknowledge")) throw new ApiError(400, "ACKNOWLEDGEMENT_REQUIRED", "Acknowledge closing this unknown generation with { acknowledge: true }.");
         return json(response, { job: await engine.resolve(user.id, resolveRoute[1]) });
       }
@@ -335,7 +435,7 @@ export async function createStudioServer(options: ServerOptions) {
       }
       const favoriteRoute = path.match(/^\/api\/jobs\/([a-f0-9-]{36})\/outputs\/([a-f0-9]{32})\/favorite$/);
       if (favoriteRoute && method === "PUT") {
-        const body = await readJson(request, 1024);
+        const body = await readAuthorizedJson(1024);
         if (typeof body.favorite !== "boolean" || Object.keys(body).some(key => key !== "favorite")) throw new ApiError(400, "INVALID_FAVORITE", "Set whether this image is a favorite with { favorite: true } or { favorite: false }.");
         return json(response, { job: publicJob(store.setOutputFavorite(favoriteRoute[1], favoriteRoute[2], user.id, body.favorite)) });
       }
@@ -354,7 +454,7 @@ export async function createStudioServer(options: ServerOptions) {
         requireSession();
         if (method === "GET") return json(response, { tokens: store.apiTokens(user.id) });
         if (method === "POST") {
-          const body = await readJson(request, 4096);
+          const body = await readAuthorizedJson(4096);
           if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 80) throw new ApiError(400, "INVALID_TOKEN_NAME", "Give this token a name of up to 80 characters.");
           const token = `gs_${randomBytes(32).toString("base64url")}`;
           return json(response, { ...store.saveApiToken(user.id, body.name.trim(), digest(token)), token }, 201);
@@ -378,6 +478,7 @@ export async function createStudioServer(options: ServerOptions) {
     stopping = true; clearTimeout(deletionTimer);
     const failures: unknown[] = [];
     try { await text.close(); } catch (error) { failures.push(error); }
+    try { await mail.close(); } catch (error) { failures.push(error); }
     const drained = await Promise.allSettled([localText.close(), runtime.close(), models.close(), Promise.allSettled(integrationChecks.values()), Promise.allSettled(mediaOperations), deletionRecovery]);
     for (const result of drained) if (result.status === 'rejected') failures.push(result.reason);
     if (failures.length) throw new AggregateError(failures, 'Studio operations could not shut down cleanly.');

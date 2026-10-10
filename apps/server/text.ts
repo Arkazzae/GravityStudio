@@ -160,7 +160,7 @@ export class TextService {
     const connection = this.connection(providerId(provider));
     return this.operation(inner => this.discovered(connection, inner, refresh), signal, Math.min(this.timeoutMs, 12_000));
   }
-  refine(body: unknown, signal?: AbortSignal): Promise<PromptRefinementResult> {
+  refine(body: unknown, signal?: AbortSignal, meter?: { begin: () => void; end: () => void }): Promise<PromptRefinementResult> {
     this.requireOpen();
     check(object(body) && Object.keys(body).every(key => ["settingsRevision", "prompt", "imageModelId", "instruction"].includes(key)), "Supply the image prompt, image model and current text settings revision.");
     const settings = this.expectRevision(body.settingsRevision);
@@ -185,7 +185,7 @@ export class TextService {
         const refined = parseRefinementResult(result.text, originalPrompt, instruction);
         if (connection.apiKey && refined.includes(connection.apiKey)) throw new ApiError(502, 'TEXT_INVALID_RESPONSE', 'The text model returned an invalid refinement.');
         return { prompt: refined, originalPrompt, provider, modelId, ...(result.usage ? { usage: result.usage } : {}) };
-      }), signal, 180_000).finally(() => { this.refining = false; });
+      }, meter?.begin), signal, 180_000).finally(() => { meter?.end(); this.refining = false; });
     }
     const connection = this.connection(provider), identity = this.connectionIdentity(connection);
     this.refining = true;
