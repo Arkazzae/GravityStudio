@@ -1,5 +1,5 @@
 'use client';
-import { RotateCcw, Shuffle, SlidersHorizontal } from '@/components/ui/icons';
+import { Layers2, RotateCcw, Shuffle, SlidersHorizontal } from '@/components/ui/icons';
 import { IconChip } from '@/components/ui/Chip';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { Popover } from '@/components/ui/Popover';
@@ -7,6 +7,7 @@ import type { GenerationTool, StudioModel } from '@/lib/api';
 import { draftCanvasSize, generationOperation, ideogramModel } from '@/lib/generation-draft';
 import { imageQualityForSize, imageQualitySampling } from '@/lib/image-settings';
 import { GenerationOptions } from './GenerationOptions';
+import { LoraOptions } from './LoraOptions';
 import type { Draft } from './PromptDock';
 
 const parameterHelp = {
@@ -48,8 +49,12 @@ export function DockSettings({ model, draft, busy, tools, toolsLoading, toolsErr
   const widthMax = Math.max(limits?.width?.min ?? dimensions?.min ?? 256, Math.min(limits?.width?.max ?? dimensions?.max ?? 2048, draft.height > 0 ? Math.floor(maxPixels / draft.height / widthStep) * widthStep : Infinity));
   const heightMax = Math.max(limits?.height?.min ?? dimensions?.min ?? 256, Math.min(limits?.height?.max ?? dimensions?.max ?? 2048, draft.width > 0 ? Math.floor(maxPixels / draft.width / heightStep) * heightStep : Infinity));
   const strength = generationOperation(model, draft) === 'image-to-image';
+  const loraCount = draft.loras?.length || 0;
   return <>
-    <Popover label="Advanced settings" title="Advanced" width={320} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="advanced-trigger" active={open} disabled={!model} onClick={() => { if (!open) onReloadTools(); }} aria-label="Advanced settings" title="Advanced settings"><SlidersHorizontal />{dirty && <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-volt" />}</IconChip>}>
+    <Popover label="LoRAs" title="LoRAs" width={360} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="loras-trigger" active={open || loraCount > 0} disabled={!model} onClick={() => { if (!open) onReloadTools(); }} aria-label={loraCount ? `LoRAs: ${loraCount} selected` : 'LoRAs'} title="LoRAs"><Layers2 />{loraCount > 0 && <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-volt px-1 text-[9px] font-semibold leading-none text-black ring-2 ring-raise">{loraCount}</span>}</IconChip>}>
+      {close => <LoraOptions model={model} draft={draft} busy={busy} tools={tools} loading={toolsLoading} error={toolsError} onReload={onReloadTools} onChange={onChange} onManage={onManageTools ? () => { close(); onManageTools(); } : undefined} />}
+    </Popover>
+    <Popover label="Advanced settings" title="Advanced" width={320} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="advanced-trigger" active={open} disabled={!model} aria-label="Advanced settings" title="Advanced settings"><SlidersHorizontal />{dirty && <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-volt" />}</IconChip>}>
       {close => <div className="flex h-[min(60dvh,480px)] flex-col gap-1 overflow-y-auto [scrollbar-gutter:stable]">
         <NumberControl label="Width" min={limits?.width?.min ?? dimensions?.min ?? 256} max={widthMax} step={widthStep} disabled={!!sourceCanvas} value={sourceCanvas?.width ?? draft.width} onChange={width => onChange({ width, aspect: 'custom', quality: 'custom' })} />
         <NumberControl label="Height" min={limits?.height?.min ?? dimensions?.min ?? 256} max={heightMax} step={heightStep} disabled={!!sourceCanvas} value={sourceCanvas?.height ?? draft.height} onChange={height => onChange({ height, aspect: 'custom', quality: 'custom' })} />
@@ -62,7 +67,7 @@ export function DockSettings({ model, draft, busy, tools, toolsLoading, toolsErr
         </div>
         {strength && <NumberControl label="Image strength" min={.05} max={1} step={.05} value={draft.denoise} onChange={denoise => onChange({ denoise })} />}
         {model?.capabilities?.negativePrompt !== false && <div className="min-w-0 shrink-0 rounded-lg bg-white/[0.03] px-2.5 py-2"><ParameterLabel label="Negative prompt" /><textarea aria-label="Negative prompt" rows={3} maxLength={16000} value={draft.negativePrompt} onChange={event => onChange({ negativePrompt: event.target.value })} className="w-full resize-y rounded-lg bg-chip px-3 py-2 text-[13px] leading-6 text-ink outline-none ring-1 ring-transparent transition focus:ring-volt/40" /></div>}
-        <GenerationOptions model={model} draft={draft} busy={busy} tools={tools} loading={toolsLoading} error={toolsError} onReload={onReloadTools} onChange={onChange} onManage={onManageTools ? () => { close(); onManageTools(); } : undefined} onEditSource={onEditSource ? () => { close(); onEditSource(); } : undefined} />
+        <GenerationOptions model={model} draft={draft} busy={busy} onChange={onChange} onManage={onManageTools ? () => { close(); onManageTools(); } : undefined} onEditSource={onEditSource ? () => { close(); onEditSource(); } : undefined} />
       </div>}
     </Popover>
     <IconChip aria-label="Reset settings to defaults" title="Reset settings to defaults" disabled={!dirty || busy} onClick={onReset}><RotateCcw /></IconChip>

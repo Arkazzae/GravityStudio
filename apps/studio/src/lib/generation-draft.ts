@@ -126,13 +126,13 @@ export function moveLoraChoice(choices: LoraChoice[], from: number, direction: -
 export function loraProblem(model: StudioModel | undefined, choices: Draft['loras'], tools: GenerationTool[] | null): string | null {
   if (!choices?.length) return null;
   const maximum = loraLimit(model);
-  if (!maximum) return 'This model does not support LoRAs. Remove the selected LoRAs in Advanced or choose another model.';
-  if (choices.length > maximum) return `This model accepts up to ${maximum} LoRA${maximum === 1 ? '' : 's'}. Remove some in Advanced to generate.`;
+  if (!maximum) return 'This model does not support LoRAs. Remove the selected adapters in the LoRAs panel or choose another model.';
+  if (choices.length > maximum) return `This model accepts up to ${maximum} LoRA${maximum === 1 ? '' : 's'}. Remove some in the LoRAs panel to generate.`;
   if (new Set(choices.map(choice => choice.id)).size !== choices.length) return 'Choose different LoRAs. Each adapter can be selected only once.';
   if (!tools) return 'Checking selected LoRAs…';
   for (const choice of choices) {
     const tool = tools.find(tool => tool.id === choice.id && tool.kind === 'lora');
-    if (!tool || !model?.familyId || !tool.familyIds.includes(model.familyId)) return 'A selected LoRA is incompatible with this model. Remove it in Advanced or switch models.';
+    if (!tool || !model?.familyId || !tool.familyIds.includes(model.familyId)) return 'A selected LoRA is incompatible with this model. Remove it in the LoRAs panel or switch models.';
     if (!tool.ready) return tool.missingReasons.join(' ') || `${tool.name} is not ready on the assigned workers.`;
     if (!Number.isFinite(choice.strength) || choice.strength < 0 || choice.strength > 2) return 'LoRA strength must be between 0 and 2.';
   }
