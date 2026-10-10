@@ -1,8 +1,8 @@
 export type FamilyId = "sdxl" | "flux-2-klein-4b" | "flux-2-klein-9b" | "krea-2" | "qwen-image-2.1" | "ideogram-4";
 export type Operation = "text-to-image" | "image-to-image" | "reference";
 export type BackgroundMode = "auto" | "opaque" | "transparent";
-export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae" | "background-removal";
-export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "background_removal";
+export type ArtifactRole = "checkpoint" | "diffusion" | "diffusion-unconditional" | "text-encoder" | "vae" | "background-removal" | "upscale";
+export type ModelFolder = "checkpoints" | "diffusion_models" | "text_encoders" | "vae" | "background_removal" | "upscale_models";
 
 export interface ModelArtifact {
   role: ArtifactRole;
@@ -99,18 +99,69 @@ export interface WorkflowNode {
 }
 export type WorkflowGraph = Record<string, WorkflowNode>;
 
+export type UpscalerFamilyId = "nomos2" | "seedvr2";
+export type UpscaleScale = 2 | 4;
+
+export interface UpscalerManifest {
+  id: string;
+  name: string;
+  familyId: UpscalerFamilyId;
+  revision: string;
+  artifacts: ModelArtifact[];
+  description: string;
+  license?: string;
+  licenseUrl?: string;
+  scales: UpscaleScale[];
+  maxOutputDimension: number;
+  /** Conservative scheduling estimates, not measured peaks on the current worker. */
+  memory: { ramBytes: number; vramBytes: number };
+}
+
+export interface UpscaleRequest {
+  modelId: string;
+  scale: UpscaleScale;
+  sourceWidth: number;
+  sourceHeight: number;
+  image: InputImage;
+  seed?: number;
+}
+
+export interface UpscaleParameters {
+  scale: UpscaleScale;
+  sourceWidth: number;
+  sourceHeight: number;
+  width: number;
+  height: number;
+  seed: number;
+}
+
 /** Persist the whole snapshot before submission; hashes describe recipes, not installed file integrity. */
-export interface ExecutionSnapshot {
+interface SnapshotBase {
   schemaVersion: 1;
-  recipe: { familyId: FamilyId; revision: string; operation: Operation };
-  model: ModelManifest;
-  parameters: ResolvedParameters;
   inputs: InputImage[];
   /** Optional postprocessing weights, separate from the image model's required files. */
   auxiliaryArtifacts?: ModelArtifact[];
   graph: WorkflowGraph;
   outputs: { node: string; field: "images" }[];
   hash: string;
+}
+
+export interface GenerationSnapshot extends SnapshotBase {
+  recipe: { familyId: FamilyId; revision: string; operation: Operation };
+  model: ModelManifest;
+  parameters: ResolvedParameters;
+}
+
+export interface UpscaleSnapshot extends SnapshotBase {
+  recipe: { familyId: UpscalerFamilyId; revision: string; operation: "upscale" };
+  model: UpscalerManifest;
+  parameters: UpscaleParameters;
+}
+
+export type ExecutionSnapshot = GenerationSnapshot | UpscaleSnapshot;
+
+export function isUpscaleSnapshot(snapshot: ExecutionSnapshot): snapshot is UpscaleSnapshot {
+  return snapshot.recipe.operation === "upscale";
 }
 
 export class InferenceError extends Error {

@@ -1,7 +1,7 @@
 import { createHash, randomInt } from "node:crypto";
 import { BIREFNET_ARTIFACT, FAMILY_RECIPES, getModel, isRelativeFile, validateModel } from "./catalog.ts";
 import { InferenceError } from "./types.ts";
-import type { ArtifactRole, ExecutionSnapshot, GenerationRequest, GraphLink, InputImage, ModelManifest, ResolvedParameters, WorkflowGraph } from "./types.ts";
+import type { ArtifactRole, ExecutionSnapshot, GenerationRequest, GenerationSnapshot, GraphLink, InputImage, ModelManifest, ResolvedParameters, UpscaleSnapshot, WorkflowGraph } from "./types.ts";
 
 export function canonicalJson(value: unknown): string {
   if (value === undefined) return "null";
@@ -10,7 +10,7 @@ export function canonicalJson(value: unknown): string {
   return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
 }
 
-function snapshotHash(snapshot: Omit<ExecutionSnapshot, "hash">): string {
+export function snapshotHash(snapshot: Omit<GenerationSnapshot, "hash"> | Omit<UpscaleSnapshot, "hash">): string {
   return createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
 }
 
@@ -194,7 +194,7 @@ function ideogram4Graph(model: ModelManifest, p: ResolvedParameters): WorkflowGr
   };
 }
 
-export function compileGeneration(request: GenerationRequest, model?: ModelManifest): ExecutionSnapshot {
+export function compileGeneration(request: GenerationRequest, model?: ModelManifest): GenerationSnapshot {
   check(request && typeof request === "object" && !Array.isArray(request) && Object.keys(request).every(key => requestKeys.has(key)), "Unknown generation parameter.");
   check(Object.values(request).every(value => value !== null), "Generation parameters cannot be null.");
   model ??= getModel(request.modelId);
@@ -227,7 +227,7 @@ export function compileGeneration(request: GenerationRequest, model?: ModelManif
     graph.background_opaque = { class_type: "ImageCompositeMasked", inputs: { destination: ["background_white", 0], source: ["background_split", 0], mask: ["background_opacity", 0], x: 0, y: 0, resize_source: false } };
     graph.output.inputs.images = ["background_opaque", 0];
   }
-  const content: Omit<ExecutionSnapshot, "hash"> = {
+  const content: Omit<GenerationSnapshot, "hash"> = {
     schemaVersion: 1,
     recipe: { familyId: family.id, revision: family.revision, operation },
     model: structuredClone(model), parameters, inputs: structuredClone(images),

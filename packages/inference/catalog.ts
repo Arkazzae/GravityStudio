@@ -124,6 +124,7 @@ export function isRelativeFile(value: unknown): value is string {
 const artifactFolders: Record<ArtifactRole, string> = {
   checkpoint: "checkpoints", diffusion: "diffusion_models", "diffusion-unconditional": "diffusion_models", "text-encoder": "text_encoders", vae: "vae",
   "background-removal": "background_removal",
+  upscale: "upscale_models",
 };
 const allowedDefaults = new Set(Object.keys(base));
 

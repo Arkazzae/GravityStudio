@@ -37,11 +37,12 @@ export interface ComfySystemStats {
 
 type History = { outputs?: Record<string, Record<string, unknown>>; status?: { status_str?: string; completed?: boolean; messages?: unknown[] }; prompt?: unknown[] };
 type Queue = { queue_running: unknown[][]; queue_pending: unknown[][] };
-const MODEL_FOLDERS: ModelFolder[] = ["checkpoints", "diffusion_models", "text_encoders", "vae", "background_removal"];
+const MODEL_FOLDERS: ModelFolder[] = ["checkpoints", "diffusion_models", "text_encoders", "vae", "background_removal", "upscale_models"];
 const LOADERS: Record<ModelFolder, [string, string]> = {
   checkpoints: ["CheckpointLoaderSimple", "ckpt_name"], diffusion_models: ["UNETLoader", "unet_name"],
   text_encoders: ["CLIPLoader", "clip_name"], vae: ["VAELoader", "vae_name"],
   background_removal: ["LoadBackgroundRemovalModel", "bg_removal_name"],
+  upscale_models: ["UpscaleModelLoader", "model_name"],
 };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
