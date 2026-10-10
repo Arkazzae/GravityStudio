@@ -3,7 +3,10 @@ import { RotateCcw, Shuffle, SlidersHorizontal } from '@/components/ui/icons';
 import { IconChip } from '@/components/ui/Chip';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { Popover } from '@/components/ui/Popover';
-import type { StudioModel } from '@/lib/api';
+import type { GenerationTool, StudioModel } from '@/lib/api';
+import { draftCanvasSize, generationOperation, ideogramModel } from '@/lib/generation-draft';
+import { imageQualityForSize, imageQualitySampling } from '@/lib/image-settings';
+import { GenerationOptions } from './GenerationOptions';
 import type { Draft } from './PromptDock';
 
 const parameterHelp = {
@@ -23,18 +26,20 @@ function ParameterLabel({ label, htmlFor }: { label: keyof typeof parameterHelp;
   </div>;
 }
 
-function NumberControl({ label, min, max, step = 1, value, onChange }: { label: keyof typeof parameterHelp; min: number; max: number; step?: number; value: number; onChange: (value: number) => void }) {
+function NumberControl({ label, min, max, step = 1, value, disabled = false, onChange }: { label: keyof typeof parameterHelp; min: number; max: number; step?: number; value: number; disabled?: boolean; onChange: (value: number) => void }) {
   return <div className="min-w-0 shrink-0 rounded-lg bg-white/[0.03] px-2.5 py-2">
     <ParameterLabel label={label} />
     <div className="flex min-w-0 items-center gap-2.5">
-      <input type="range" aria-label={label} min={min} max={max} step={step} value={Number.isFinite(value) ? value : min} onChange={event => onChange(event.target.valueAsNumber)} className="h-4 min-w-0 flex-1 cursor-pointer" />
-      <input type="number" aria-label={`${label} value`} title={`${min} – ${max}`} min={min} max={max} step={step} value={Number.isFinite(value) ? value : ''} onChange={event => onChange(event.target.valueAsNumber)} className="h-7 w-[4.5rem] min-w-0 shrink-0 rounded-md bg-white/[0.05] px-2 text-right text-[12.5px] tabular-nums text-ink outline-none ring-1 ring-transparent transition focus:ring-volt/40" />
+      <input type="range" aria-label={label} min={min} max={max} step={step} disabled={disabled} value={Number.isFinite(value) ? value : min} onChange={event => onChange(event.target.valueAsNumber)} className="h-4 min-w-0 flex-1 cursor-pointer disabled:opacity-50" />
+      <input type="number" aria-label={`${label} value`} title={`${min} – ${max}`} min={min} max={max} step={step} disabled={disabled} value={Number.isFinite(value) ? value : ''} onChange={event => onChange(event.target.valueAsNumber)} className="h-7 w-[4.5rem] min-w-0 shrink-0 rounded-md bg-white/[0.05] px-2 text-right text-[12.5px] tabular-nums text-ink outline-none ring-1 ring-transparent transition focus:ring-volt/40 disabled:opacity-50" />
     </div>
   </div>;
 }
 
-export function DockSettings({ model, draft, busy, onChange, onReset }: { model?: StudioModel; draft: Draft; busy: boolean; onChange: (change: Partial<Draft>) => void; onReset: () => void }) {
-  const dirty = !!model && (draft.quality === 'ultra' || draft.width !== model.defaults.width || draft.height !== model.defaults.height || draft.steps !== model.defaults.steps || draft.cfg !== model.defaults.cfg || draft.negativePrompt !== (model.defaults.negativePrompt || '') || !!draft.seed.trim() || draft.denoise !== .75 || (draft.background || 'auto') !== 'auto');
+export function DockSettings({ model, draft, busy, tools, toolsLoading, toolsError, onReloadTools, onManageTools, onEditSource, onChange, onReset }: { model?: StudioModel; draft: Draft; busy: boolean; tools: GenerationTool[] | null; toolsLoading: boolean; toolsError: string; onReloadTools: () => void; onManageTools?: () => void; onEditSource?: () => void; onChange: (change: Partial<Draft>) => void; onReset: () => void }) {
+  const defaults = model ? { ...model.defaults, ...imageQualitySampling(model, imageQualityForSize(model, model.defaults.width, model.defaults.height, 'auto')) } : null;
+  const dirty = !!defaults && (draft.quality === 'ultra' || draft.width !== defaults.width || draft.height !== defaults.height || draft.steps !== defaults.steps || draft.cfg !== defaults.cfg || draft.negativePrompt !== (defaults.negativePrompt || '') || !!draft.seed.trim() || draft.denoise !== .75 || (draft.background || 'auto') !== 'auto' || !!draft.mask || !!draft.outpaint || !!draft.matchSource || !!draft.refiner || !!draft.loras?.length || !!draft.structuredPrompt || !!draft.imageMode || draft.referenceStrength !== undefined && draft.referenceStrength !== 1);
+  const sourceCanvas = draftCanvasSize(model, draft);
   const limits = model?.limits;
   const dimensions = model?.dimensions;
   const widthStep = limits?.width?.step ?? dimensions?.multiple ?? 16;
@@ -42,12 +47,13 @@ export function DockSettings({ model, draft, busy, onChange, onReset }: { model?
   const maxPixels = dimensions?.maxPixels ?? 2_097_152;
   const widthMax = Math.max(limits?.width?.min ?? dimensions?.min ?? 256, Math.min(limits?.width?.max ?? dimensions?.max ?? 2048, draft.height > 0 ? Math.floor(maxPixels / draft.height / widthStep) * widthStep : Infinity));
   const heightMax = Math.max(limits?.height?.min ?? dimensions?.min ?? 256, Math.min(limits?.height?.max ?? dimensions?.max ?? 2048, draft.width > 0 ? Math.floor(maxPixels / draft.width / heightStep) * heightStep : Infinity));
-  const strength = !!draft.images.length && !model?.operations?.includes('reference');
+  const strength = generationOperation(model, draft) === 'image-to-image';
   return <>
-    <Popover label="Advanced settings" title="Advanced" width={320} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="advanced-trigger" active={open} disabled={!model} aria-label="Advanced settings" title="Advanced settings"><SlidersHorizontal />{dirty && <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-volt" />}</IconChip>}>
-      {() => <div className="flex h-[min(60dvh,480px)] flex-col gap-1 overflow-y-auto [scrollbar-gutter:stable]">
-        <NumberControl label="Width" min={limits?.width?.min ?? dimensions?.min ?? 256} max={widthMax} step={widthStep} value={draft.width} onChange={width => onChange({ width, aspect: 'custom', quality: 'custom' })} />
-        <NumberControl label="Height" min={limits?.height?.min ?? dimensions?.min ?? 256} max={heightMax} step={heightStep} value={draft.height} onChange={height => onChange({ height, aspect: 'custom', quality: 'custom' })} />
+    <Popover label="Advanced settings" title="Advanced" width={320} align="end" trigger={({ open, triggerProps }) => <IconChip {...triggerProps} id="advanced-trigger" active={open} disabled={!model} onClick={() => { if (!open) onReloadTools(); }} aria-label="Advanced settings" title="Advanced settings"><SlidersHorizontal />{dirty && <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-volt" />}</IconChip>}>
+      {close => <div className="flex h-[min(60dvh,480px)] flex-col gap-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <NumberControl label="Width" min={limits?.width?.min ?? dimensions?.min ?? 256} max={widthMax} step={widthStep} disabled={!!sourceCanvas} value={sourceCanvas?.width ?? draft.width} onChange={width => onChange({ width, aspect: 'custom', quality: 'custom' })} />
+        <NumberControl label="Height" min={limits?.height?.min ?? dimensions?.min ?? 256} max={heightMax} step={heightStep} disabled={!!sourceCanvas} value={sourceCanvas?.height ?? draft.height} onChange={height => onChange({ height, aspect: 'custom', quality: 'custom' })} />
+        {sourceCanvas && <p className="px-1 py-1 text-[11px] leading-5 text-ink-2">{ideogramModel(model) && generationOperation(model, draft) === 'reference' ? 'Ideogram reference mode uses a fixed 1024 × 1024 canvas.' : 'Dimensions follow the source canvas. Adjust its padding in the source editor.'}</p>}
         <NumberControl label="Steps" min={limits?.steps?.min ?? 1} max={limits?.steps?.max ?? 100} step={limits?.steps?.step ?? 1} value={draft.steps} onChange={steps => onChange({ steps })} />
         <NumberControl label="Guidance" min={limits?.cfg?.min ?? 0} max={limits?.cfg?.max ?? 30} step={limits?.cfg?.step ?? .1} value={draft.cfg} onChange={cfg => onChange({ cfg })} />
         <div className="min-w-0 shrink-0 rounded-lg bg-white/[0.03] px-2.5 py-2"><ParameterLabel label="Seed" htmlFor="generation-seed" />
@@ -56,6 +62,7 @@ export function DockSettings({ model, draft, busy, onChange, onReset }: { model?
         </div>
         {strength && <NumberControl label="Image strength" min={.05} max={1} step={.05} value={draft.denoise} onChange={denoise => onChange({ denoise })} />}
         {model?.capabilities?.negativePrompt !== false && <div className="min-w-0 shrink-0 rounded-lg bg-white/[0.03] px-2.5 py-2"><ParameterLabel label="Negative prompt" /><textarea aria-label="Negative prompt" rows={3} maxLength={16000} value={draft.negativePrompt} onChange={event => onChange({ negativePrompt: event.target.value })} className="w-full resize-y rounded-lg bg-chip px-3 py-2 text-[13px] leading-6 text-ink outline-none ring-1 ring-transparent transition focus:ring-volt/40" /></div>}
+        <GenerationOptions model={model} draft={draft} busy={busy} tools={tools} loading={toolsLoading} error={toolsError} onReload={onReloadTools} onChange={onChange} onManage={onManageTools ? () => { close(); onManageTools(); } : undefined} onEditSource={onEditSource ? () => { close(); onEditSource(); } : undefined} />
       </div>}
     </Popover>
     <IconChip aria-label="Reset settings to defaults" title="Reset settings to defaults" disabled={!dirty || busy} onClick={onReset}><RotateCcw /></IconChip>

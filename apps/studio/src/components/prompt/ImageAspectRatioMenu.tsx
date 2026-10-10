@@ -6,6 +6,7 @@ import { IMAGE_ASPECT_RATIOS, imageAspectRatio, imageSizeForQuality, imageSizeFo
 import { selectedQuality } from './ImageQualityMenu';
 import type { StudioModel } from '@/lib/api';
 import type { Draft } from './PromptDock';
+import { draftCanvasSize, generationOperation, ideogramModel } from '@/lib/generation-draft';
 
 function RatioIcon({ ratio }: { ratio: number | null }) {
   return <span className="grid size-[18px] shrink-0 place-items-center" aria-hidden="true">
@@ -14,10 +15,12 @@ function RatioIcon({ ratio }: { ratio: number | null }) {
 }
 
 export function ImageAspectRatioMenu({ model, draft, onChange }: { model?: StudioModel; draft: Draft; onChange: (size: { width: number; height: number; aspect: ImageAspectRatio; quality: ImageQuality | 'custom' }) => void }) {
+  const sourceCanvas = draftCanvasSize(model, draft);
   const selected = draft.aspect === 'auto' ? 'auto' : imageAspectRatio(draft.width, draft.height);
   const quality = model ? selectedQuality(model, draft) : 'custom';
-  const label = selected === 'auto' ? 'Auto' : selected === 'custom' ? `${draft.width} × ${draft.height}` : selected;
-  return <Dropdown width={240} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model} active={open} title={`Aspect ratio: ${label}`} aria-label={`Aspect ratio: ${label}`} icon={<RatioIcon ratio={selected === 'auto' ? null : draft.width / draft.height} />}>{label}</Chip>}>
+  const lockedReference = ideogramModel(model) && generationOperation(model, draft) === 'reference';
+  const label = lockedReference ? '1:1' : sourceCanvas ? 'Source' : selected === 'auto' ? 'Auto' : selected === 'custom' ? `${draft.width} × ${draft.height}` : selected;
+  return <Dropdown width={240} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model || !!sourceCanvas} active={open} title={lockedReference ? 'Ideogram reference mode uses a 1024 × 1024 canvas.' : sourceCanvas ? 'Aspect ratio follows the source canvas. Adjust it in the source editor.' : `Aspect ratio: ${label}`} aria-label={`Aspect ratio: ${label}`} icon={<RatioIcon ratio={lockedReference ? 1 : selected === 'auto' ? null : draft.width / draft.height} />}>{label}</Chip>}>
     {close => <><MenuLabel>Aspect ratio</MenuLabel>{IMAGE_ASPECT_RATIOS.map(aspect => {
       const size = model ? quality === 'custom' ? imageSizeForRatio(model, aspect, draft.width * draft.height) : imageSizeForQuality(model, quality, aspect) : null;
       const outputSize = size && quality === 'ultra' ? ultraOutputSize(size.width, size.height) : size;

@@ -7,6 +7,7 @@ import { api, errorMessage, type Job, type UpscaleInput, type UpscalerCard, type
 import { cn } from '@/lib/utils';
 
 export interface UpscaleActions {
+  busy?: boolean;
   onSubmitted: (job: Job) => void;
   onManage?: () => void;
   onSessionExpired: () => void;
@@ -48,7 +49,7 @@ export function UpscaleAction({ source, width, height, actions, onReady }: {
     } finally { if (reading.current === controller) { reading.current = null; if (!controller.signal.aborted) setLoading(false); } }
   }
   async function submit(close: () => void) {
-    if (!selected?.ready || tooLarge || loading || writing.current) return;
+    if (!selected?.ready || tooLarge || loading || writing.current || actions.busy) return;
     const controller = new AbortController(); writing.current = controller;
     setBusy(true); setError(''); latestActions.current.onBusyChange(true);
     const input: UpscaleInput = { operation: 'upscale', modelId: selected.id, source, scale: factor };
@@ -66,7 +67,7 @@ export function UpscaleAction({ source, width, height, actions, onReady }: {
   }
   return <div data-photo-action>
     <Popover label="Upscale image" width={340} side="top" initialFocus="select, [data-upscale-manage]" trigger={({ open, triggerProps }) =>
-      <button {...triggerProps} type="button" aria-label="Upscale image" disabled={busy} onClick={() => { if (!open) void load(); }} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11] disabled:opacity-50"><ArrowUp className="size-[18px] rotate-45" />Upscale</button>}>
+      <button {...triggerProps} type="button" aria-label="Upscale image" disabled={busy || actions.busy} onClick={() => { if (!open) void load(); }} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11] disabled:opacity-50"><ArrowUp className="size-[18px] rotate-45" />Upscale</button>}>
       {close => <div className="flex flex-col gap-4 p-1.5">
         <div><h2 className="text-[16px] font-semibold">Upscale image</h2><p className="mt-1 text-[12px] leading-5 text-ink-2">A larger image, saved as a new result. Your original stays unchanged.</p></div>
         {loading && <p role="status" className="text-[12px] text-ink-2">Checking upscale models…</p>}

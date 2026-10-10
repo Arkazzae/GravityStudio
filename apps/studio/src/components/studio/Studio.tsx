@@ -12,7 +12,8 @@ import type { ModelsSection } from '@/components/setup/ModelLibrary';
 import { GalleryGrid } from '@/components/gallery/GalleryGrid';
 import { AssetsBrowser } from '@/components/gallery/AssetsBrowser';
 import { PromptDock, initialDraft, modelDraft, type Draft } from '@/components/prompt/PromptDock';
-import { api, errorMessage, isConnectionError, type Bootstrap, type Catalog, type Job, type StudioState } from '@/lib/api';
+import { api, errorMessage, isConnectionError, type Bootstrap, type Catalog, type InputImage, type Job, type StudioState } from '@/lib/api';
+import { deletedDraftInput, reusedDraft, savedDraftEdits, savedInputImage } from '@/lib/generation-draft';
 import { favoriteKey, useFavorites } from '@/lib/use-favorites';
 import { useJobNotifications } from '@/lib/completion-alerts';
 import { usePwa } from '@/lib/use-pwa';
@@ -31,6 +32,9 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   const [connected, setConnected] = useState(false);
   const stateRevision = useRef(0);
   const [draft, setDraft] = useState<Draft>(initialDraft);
+  const draftRef = useRef(draft); draftRef.current = draft;
+  const reuseAttempt = useRef(0);
+  const sessionIdentity = useRef(bootstrap?.user?.id); sessionIdentity.current = bootstrap?.authenticated ? bootstrap.user?.id : undefined;
   const [dockHeight, setDockHeight] = useState(170);
   const [zoom, setZoom] = useState(.35);
   const [square, setSquare] = useState(false);
@@ -44,6 +48,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   }, []);
   const [settingsSection, setSettingsSection] = useState<UnifiedSettingsSection>(initialSettingsSection || (modelsPage ? 'models' : 'app'));
   const [modelsRequest, setModelsRequest] = useState<{ section: ModelsSection; revision: number }>();
+  const [modelToolsRevision, setModelToolsRevision] = useState(0);
   const assetsTrigger = useRef<HTMLButtonElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const closePanel = useCallback(() => {
@@ -70,7 +75,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     try {
       const value = JSON.parse(localStorage.getItem(`gravity:image-draft:${userId}`) || 'null');
       if (value && typeof value.modelId === 'string' && typeof value.prompt === 'string') {
-        restored = { ...initialDraft, ...value, background: imageBackground(value.background), images: Array.isArray(value.images) ? value.images.filter((image: { id?: unknown; url?: unknown }) => typeof image.id === 'string' && typeof image.url === 'string' && image.url.startsWith('/api/inputs/')) : [] };
+        restored = { ...initialDraft, ...value, ...savedDraftEdits(value), background: imageBackground(value.background), images: Array.isArray(value.images) ? value.images.filter(savedInputImage) : [] };
       }
     } catch { /* A blocked or full browser store does not prevent generation. */ }
     setDraft(restored);
@@ -126,10 +131,23 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     try { await api('/logout', { method: 'POST', body: '{}', signal: AbortSignal.timeout(30_000) }); setDraft(initialDraft); sessionExpired(); }
     finally { setSigningOut(false); }
   }
-  function reuse(job: Job) {
-    if (job.input?.operation === 'upscale') return;
-    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', ...job.parameters, quality: job.parameters.quality === 'ultra' ? 'ultra' : 'custom', background: imageBackground(job.parameters.background), negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
-    document.getElementById('image-prompt')?.focus();
+  async function reuse(job: Job) {
+    if (job.input?.operation === 'upscale' || job.input?.operation === 'remove-background') return;
+    const attempt = ++reuseAttempt.current;
+    const owner = sessionIdentity.current;
+    const previous = draftRef.current;
+    try {
+      const needed = !!job.input?.images?.length || !!job.input?.maskId;
+      const inputs = needed ? (await api<{ inputs: InputImage[] }>('/inputs', { signal: AbortSignal.timeout(15_000) })).inputs : [];
+      if (attempt !== reuseAttempt.current || owner !== sessionIdentity.current) return;
+      if (draftRef.current !== previous) { pushNotice({ kind: 'info', title: 'Your newer draft was kept', body: 'Choose Use these settings again to replace it.' }); return; }
+      setDraft(reusedDraft(previous, job, inputs));
+      document.getElementById('image-prompt')?.focus();
+    } catch (error) {
+      if (owner !== sessionIdentity.current || attempt !== reuseAttempt.current) return;
+      if ((error as { status?: number }).status === 401) sessionExpired();
+      else pushNotice({ kind: 'error', title: 'Could not reuse this run', body: errorMessage(error) });
+    }
   }
   async function deleteOutput(job: Job, output: Job['outputs'][number]) {
     try {
@@ -144,11 +162,12 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     }
   }
   const upscaleActions = {
+    busy: upscaleBusy,
     onSubmitted: (job: Job) => {
       stateRevision.current++;
       setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current);
       setFilter('all'); closePanel(); void refresh();
-      pushNotice({ kind: 'success', title: 'Upscale queued', body: `${job.modelName || job.modelId}${job.input?.operation === 'upscale' ? ` · ${job.input.scale}×` : ''}` });
+      pushNotice({ kind: 'success', title: job.input?.operation === 'remove-background' ? 'Background removal queued' : 'Upscale queued', body: `${job.modelName || job.modelId}${job.input?.operation === 'upscale' ? ` · ${job.input.scale}×` : ''}` });
     },
     onManage: admin ? () => openModels('tools') : undefined,
     onSessionExpired: sessionExpired,
@@ -179,12 +198,12 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
     <main className="relative flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-white/[0.06] px-4 py-2.5"><div className="flex rounded-[10px] bg-panel-2 p-1" role="group" aria-label="Image filter">{([{ id: 'all', label: 'All images' }, { id: 'queue', label: `Queue${pending.length ? ` ${pending.length}` : ''}` }, { id: 'favorites', label: 'Favorites' }] as const).map(view => <button key={view.id} onClick={() => setFilter(view.id)} aria-pressed={filter === view.id} className={`rounded-lg px-3 py-1.5 text-xs ${filter === view.id ? 'bg-chip text-ink' : 'text-ink-2 hover:text-ink'}`}>{view.label}</button>)}</div><div className="ml-auto flex items-center gap-3"><span className="hidden text-xs tabular-nums text-ink-2 sm:inline">{imageCount} image{imageCount === 1 ? '' : 's'}</span><label className="hidden items-center gap-2 md:flex"><span className="sr-only">Image tile size</span><input type="range" aria-label="Image tile size" min={0} max={1} step={.05} value={zoom} onChange={event => setZoom(Number(event.target.value))} className="w-[90px]" /></label><div className="flex rounded-[10px] bg-panel-2 p-1"><button onClick={() => setSquare(false)} aria-pressed={!square} aria-label="Justified image layout" title="Justified layout" className={`grid size-7 place-items-center rounded-lg ${!square ? 'bg-chip text-ink' : 'text-ink-2'}`}><Rows3 size={15} /></button><button onClick={() => setSquare(true)} aria-pressed={square} aria-label="Square image layout" title="Square layout" className={`grid size-7 place-items-center rounded-lg ${square ? 'bg-chip text-ink' : 'text-ink-2'}`}><LayoutGrid size={15} /></button></div></div></div>
         <div className="min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: dockHeight, scrollPaddingBottom: dockHeight }}>{favorites.error && <p role="alert" className="error-notice mx-4 my-3">{favorites.error}<button type="button" onClick={favorites.retry} className="ml-3 underline">Try again</button></p>}{filter === 'favorites' && !favorites.ready ? favorites.loading && <p role="status" className="px-6 py-12 text-center text-sm text-ink-2">Loading favorites…</p> : <GalleryGrid upscale={upscaleActions} onDelete={deleteOutput} filter={filter} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} jobs={jobs} models={catalog.models} zoom={zoom} square={square} onReuse={reuse} onChange={() => void refresh()} configured={catalog.models.some(model => model.ready)} hasWorkers={!!state?.workers.some(worker => worker.enabled)} onOpenModels={admin ? () => openModels() : undefined} onOpenSettings={admin ? () => openSettings('gpus') : undefined} />}</div>
-        <PromptDock browsing={panel === 'references'} onBrowse={() => openPanel('references')} onCloseAssets={closePanel} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} onOpenAssistantSettings={admin ? () => openSettings('assistant') : undefined} favoriteError={favorites.error} onOpenModels={admin ? () => openModels() : undefined} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
+        <PromptDock browsing={panel === 'references'} onBrowse={() => openPanel('references')} onCloseAssets={closePanel} onBusyChange={setDockBusy} sessionIdentity={bootstrap.user?.id} modelToolsRevision={modelToolsRevision} onOpenTools={admin ? () => openModels('tools') : undefined} onOpenAssistantSettings={admin ? () => openSettings('assistant') : undefined} favoriteError={favorites.error} onOpenModels={admin ? () => openModels() : undefined} jobs={assetJobs} models={catalog.models} draft={draft} setDraft={setDraft} connected={connected} onHeight={setDockHeight} onSessionExpired={sessionExpired} onSubmitted={job => { setState(current => current ? { ...current, jobs: [job, ...current.jobs.filter(entry => entry.id !== job.id)] } : current); void refresh(); }} />
     </main>
     {visitedPanels.settings && bootstrap.user && <StudioDialog panel="settings" open={showSettings} title={onboarding ? 'Set up your studio' : 'Settings'} description="Your account, devices and Studio configuration." icon={<Settings size={22} aria-hidden="true" />} onClose={closePanel} triggerRef={settingsTrigger}>
-      <UnifiedSettings user={bootstrap.user} onUserChanged={() => void checkSession()} onSessionExpired={sessionExpired} modelsRequest={modelsRequest} activeWork={pending.length > 0 || dockBusy || assetsBusy || upscaleBusy} active={showSettings} section={settingsSection} onSectionChange={setSettingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { void refreshCatalog(); void refresh(); }} />
+      <UnifiedSettings user={bootstrap.user} onUserChanged={() => void checkSession()} onSessionExpired={sessionExpired} modelsRequest={modelsRequest} activeWork={pending.length > 0 || dockBusy || assetsBusy || upscaleBusy} active={showSettings} section={settingsSection} onSectionChange={setSettingsSection} initialHardware={state?.hardware || null} onboarding={onboarding} onFinished={closePanel} onSaved={() => { setModelToolsRevision(value => value + 1); void refreshCatalog(); void refresh(); }} />
     </StudioDialog>}
-    {visitedPanels.assets && <AssetsBrowser upscale={upscaleActions} open={panel === 'assets'} triggerRef={assetsTrigger} jobs={assetJobs} models={catalog.models} onClose={closePanel} onReuse={reuse} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} onDeleteOutput={deleteOutput} onInputDeleted={id => setDraft(current => ({ ...current, images: current.images.filter(image => image.id !== id) }))} onSessionExpired={sessionExpired} onBusyChange={setAssetsBusy} />}
+    {visitedPanels.assets && <AssetsBrowser upscale={upscaleActions} open={panel === 'assets'} triggerRef={assetsTrigger} jobs={assetJobs} models={catalog.models} onClose={closePanel} onReuse={reuse} onFavorite={favorites.toggle} favoriteBusy={favorites.pending} favoriteError={favorites.error} onDeleteOutput={deleteOutput} onInputDeleted={id => setDraft(current => deletedDraftInput(current, id))} onSessionExpired={sessionExpired} onBusyChange={setAssetsBusy} />}
     <Toasts items={notifications.notices} onDismiss={notifications.dismissNotice} bottom={dockHeight + 12} />
   </div>;
 }

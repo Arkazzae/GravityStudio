@@ -6,12 +6,13 @@ import { ModelPickerList, type ModelPickerRow } from '@/components/ui/ModelPicke
 import { Popover } from '@/components/ui/Popover';
 import { modelBrand } from '@/lib/model-brand';
 import type { StudioModel } from '@/lib/api';
+import { referenceLimit } from '@/lib/generation-draft';
 
-export function ModelMenu({ models, value, onChange, referenceCount, onManage, disabled = false }: { models: StudioModel[]; value: string; onChange: (id: string) => void; referenceCount: number; onManage?: () => void; disabled?: boolean }) {
+export function ModelMenu({ models, value, onChange, referenceCount, selectedReferenceLimit, onManage, disabled = false }: { models: StudioModel[]; value: string; onChange: (id: string) => void; referenceCount: number; selectedReferenceLimit?: number; onManage?: () => void; disabled?: boolean }) {
   const installed = models.filter(model => model.installed);
   const selected = installed.find(model => model.id === value);
   const rows: ModelPickerRow[] = installed.map(model => {
-    const maxImages = model.capabilities?.maxImages ?? model.limits?.maxImages ?? 0;
+    const maxImages = model.id === value && selectedReferenceLimit !== undefined ? selectedReferenceLimit : referenceLimit(model);
     const incompatible = referenceCount > maxImages;
     return {
       id: model.id,

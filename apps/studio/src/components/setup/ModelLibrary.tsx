@@ -9,6 +9,9 @@ import { api, errorMessage, type IntegrationStatus, type LibraryModel, type Mode
 const downloadBusy = (download?: ModelDownload | null) => !!download && !['succeeded', 'failed'].includes(download.status);
 const size = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
 export type ModelsSection = 'library' | 'installed' | 'tools' | 'huggingface' | 'downloads' | 'language';
+const loraFamilies = [{ id: 'sdxl', name: 'SDXL / Illustrious' }, { id: 'flux-2-klein-4b', name: 'FLUX.2 Klein 4B' }, { id: 'flux-2-klein-9b', name: 'FLUX.2 Klein 9B' }, { id: 'qwen-image-2.1', name: 'Qwen Image 2.1' }, { id: 'krea-2', name: 'Krea 2' }] as const;
+type LoraFamily = typeof loraFamilies[number]['id'];
+type DownloadRequest = { modelId: string } | { url: string; name: string; familyId: 'sdxl' } | { kind: 'lora'; url: string; name: string; familyId: LoraFamily };
 
 export function ModelLibrary({ onChanged, onConfigureText, active = true, requestedSection, embedded = false }: { onChanged: () => void; onConfigureText: () => void; active?: boolean; requestedSection?: { section: ModelsSection; revision: number }; embedded?: boolean }) {
   const [section, setSection] = useState<ModelsSection>('library');
@@ -26,6 +29,8 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
   const [returnToModel, setReturnToModel] = useState<{ section: ModelsSection; name: string } | null>(null);
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
+  const [importType, setImportType] = useState<'checkpoint' | 'lora'>('checkpoint');
+  const [loraFamily, setLoraFamily] = useState<LoraFamily>('sdxl');
   const mounted = useRef(true);
   const visible = useRef(active); visible.current = active;
   const read = useRef<AbortController | null>(null);
@@ -131,7 +136,7 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
     finally { if (write.current === controller) write.current = null; if (!controller.signal.aborted && mounted.current) { setSubmitting(null); setAction(null); } }
   }
 
-  async function download(body: { modelId: string } | { url: string; name: string; familyId: 'sdxl' }, id: string) {
+  async function download(body: DownloadRequest, id: string) {
     if (write.current || credentialAction.current) return;
     read.current?.abort(); read.current = null;
     const controller = new AbortController(); write.current = controller;
@@ -215,7 +220,8 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
       {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading models…</p> : imageModels.length ? modelList(imageModels) : <div className="mt-6"><p className="mb-4 text-sm text-ink-2">No models in the library yet.</p><button type="button" className={actionClass} onClick={() => openSection('huggingface')}>Add from Hugging Face</button></div>}
     </div>
     <div hidden={section !== 'tools'} id="models-panel-tools" role="tabpanel" aria-labelledby="models-tab-tools" tabIndex={0}>
-      <h2 className="text-lg font-medium">Image tools</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Download an upscaler, then open any image and choose Upscale. Background removal is used by the Transparent setting.</p>
+      <h2 className="text-lg font-medium">Image tools</h2><p className="mt-2 text-sm leading-relaxed text-ink-2">Download upscalers, background removal, reference adapters and LoRAs. Each tool becomes available when its files are ready on a compatible worker.</p>
+      <button type="button" className={`${actionClass} mt-4`} onClick={() => { setImportType('lora'); openSection('huggingface'); }}>Import LoRA from Hugging Face</button>
       {!library ? !error && <p role="status" className="mt-5 text-sm text-ink-2">Loading tools…</p> : tools.length ? modelList(tools) : <p className="mt-6 text-sm text-ink-2">No image tools are available yet.</p>}
     </div>
     <div hidden={section !== 'installed'} id="models-panel-installed" role="tabpanel" aria-labelledby="models-tab-installed" tabIndex={0}>
@@ -231,16 +237,18 @@ export function ModelLibrary({ onChanged, onConfigureText, active = true, reques
       {credentialError && <p role="alert" className="error-notice mt-4">{credentialError}<button type="button" className="ml-3 underline" onClick={() => void loadCredential()}>Try again</button></p>}
       {huggingFace && <fieldset className="min-w-0" disabled={!!submitting || downloading}><ProviderSettings initialStatus={huggingFace} onActionChange={credentialActionChanged} onCredentialChange={credentialChanged} idPrefix="models-integration" showAccessCheck={false} /></fieldset>}
       <div className="border-t border-line pt-6">
-      <h3 id="huggingface-title" className="text-lg font-medium">Add from Hugging Face</h3><p className="mt-2 text-sm leading-relaxed text-ink-2">Paste a checkpoint file link. SDXL and Illustrious checkpoints are supported.</p>
-      <form className="mt-5 space-y-4" onSubmit={event => { event.preventDefault(); void download({ url: url.trim(), name: name.trim(), familyId: 'sdxl' }, importAccessId); }}>
-        <label className="field">Checkpoint URL<input type="url" name="checkpoint-url" required disabled={busy} value={url} onChange={event => setUrl(event.target.value)} placeholder="https://huggingface.co/owner/model/blob/main/model.safetensors" /></label>
-        <label className="field">Display name<input name="checkpoint-name" required maxLength={120} disabled={busy} value={name} onChange={event => setName(event.target.value)} placeholder="My checkpoint" /></label>
-        <div className="flex flex-wrap gap-3"><button disabled={busy || !url.trim() || !name.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-chip bg-volt px-5 text-sm font-semibold text-on-volt disabled:opacity-50">{submitting === importAccessId && action !== 'check' ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />}{submitting === importAccessId && action === 'download-check' ? 'Checking access…' : 'Download checkpoint'}</button>
+      <h3 id="huggingface-title" className="text-lg font-medium">Add from Hugging Face</h3><p className="mt-2 text-sm leading-relaxed text-ink-2">{importType === 'lora' ? 'Paste a LoRA file link and choose the model family it was trained for. Once downloaded, select it in Advanced.' : 'Paste a checkpoint file link. SDXL and Illustrious checkpoints are supported.'}</p>
+      <form className="mt-5 space-y-4" onSubmit={event => { event.preventDefault(); void download(importType === 'lora' ? { kind: 'lora', url: url.trim(), name: name.trim(), familyId: loraFamily } : { url: url.trim(), name: name.trim(), familyId: 'sdxl' }, importAccessId); }}>
+        <label className="field">Import type<select aria-label="Import type" disabled={busy} value={importType} onChange={event => setImportType(event.target.value as 'checkpoint' | 'lora')}><option value="checkpoint">Checkpoint</option><option value="lora">LoRA</option></select></label>
+        {importType === 'lora' && <label className="field">Model family<select aria-label="Model family" disabled={busy} value={loraFamily} onChange={event => setLoraFamily(event.target.value as LoraFamily)}>{loraFamilies.map(family => <option key={family.id} value={family.id}>{family.name}</option>)}</select><span className="mt-1 text-xs leading-relaxed text-ink-2">Check the author’s base model before downloading. A LoRA cannot be shared across different architectures.</span></label>}
+        <label className="field">{importType === 'lora' ? 'LoRA URL' : 'Checkpoint URL'}<input type="url" name="checkpoint-url" required disabled={busy} value={url} onChange={event => setUrl(event.target.value)} placeholder="https://huggingface.co/owner/model/blob/main/model.safetensors" /></label>
+        <label className="field">Display name<input name="checkpoint-name" required maxLength={120} disabled={busy} value={name} onChange={event => setName(event.target.value)} placeholder={importType === 'lora' ? 'My LoRA' : 'My checkpoint'} /></label>
+        <div className="flex flex-wrap gap-3"><button disabled={busy || !url.trim() || !name.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-chip bg-volt px-5 text-sm font-semibold text-on-volt disabled:opacity-50">{submitting === importAccessId && action !== 'check' ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />}{submitting === importAccessId && action === 'download-check' ? 'Checking access…' : importType === 'lora' ? 'Download LoRA' : 'Download checkpoint'}</button>
           <button type="button" disabled={busy || !url.trim()} className={actionClass} onClick={() => void checkAccess({ url: url.trim() }, importAccessId)}>{submitting === importAccessId && action === 'check' ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}{submitting === importAccessId && action === 'check' ? 'Checking…' : 'Check access'}</button>
         </div>
       </form>
       {access[importAccessId] && <AccessReport result={access[importAccessId]} />}
-      <p className="mt-3 text-xs leading-relaxed text-ink-2">Use a .safetensors file you can access. For other model families, use the Library tab.</p>
+      <p className="mt-3 text-xs leading-relaxed text-ink-2">{importType === 'lora' ? 'Use a .safetensors LoRA file. Ideogram adapters are not supported.' : 'Use a .safetensors file you can access. For other model families, use the Library tab.'}</p>
       </div>
     </div>
     <div hidden={section !== 'downloads'} id="models-panel-downloads" role="tabpanel" aria-labelledby="models-tab-downloads" tabIndex={0}>

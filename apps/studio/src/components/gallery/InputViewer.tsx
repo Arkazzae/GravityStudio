@@ -8,6 +8,7 @@ import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { DeleteImageButton } from './DeleteImageButton';
 import { ZoomableImage } from './ZoomableImage';
 import { UpscaleAction, type UpscaleActions } from './UpscaleAction';
+import { BackgroundRemovalAction } from './BackgroundRemovalAction';
 
 export function InputViewer({ items, open, openId, onSelect, onClose, onDelete, upscale }: {
   items: InputImage[];
@@ -79,6 +80,7 @@ export function InputViewer({ items, open, openId, onSelect, onClose, onDelete, 
         <footer className="flex flex-col gap-2 border-t border-line p-4">
           {deleteError?.id === item.id && deleteError.message && <p role="alert" className="error-notice text-xs">{deleteError.message}</p>}
           <UpscaleAction key={`upscale-${item.id}`} source={{ type: 'input', inputId: item.id }} width={item.width} height={item.height} actions={upscale} onReady={onClose} />
+          <BackgroundRemovalAction key={`background-${item.id}`} source={{ type: 'input', inputId: item.id }} actions={upscale} onReady={onClose} />
           <div className="flex gap-2">
             <a href={item.url} download={`${item.name.replace(/\.(png|jpe?g|webp)$/i, '')}.png`} aria-label="Download image" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11]"><Download className="size-[18px]" strokeWidth={1.8} />Download</a>
             <a href={item.url} target="_blank" rel="noopener noreferrer" aria-label="Open the file in a new tab" title="Open the file in a new tab" className="grid size-11 shrink-0 place-items-center rounded-xl bg-white/[0.06] text-ink-2 transition-colors hover:bg-white/[0.11] hover:text-ink"><ExternalLink className="size-[18px]" strokeWidth={1.8} /></a>

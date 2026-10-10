@@ -6,12 +6,14 @@ import { FavoriteButton } from '@/components/ui/FavoriteButton';
 import { BrandMark } from '@/components/ui/BrandMark';
 import { modelBrand } from '@/lib/model-brand';
 import { imageBackground, imageBackgroundLabels } from '@/lib/image-background';
+import { readablePrompt } from '@/lib/generation-draft';
 import { api, type InputImage, type Job, type StudioModel } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useRetainedDialog } from '@/lib/use-retained-dialog';
 import { ZoomableImage } from './ZoomableImage';
 import { DeleteImageButton } from './DeleteImageButton';
 import { UpscaleAction, type UpscaleActions } from './UpscaleAction';
+import { BackgroundRemovalAction } from './BackgroundRemovalAction';
 
 export interface ViewerEntry {
   id: string;
@@ -23,6 +25,18 @@ const labels: Record<string, string> = {
   steps: 'Steps', cfg: 'Guidance', negativePrompt: 'Negative prompt', sampler: 'Sampler',
   scheduler: 'Scheduler', clipSkip: 'CLIP skip', denoise: 'Image strength', background: 'Background',
 };
+
+function parameterText(key: string, value: unknown): string {
+  if (key === 'background') return imageBackgroundLabels[imageBackground(value)];
+  if (typeof value === 'boolean') return value ? 'On' : 'Off';
+  if (value && typeof value === 'object') {
+    if (key === 'sourceSize' && 'width' in value && 'height' in value) return `${value.width} × ${value.height}`;
+    if (key === 'outpaint') return Object.entries(value).map(([side, pixels]) => `${side}: ${pixels} px`).join(' · ');
+    if (key === 'loras' && Array.isArray(value)) return value.map(choice => `${choice.id} · ${choice.strength}×`).join(', ');
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
 
 export function OutputViewer({ items, open, openId, models, onClose, onSelect, onReuse, onFavorite, favoriteBusy, favoriteError, dialogId = 'output-viewer', onDelete, upscale }: {
   items: ViewerEntry[];
@@ -76,20 +90,22 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
   if (!item) return null;
   const model = models.find(model => model.id === item.job.modelId);
   const name = item.job.modelName || model?.name || item.job.modelId;
+  const displayPrompt = readablePrompt(item.job.prompt, item.job.modelId);
   const brand = modelBrand(model || { id: item.job.modelId, name, family: '' });
   const created = new Date(item.job.createdAt);
   const width = item.output.width || item.job.parameters.width;
   const height = item.output.height || item.job.parameters.height;
   const size = width && height ? `${width} × ${height}` : '';
   const upscaleInput = item.job.input?.operation === 'upscale' ? item.job.input : null;
+  const utilityInput = item.job.input?.operation === 'upscale' || item.job.input?.operation === 'remove-background' ? item.job.input : null;
   const parameters = Object.entries(item.job.parameters).filter(([key, value]) => !['prompt', 'seed', 'width', 'height', 'quality'].includes(key) && value !== undefined && value !== null && value !== '');
   const details: [string, string][] = [
     ['Model', name],
     ...(size ? [['Size', size] as [string, string]] : []),
     ...(item.job.parameters.quality === 'ultra' ? [['Quality', 'Ultra · SeedVR2 7B'], ['Generated size', `${item.job.parameters.width} × ${item.job.parameters.height}`]] as [string, string][] : []),
     ...(upscaleInput && item.job.parameters.sourceWidth && item.job.parameters.sourceHeight ? [['Original size', `${item.job.parameters.sourceWidth} × ${item.job.parameters.sourceHeight}`] as [string, string]] : []),
-    ...(upscaleInput ? [['Scale', `${upscaleInput.scale}×`] as [string, string]] : parameters.map(([key, value]) => [labels[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, first => first.toUpperCase()), key === 'background' ? imageBackgroundLabels[imageBackground(value)] : String(value)] as [string, string])),
-    ...(!upscaleInput && item.job.parameters.seed !== undefined ? [['Seed', String(item.job.parameters.seed)] as [string, string]] : []),
+    ...(upscaleInput ? [['Scale', `${upscaleInput.scale}×`] as [string, string]] : utilityInput ? [['Background', 'Transparent'] as [string, string]] : parameters.map(([key, value]) => [labels[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, first => first.toUpperCase()), parameterText(key, value)] as [string, string])),
+    ...(!utilityInput && item.job.parameters.seed !== undefined ? [['Seed', String(item.job.parameters.seed)] as [string, string]] : []),
     ['Created', Number.isNaN(created.valueOf()) ? 'Saved on your server' : created.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })],
   ];
 
@@ -105,7 +121,7 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
         <div className="relative flex min-h-0 flex-1 items-center justify-center px-1 sm:px-12" style={{ containerType: 'size' }}
           onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
-          <OutputImage key={item.output.url} src={item.output.url} prompt={item.job.prompt} />
+          <OutputImage key={item.output.url} src={item.output.url} prompt={displayPrompt} />
           {items.length > 1 && <><Step side="left" onClick={() => step(-1)} /><Step side="right" onClick={() => step(1)} /></>}
         </div>
       </div>
@@ -117,10 +133,10 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
         </header>
         <div data-dialog-scroll className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <section className="flex flex-col gap-2">
-            <div className="flex items-center gap-2"><SectionLabel>{upscaleInput ? 'Upscale' : 'Prompt'}</SectionLabel>{!upscaleInput && <CopyPrompt key={item.id} prompt={item.job.prompt} />}</div>
+            <div className="flex items-center gap-2"><SectionLabel>{upscaleInput ? 'Upscale' : utilityInput ? 'Background removal' : 'Prompt'}</SectionLabel>{!utilityInput && <CopyPrompt key={item.id} prompt={item.job.prompt} />}</div>
             <div className="rounded-xl bg-panel-2 p-3">
-              <InputReferences key={item.job.id} ids={item.job.input?.operation === 'upscale' ? item.job.input.source.type === 'input' ? [item.job.input.source.inputId] : [] : item.job.input?.images} />
-              <p className="text-[13px] leading-6 text-ink-2 [overflow-wrap:anywhere]">{item.job.prompt || 'This run was submitted without a prompt.'}</p>
+              <InputReferences key={item.job.id} ids={utilityInput ? utilityInput.source.type === 'input' ? [utilityInput.source.inputId] : [] : item.job.input && 'images' in item.job.input ? item.job.input.images : []} />
+              <p className="text-[13px] leading-6 text-ink-2 [overflow-wrap:anywhere]">{displayPrompt || 'This run was submitted without a prompt.'}</p>
             </div>
           </section>
           <details open className="group">
@@ -131,11 +147,12 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
         <footer className="flex flex-col gap-2 border-t border-line p-4">
           {favoriteError && <p role="alert" className="error-notice text-xs">{favoriteError}</p>}
           {deleteError?.id === item.id && deleteError.message && <p role="alert" className="error-notice text-xs">{deleteError.message}</p>}
-          {!upscaleInput && <button type="button" onClick={() => { reusing.current = true; onReuse(item.job); onClose(); }}
+          {!utilityInput && <button type="button" onClick={() => { reusing.current = true; onReuse(item.job); onClose(); }}
             className="flex h-11 items-center justify-center gap-2 rounded-xl bg-volt text-[14px] font-semibold text-on-volt shadow-key transition-[background-color,box-shadow,translate] duration-150 ease-[var(--ease-out-quint)] hover:bg-volt-hi active:translate-y-[2px] active:shadow-key-down focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt motion-reduce:transition-none motion-reduce:active:translate-y-0">
             <Repeat2 className="size-[18px]" strokeWidth={2} />Use these settings
           </button>}
           <UpscaleAction key={`upscale-${item.id}`} source={{ type: 'output', jobId: item.job.id, outputId: item.output.id }} width={width} height={height} actions={upscale} onReady={onClose} />
+          <BackgroundRemovalAction key={`background-${item.id}`} source={{ type: 'output', jobId: item.job.id, outputId: item.output.id }} actions={upscale} onReady={onClose} />
           <div className="flex gap-2">
             <a href={item.output.url} download aria-label="Download image" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-white/[0.06] text-[14px] font-medium text-ink transition-colors hover:bg-white/[0.11]"><Download className="size-[18px]" strokeWidth={1.8} />Download</a>
             <FavoriteButton favorite={!!item.output.favorite} busy={favoriteBusy.has(`${item.job.id}:${item.output.id}`)} onClick={() => onFavorite(item.job, item.output)} variant="viewer" />

@@ -8,11 +8,12 @@ import { ApiError, api, errorMessage, type StudioModel } from '@/lib/api';
 import type { RefinementResult, TextSettings } from '@/lib/text-api';
 import { useAnchoredPopover } from '@/lib/useAnchoredPopover';
 import { cn } from '@/lib/utils';
+import { ideogramModel, promptFields } from '@/lib/generation-draft';
 import type { Draft } from './PromptDock';
 
 type Mode = 'refine' | 'rewrite';
 interface Turn { id: number; instruction: string; prompt: string }
-interface Undo { prompt: string; context: string }
+interface Undo { prompt: string; structuredPrompt?: string; context: string }
 interface Pending { controller: AbortController; context: string; identity: string; settingsRevision: number }
 const modes: [Mode, string][] = [['refine', 'Refine'], ['rewrite', 'Rewrite']];
 const small = 'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-ink-2 transition-colors hover:bg-white/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-volt';
@@ -106,7 +107,7 @@ export function PromptAssistant({ draft, setDraft, model, connected, submitting,
 
   function revert() {
     if (!canUndo || !undo) return;
-    setDraft(current => draftContext(current) === undo.context ? { ...current, prompt: undo.prompt } : current);
+    setDraft(current => draftContext(current) === undo.context ? { ...current, prompt: undo.prompt, structuredPrompt: undo.structuredPrompt } : current);
     setUndo(null); setTurns([]); setError('');
   }
 
@@ -118,7 +119,7 @@ export function PromptAssistant({ draft, setDraft, model, connected, submitting,
     try {
       const result = await api<RefinementResult>('/prompts/refine', {
         method: 'POST',
-        body: JSON.stringify({ prompt: draft.prompt, imageModelId: model.id, ...(command.trim() ? { instruction: command.trim() } : {}), settingsRevision: settings.revision }),
+        body: JSON.stringify({ prompt: ideogramModel(model) && draft.structuredPrompt || draft.prompt, imageModelId: model.id, ...(command.trim() ? { instruction: command.trim() } : {}), settingsRevision: settings.revision }),
         signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(selection.provider === 'local' ? 210_000 : 90_000)]),
       });
       if (pending.controller.signal.aborted || request.current !== pending || latest.current.sessionIdentity !== pending.identity) return;
@@ -126,10 +127,11 @@ export function PromptAssistant({ draft, setDraft, model, connected, submitting,
       if (!result || typeof result.prompt !== 'string' || !result.prompt.trim() || result.prompt.length > 16_000 || result.provider !== selection.provider || result.modelId !== selection.modelId) {
         throw new Error('The assistant could not finish this prompt. Your original text has been kept.');
       }
-      setDraft(current => draftContext(current) === pending.context ? { ...current, prompt: result.prompt } : current);
-      setUndo({ prompt: draft.prompt, context: draftContext({ ...draft, prompt: result.prompt }) });
+      const fields = promptFields(result.prompt, model);
+      setDraft(current => draftContext(current) === pending.context ? { ...current, ...fields } : current);
+      setUndo({ prompt: draft.prompt, structuredPrompt: draft.structuredPrompt, context: draftContext({ ...draft, ...fields }) });
       if (command.trim()) {
-        setTurns(current => [...current.slice(-9), { id: ++turnId.current, instruction: command.trim(), prompt: result.prompt }]);
+        setTurns(current => [...current.slice(-9), { id: ++turnId.current, instruction: command.trim(), prompt: fields.prompt }]);
         setInstruction('');
       }
     } catch (failure) {

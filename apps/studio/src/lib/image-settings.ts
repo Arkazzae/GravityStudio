@@ -2,7 +2,7 @@ import { fitImageSize } from '../../../../packages/contracts/image-size.ts';
 export { fitImageSize, ultraOutputSize } from '../../../../packages/contracts/image-size.ts';
 
 export type ImageQuality = 'fast' | 'standard' | 'high' | 'ultra';
-export interface ImageQualityPreset { id: Exclude<ImageQuality, 'ultra'>; pixels: number; minSide?: number }
+export interface ImageQualityPreset { id: Exclude<ImageQuality, 'ultra'>; pixels: number; minSide?: number; sampling?: { steps?: number; cfg?: number; sampler?: string; scheduler?: string } }
 export interface ImageSizeModel {
   defaults: { width: number; height: number };
   dimensions?: { min: number; max: number; multiple: number; maxPixels: number };
@@ -63,6 +63,10 @@ export function imageQualityPresets(model: ImageSizeModel): ImageQualityPreset[]
     seenIds.add(preset.id);
     return [{ ...preset, pixels }];
   });
+}
+
+export function imageQualitySampling(model: ImageSizeModel, quality: ImageQuality | 'custom' | undefined) {
+  return imageQualityPresets(model).find(preset => preset.id === (quality === 'ultra' ? 'high' : quality))?.sampling;
 }
 
 export function imageSizeForQuality(model: ImageSizeModel, quality: ImageQuality, aspect: ImageAspectRatio | 'custom', current?: { width: number; height: number }): { width: number; height: number } | null {

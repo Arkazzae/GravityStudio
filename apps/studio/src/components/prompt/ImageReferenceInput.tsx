@@ -4,7 +4,7 @@ import { useRef, type RefObject } from 'react';
 import { Library, LoaderCircle, Plus, X } from '@/components/ui/icons';
 import type { InputImage } from '@/lib/api';
 
-export function ImageReferenceInput({ browseRef, images, maxImages, uploading, onUpload, onRemove, onClear, onBrowse }: {
+export function ImageReferenceInput({ browseRef, images, maxImages, uploading, onUpload, onRemove, onClear, onBrowse, onEdit, edited = false }: {
   browseRef?: RefObject<HTMLButtonElement | null>;
   images: InputImage[];
   maxImages: number;
@@ -13,6 +13,8 @@ export function ImageReferenceInput({ browseRef, images, maxImages, uploading, o
   onRemove: (id: string) => void;
   onClear: () => void;
   onBrowse: () => void;
+  onEdit?: () => void;
+  edited?: boolean;
 }) {
   const picker = useRef<HTMLInputElement>(null);
   const multiple = maxImages > 1;
@@ -30,8 +32,8 @@ export function ImageReferenceInput({ browseRef, images, maxImages, uploading, o
       }} />
     <div className="flex flex-wrap items-center gap-2 pr-1 pt-1" role="group" aria-label="Selected reference images">
       {images.map((image, index) => <div key={image.id} className="relative size-10 shrink-0">
-        <img src={image.url} alt={`Reference ${index + 1}: ${image.name}`} title={image.name} draggable={false} className="image-checkerboard size-full rounded-chip object-cover" />
-        <span className="absolute bottom-0.5 left-0.5 rounded bg-black/80 px-1 text-[10px] leading-4 text-white">{index + 1}</span>
+        {index === 0 && onEdit ? <button type="button" aria-label="Edit reference 1" title={edited ? 'Edit the source canvas or mask' : 'Edit reference canvas or paint a mask'} disabled={uploading} onClick={onEdit} className={`size-full rounded-chip focus-visible:outline-2 focus-visible:outline-volt disabled:opacity-50 ${edited ? 'ring-2 ring-volt' : ''}`}><img src={image.url} alt={`Reference ${index + 1}: ${image.name}`} draggable={false} className="image-checkerboard size-full rounded-chip object-cover" /></button> : <img src={image.url} alt={`Reference ${index + 1}: ${image.name}`} title={image.name} draggable={false} className="image-checkerboard size-full rounded-chip object-cover" />}
+        <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-black/80 px-1 text-[10px] leading-4 text-white">{index + 1}</span>
         <button type="button" aria-label={`Remove reference ${index + 1}`} title={`Remove ${image.name}`} disabled={uploading}
           onClick={() => onRemove(image.id)}
           className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-raise text-ink-2 ring-1 ring-line-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-volt disabled:opacity-50">
