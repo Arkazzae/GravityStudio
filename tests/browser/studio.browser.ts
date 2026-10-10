@@ -1696,7 +1696,8 @@ test('first run selects GPUs, downloads a checkpoint, generates and restores ima
         await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Quality High\"]')", `${model.name} quality menu opens`);
         const presets = await browser.evaluate<Array<{ label: string; current: boolean; disabled: boolean; width: number; height: number }>>("Array.from(document.querySelectorAll('[popover]:popover-open [role=menuitem][aria-label^=\"Quality \"]')).map(row => { const dimensions = row.textContent.match(/(\\d+) × (\\d+)/); return {label: row.getAttribute('aria-label'), current: row.getAttribute('aria-current') === 'true', disabled: row.disabled, width: Number(dimensions?.[1]), height: Number(dimensions?.[2])}; })");
         const qualityModel = qualityCatalog.find(entry => entry.id === model.id)!;
-        assert.deepEqual(presets.map(preset => preset.label), ['Quality Fast', 'Quality Standard', 'Quality High'], `${model.name} offers all three resolution presets`);
+        assert.deepEqual(presets.map(preset => preset.label), ['Quality Fast', 'Quality Standard', 'Quality High', 'Quality Ultra'], `${model.name} offers three native tiers and Ultra postprocessing`);
+        assert.equal(presets.pop()!.disabled, true, 'Ultra requires the SeedVR2 7B tool, absent from this fixture');
         assert.deepEqual(presets.filter(preset => preset.current).map(preset => preset.label), [`Quality ${model.defaultQuality}`]);
         for (const [index, preset] of presets.entries()) {
           assert.equal(preset.disabled, false, `${model.name}: ${preset.label} is available`);
@@ -2693,6 +2694,152 @@ test('Background preserves draft intent, submits each mode and reuses transparen
   await submit(4, 'auto', 'wai-illustrious-v17');
   assert.equal(fixture.store.jobs(fixture.owner.id).length, 0, 'UI readiness fixtures never create real generation jobs');
   assert.equal(fixture.workers[0].state.submissions.length, 0, 'UI background checks never submit fake inference to ComfyUI');
+  assert.deepEqual(browser.errors, []);
+});
+
+test('Ultra preserves High sampling, 4K intent and readiness through draft, reset and reuse', { timeout: 120000 }, async t => {
+  const fixture = await engineFixture({ count: 1 });
+  const output = join(root, '.local/screenshots'); await mkdir(output, { recursive: true });
+  const frontendPort = await freePort(), origin = `http://127.0.0.1:${frontendPort}`;
+  const server = await createStudioServer({ store: fixture.store, engine: fixture.engine, allowedOrigins: [origin], setupSecret: 'ultra-browser-fixture' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const backend = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await fixture.engine.start();
+  let logs = '';
+  const child = spawn(process.execPath, [join(studio, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], { cwd: studio, env: { ...process.env, GRAVITY_SERVER_URL: backend }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  child.stderr.on('data', chunk => { logs = (logs + chunk.toString()).slice(-4000); });
+  t.after(async () => { child.kill('SIGTERM'); await delay(200); if (child.exitCode === null) child.kill('SIGKILL'); await server.closeOperations(); await close(server); await fixture.close(); });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await fetch(`${origin}/api/health`)).ok) break; } catch { /* Starting. */ }
+    if (child.exitCode !== null || attempt === 99) throw new Error(`Ultra frontend could not start: ${logs}`);
+    await delay(100);
+  }
+  const browser = await openBrowser(t);
+  const cookie = createSession(fixture.store, fixture.owner, false).split(';')[0];
+  await browser.send('Network.enable');
+  await browser.send('Network.setCookie', { name: cookie.split('=')[0], value: cookie.split('=')[1], url: origin, httpOnly: true, sameSite: 'Strict' });
+  const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
+  const sharp = require('sharp') as (input: Buffer) => { png(): { toBuffer(): Promise<Buffer> } };
+  const png = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#24323b"/><text x="256" y="256" text-anchor="middle" fill="#d1fe17">Ultra UI fixture</text></svg>')).png().toBuffer();
+  const imageUrl = `data:image/png;base64,${png.toString('base64')}`;
+  const unavailable = 'Download SeedVR2 7B in Settings → Models → Tools to use Ultra.';
+  // Readiness and the completed 4K result are synthetic; generation POSTs are
+  // captured in this isolated browser and never reach the server or a GPU.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__ultraRequests = JSON.parse(sessionStorage.getItem('ultra-requests') || '[]');
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.origin === location.origin && url.pathname === '/api/jobs' && method === 'POST') {
+        const body = JSON.parse(options.body), factor = body.quality === 'ultra' ? 4096 / Math.max(body.width,body.height) : 1;
+        window.__ultraRequests.push(body); sessionStorage.setItem('ultra-requests', JSON.stringify(window.__ultraRequests));
+        const job = {id:'ultra-fixture-result',modelId:body.modelId,modelName:'WAI Illustrious v17',prompt:body.prompt,input:body,parameters:{width:body.width,height:body.height,steps:body.steps,cfg:body.cfg,seed:body.seed ?? 42,background:body.background,...(body.quality ? {quality:body.quality} : {})},status:'succeeded',stage:'Complete',progress:1,createdAt:'2026-01-01T12:00:00.000Z',updatedAt:'2026-01-01T12:00:00.000Z',outputs:[{id:'ultra-output',url:${JSON.stringify(imageUrl)},width:2*Math.round(body.width*factor/2),height:2*Math.round(body.height*factor/2),mimeType:'image/png'}],error:null};
+        sessionStorage.setItem('ultra-job', JSON.stringify(job)); return Response.json(job);
+      }
+      const response = await originalFetch(input, options);
+      if (url.origin !== location.origin || method !== 'GET' || !response.ok) return response;
+      if (url.pathname === '/api/catalog') {
+        const catalog = await response.json(), available = sessionStorage.getItem('ultra-unavailable') !== 'true';
+        catalog.models = catalog.models.filter(model => model.id === 'wai-illustrious-v17').map(model => ({...model,installed:true,ready:true,unavailableReason:'',missingReasons:[],capabilities:{...model.capabilities,background:{native:false,available:true},ultra:{available,transparentAvailable:sessionStorage.getItem('ultra-transparent-unavailable') !== 'true',modelId:'seedvr2-7b',maxDimension:4096,...(!available ? {reason:${JSON.stringify(unavailable)}} : {})}}}));
+        return Response.json(catalog);
+      }
+      if (url.pathname === '/api/state') { const state = await response.json(), job = JSON.parse(sessionStorage.getItem('ultra-job') || 'null'); return Response.json({...state,jobs:job ? [job] : []}); }
+      return response;
+    };
+  ` });
+  const quality = 'button[aria-label^="Quality:"]', generate = 'button[title^="Submit to your generation queue"]', reset = 'button[aria-label="Reset settings to defaults"]';
+  const draftKey = `gravity:image-draft:${fixture.owner.id}`;
+  async function openQuality() {
+    await browser.click(quality);
+    await browser.until("document.activeElement?.getAttribute('role') === 'menuitem' && !!document.activeElement.closest('[popover]:popover-open') && getComputedStyle(document.activeElement).visibility === 'visible'", 'Quality receives keyboard focus');
+    await browser.evaluate("Promise.all(document.querySelector('[popover]:popover-open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
+  }
+  async function chooseQuality(label: string) {
+    await openQuality(); await browser.click(`[popover]:popover-open [aria-label="Quality ${label}"]`);
+    await browser.until(`!!document.querySelector('button[aria-label=${JSON.stringify(`Quality: ${label}`)}]') && !document.querySelector('[popover]:popover-open')`, `${label} selected`);
+  }
+  async function draftValue() { return browser.evaluate<{ width: number; height: number; quality: string; aspect: string; prompt: string; steps: number }>(`JSON.parse(localStorage.getItem(${JSON.stringify(draftKey)}))`); }
+  await browser.navigate(`${origin}/image`);
+  await browser.until("!!document.querySelector('button[aria-label=\"Quality: High\"]:not(:disabled)')", 'The native High default is ready');
+  const prompt = 'A detailed stone lighthouse on a quiet coast.';
+  await browser.fill('#image-prompt', prompt);
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(reset)}).disabled`), true);
+  for (const width of [1440, 390, 320]) {
+    await browser.send('Emulation.setDeviceMetricsOverride', { width, height: width === 1440 ? 960 : 844, deviceScaleFactor: 1, mobile: width < 768 });
+    await browser.evaluate("document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))");
+    await openQuality();
+    assert.equal(await browser.evaluate("document.querySelector('[popover]:popover-open [aria-label=\"Quality Ultra\"]').disabled"), false);
+    assert.match(await browser.evaluate<string>("document.querySelector('[popover]:popover-open [aria-label=\"Quality Ultra\"]').textContent"), /4096 × 4096.*SeedVR2 7B.*4096 px on the longest edge/);
+    assert.equal(await browser.evaluate("(() => { const menu = document.querySelector('[popover]:popover-open'), rect = menu.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && menu.scrollWidth <= menu.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()"), true, `Ultra menu fits ${width}px`);
+    await browser.screenshot(join(output, `quality-ultra-${width}.png`));
+    await browser.key('End');
+    assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Quality Ultra');
+    await browser.key('Enter');
+    await browser.until("!!document.querySelector('button[aria-label=\"Quality: Ultra\"]') && !document.querySelector('[popover]:popover-open')", 'The keyboard selects Ultra');
+    assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(reset)}).disabled`), false, 'Ultra enables Reset even when High matches native defaults');
+    assert.deepEqual(await browser.evaluate(`(() => { const value=JSON.parse(localStorage.getItem(${JSON.stringify(draftKey)})); return {width:value.width,height:value.height,prompt:value.prompt}; })()`), {width:1024,height:1024,prompt});
+    await browser.click(reset);
+    await browser.until("!!document.querySelector('button[aria-label=\"Quality: High\"]') && document.querySelector('button[aria-label=\"Reset settings to defaults\"]').disabled", 'Reset clears Ultra intent');
+  }
+  await chooseQuality('Ultra');
+  await browser.click('button[aria-label^="Aspect ratio:"]');
+  await browser.click('[popover]:popover-open [aria-label="Aspect ratio 16:9"]');
+  await browser.until("!!document.querySelector('button[aria-label=\"Aspect ratio: 16:9\"]') && !document.querySelector('[popover]:popover-open')", 'Ultra preserves the selected shape');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(quality)}).getAttribute('aria-label')`), 'Quality: Ultra');
+  const native = await draftValue();
+  assert.ok(native.width < 4096 && Math.abs(native.width/native.height/(16/9)-1) < .02);
+  await browser.click('button[aria-label="Advanced settings"]');
+  await browser.fill('[popover]:popover-open input[aria-label="Steps value"]', '24');
+  await browser.key('Escape');
+  await browser.send('Page.reload');
+  await browser.until("!!document.querySelector('button[aria-label=\"Quality: Ultra\"]:not(:disabled)')", 'Reload restores Ultra');
+  assert.equal((await draftValue()).steps, 24, 'Ultra leaves custom sampling steps intact');
+  assert.equal((await draftValue()).aspect, '16:9');
+  await browser.until(`!document.querySelector(${JSON.stringify(generate)}).disabled`, 'Ultra can generate');
+  await browser.click(generate);
+  await browser.until('window.__ultraRequests.length === 1', 'Ultra request captured');
+  const submitted = await browser.evaluate<Record<string, unknown>>('window.__ultraRequests[0]');
+  assert.deepEqual({quality:submitted.quality,width:submitted.width,height:submitted.height,steps:submitted.steps,prompt:submitted.prompt}, {quality:'ultra',width:native.width,height:native.height,steps:24,prompt});
+  await chooseQuality('Fast'); await browser.fill('#image-prompt', 'Temporary replacement draft.');
+  await browser.click('button[aria-label="Open WAI Illustrious v17 output"]');
+  await browser.until("document.querySelector('#output-viewer[open] [aria-label=\"Image zoom and pan\"] img')?.naturalWidth > 0", 'Ultra output opens');
+  const details = await browser.evaluate<Record<string,string>>("Object.fromEntries([...document.querySelectorAll('#output-viewer dl > div')].map(row=>[row.querySelector('dt').textContent,row.querySelector('dd').textContent]))");
+  assert.equal(details.Quality, 'Ultra · SeedVR2 7B');
+  assert.match(details.Size, /^4096 × /);
+  assert.equal(details['Generated size'], `${native.width} × ${native.height}`);
+  await browser.click('#output-viewer footer > button');
+  await browser.until("!document.querySelector('#output-viewer[open]') && !!document.querySelector('button[aria-label=\"Quality: Ultra\"]')", 'Reuse restores Ultra');
+  assert.deepEqual({width:(await draftValue()).width,height:(await draftValue()).height,prompt:(await draftValue()).prompt}, {width:native.width,height:native.height,prompt}, 'Reuse retains the native sampling canvas, never the final 4K dimensions');
+  await browser.click('button[aria-label="Advanced settings"]');
+  await browser.fill('[popover]:popover-open input[aria-label="Width value"]', String(native.width + 8));
+  await browser.key('Escape');
+  await browser.until("!!document.querySelector('button[aria-label=\"Quality: Custom\"]')", 'A manual dimension edit leaves Ultra');
+  await chooseQuality('Ultra');
+  await browser.evaluate("sessionStorage.setItem('ultra-transparent-unavailable','true')");
+  await browser.send('Page.reload');
+  await browser.until("!!document.querySelector('button[aria-label=\"Quality: Ultra\"]:not(:disabled)')", 'Ultra restores with updated transparent readiness');
+  await browser.click('button[aria-label^="Background:"]');
+  await browser.until("!!document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]')", 'Transparency menu opens');
+  assert.equal(await browser.evaluate("document.querySelector('[popover]:popover-open [aria-label=\"Background Transparent\"]').disabled"), true, 'Readiness on separate workers cannot enable transparent Ultra');
+  await browser.key('Escape');
+  await browser.evaluate("sessionStorage.setItem('ultra-unavailable','true')");
+  await browser.send('Page.reload');
+  await browser.until(`document.querySelector('[data-workspace-scroll="dock"] [role=alert]')?.textContent.includes(${JSON.stringify(unavailable)})`, 'Missing SeedVR2 gives a concrete recovery');
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(generate)}).disabled`), true);
+  assert.equal((await draftValue()).quality, 'ultra', 'Readiness changes preserve the requested intent');
+  await openQuality();
+  assert.equal(await browser.evaluate("document.querySelector('[popover]:popover-open [aria-label=\"Quality Ultra\"]').disabled"), true);
+  await browser.screenshot(join(output, 'quality-ultra-unavailable-320.png'));
+  await browser.key('End');
+  assert.equal(await browser.evaluate("document.activeElement?.getAttribute('aria-label')"), 'Quality High', 'Keyboard skips unavailable Ultra');
+  await browser.key('Enter');
+  await browser.until(`!document.querySelector(${JSON.stringify(generate)}).disabled && !document.querySelector('[popover]:popover-open')`, 'High recovers without an upscaler');
+  await browser.click(generate); await browser.until('window.__ultraRequests.length === 2', 'Native request captured');
+  assert.equal(await browser.evaluate("Object.hasOwn(window.__ultraRequests[1], 'quality')"), false, 'Native quality sends no Ultra instruction');
+  assert.equal(fixture.store.jobs(fixture.owner.id).length, 0);
+  assert.equal(fixture.workers[0].state.submissions.length, 0);
   assert.deepEqual(browser.errors, []);
 });
 

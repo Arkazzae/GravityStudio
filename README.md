@@ -42,7 +42,7 @@ Open the avatar in the top bar to edit **Account**. Display name, avatar color a
 
 ### Accounts and administration
 
-Open **Settings**. Everyone can manage personal preferences and API access, and view their own server-time allowance; administrator-only tabs add users, invitations, mail, models, storage and server configuration. The first owner becomes an administrator; upgrading an existing installation preserves that account and its data. Administrators manage users, invitations, server-time allowances and mail. Server settings, model downloads and provider credentials require an administrator's browser session. Each user's images, references and API tokens remain private.
+Open **Settings**. Tabs are grouped into **Personal**, **Creation**, **Server** and **Administration**. Everyone can manage personal preferences and API access, and view their own server-time allowance; administrator-only tabs add users, invitations, mail, models, storage and server configuration. The first owner becomes an administrator; upgrading an existing installation preserves that account and its data. Administrators manage users, invitations, server-time allowances and mail. Server settings, model downloads and provider credentials require an administrator's browser session. Each user's images, references and API tokens remain private.
 
 Create an invitation with a role, expiration and optional initial time allowance. Copy its link or explicitly send it by email. Links can be used once and can be revoked before acceptance. Studio stores only their hashes. There is no open registration. Suspension immediately revokes sessions and API tokens; reactivation requires signing in again. Deleting an account removes its images and account data, retaining an anonymous usage ledger. Active jobs and uploads must finish first; queued jobs are cancelled. Interrupted jobs must be resolved before deletion. Failed storage cleanup leaves the account disabled and retries automatically.
 
@@ -79,6 +79,12 @@ pnpm runtime up
 The installer builds one shared image per backend, CUDA or ROCm, and starts one worker per selected GPU. All workers read `storage/models/`. Compatible checkpoints use the same workers.
 
 See [runtime installation](deploy/comfyui/README.md) for device permissions, selecting GPUs, verification and stopping workers. See [model files and recipes](packages/inference/README.md) for the required weights and their sources.
+
+### Image quality
+
+Choose an aspect ratio for the shape, then **Fast**, **Standard** or **High** for that model family's native resolution. These presets change the canvas size while retaining your sampling settings.
+
+**Ultra** generates at High resolution and finishes with **SeedVR2 7B** in the same job. The final image has a 4096-pixel longest edge, with the shorter edge rounded to an even pixel count; transparency is preserved. Install SeedVR2 7B under **Settings → Models → Tools**. Ultra requires a connected worker with the generation and upscaler files, compatible nodes and sufficient configured memory capacity. It does not silently substitute another upscaler. Reusing an Ultra image restores its native generation canvas and the Ultra finish.
 
 ### Disk and object storage usage
 

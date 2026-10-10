@@ -82,10 +82,11 @@ export function OutputViewer({ items, open, openId, models, onClose, onSelect, o
   const height = item.output.height || item.job.parameters.height;
   const size = width && height ? `${width} × ${height}` : '';
   const upscaleInput = item.job.input?.operation === 'upscale' ? item.job.input : null;
-  const parameters = Object.entries(item.job.parameters).filter(([key, value]) => !['prompt', 'seed', 'width', 'height'].includes(key) && value !== undefined && value !== null && value !== '');
+  const parameters = Object.entries(item.job.parameters).filter(([key, value]) => !['prompt', 'seed', 'width', 'height', 'quality'].includes(key) && value !== undefined && value !== null && value !== '');
   const details: [string, string][] = [
     ['Model', name],
     ...(size ? [['Size', size] as [string, string]] : []),
+    ...(item.job.parameters.quality === 'ultra' ? [['Quality', 'Ultra · SeedVR2 7B'], ['Generated size', `${item.job.parameters.width} × ${item.job.parameters.height}`]] as [string, string][] : []),
     ...(upscaleInput && item.job.parameters.sourceWidth && item.job.parameters.sourceHeight ? [['Original size', `${item.job.parameters.sourceWidth} × ${item.job.parameters.sourceHeight}`] as [string, string]] : []),
     ...(upscaleInput ? [['Scale', `${upscaleInput.scale}×`] as [string, string]] : parameters.map(([key, value]) => [labels[key] || key.replace(/([A-Z])/g, ' $1').replace(/^./, first => first.toUpperCase()), key === 'background' ? imageBackgroundLabels[imageBackground(value)] : String(value)] as [string, string])),
     ...(!upscaleInput && item.job.parameters.seed !== undefined ? [['Seed', String(item.job.parameters.seed)] as [string, string]] : []),

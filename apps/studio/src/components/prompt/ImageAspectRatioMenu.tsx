@@ -2,7 +2,7 @@
 import { RatioFrame, Scan } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { Dropdown, MenuLabel, MenuOption } from '@/components/ui/Dropdown';
-import { IMAGE_ASPECT_RATIOS, imageAspectRatio, imageSizeForQuality, imageSizeForRatio, type ImageAspectRatio, type ImageQuality } from '@/lib/image-settings';
+import { IMAGE_ASPECT_RATIOS, imageAspectRatio, imageSizeForQuality, imageSizeForRatio, ultraOutputSize, type ImageAspectRatio, type ImageQuality } from '@/lib/image-settings';
 import { selectedQuality } from './ImageQualityMenu';
 import type { StudioModel } from '@/lib/api';
 import type { Draft } from './PromptDock';
@@ -20,9 +20,10 @@ export function ImageAspectRatioMenu({ model, draft, onChange }: { model?: Studi
   return <Dropdown width={240} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model} active={open} title={`Aspect ratio: ${label}`} aria-label={`Aspect ratio: ${label}`} icon={<RatioIcon ratio={selected === 'auto' ? null : draft.width / draft.height} />}>{label}</Chip>}>
     {close => <><MenuLabel>Aspect ratio</MenuLabel>{IMAGE_ASPECT_RATIOS.map(aspect => {
       const size = model ? quality === 'custom' ? imageSizeForRatio(model, aspect, draft.width * draft.height) : imageSizeForQuality(model, quality, aspect) : null;
+      const outputSize = size && quality === 'ultra' ? ultraOutputSize(size.width, size.height) : size;
       const [x, y] = aspect === 'auto' ? [0, 0] : aspect.split(':').map(Number);
       return <MenuOption key={aspect} active={selected === aspect} disabled={!size} aria-label={`Aspect ratio ${aspect === 'auto' ? 'Auto' : aspect}`} icon={<RatioIcon ratio={aspect === 'auto' ? null : x / y} />} label={aspect === 'auto' ? 'Auto' : aspect} noteClassName="text-ink-2"
-        note={size ? `${aspect === 'auto' ? 'Default shape · ' : ''}${size.width} × ${size.height}` : 'Not available for this model'}
+        note={outputSize ? `${aspect === 'auto' ? 'Default shape · ' : ''}${outputSize.width} × ${outputSize.height}${quality === 'ultra' ? ' · 4K' : ''}` : 'Not available for this model'}
         onClick={() => { if (size) onChange({ ...size, aspect, quality }); close(); }} />;
     })}</>}
   </Dropdown>;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   IMAGE_ASPECT_RATIOS, fitImageSize, imageQualityForSize, imageQualityPresets,
-  imageSizeForQuality, imageSizeForRatio, imageSizeProblem,
+  imageQualityProblem, imageSizeForQuality, imageSizeForRatio, imageSizeProblem, ultraOutputSize,
 } from '../../apps/studio/src/lib/image-settings.ts';
 import type { ImageQualityPreset, ImageSizeModel } from '../../apps/studio/src/lib/image-settings.ts';
 
@@ -118,4 +118,31 @@ test('older catalogs derive model-relative resolution tiers and omit duplicate c
   assert.deepEqual(imageQualityPresets(capped).map(preset => preset.id), ['fast', 'standard']);
   assert.equal(imageSizeForQuality(capped, 'high', '1:1'), null);
   assert.deepEqual(imageQualityPresets({ ...legacy, qualityPresets: [] }), []);
+});
+
+test('Ultra keeps High native sampling across shapes and advertises even 4K output dimensions', () => {
+  for (const [name, model] of Object.entries(models)) {
+    for (const aspect of [...IMAGE_ASPECT_RATIOS, 'custom'] as const) {
+      const current = { width: 1200, height: 1000 };
+      const native = imageSizeForQuality(model, 'ultra', aspect, current)!;
+      assert.deepEqual(native, imageSizeForQuality(model, 'high', aspect, current), `${name} ${aspect}: native sampling stays at High`);
+      assert.equal(imageSizeProblem(model, native.width, native.height), null);
+      const output = ultraOutputSize(native.width, native.height);
+      assert.equal(Math.max(output.width, output.height), 4096);
+      assert.equal(output.width % 2, 0);
+      assert.equal(output.height % 2, 0);
+      assert.ok(Math.abs(output.width / output.height / (native.width / native.height) - 1) < .002, `${name} ${aspect}: final shape is retained`);
+      assert.notEqual(imageQualityForSize(model, native.width, native.height, aspect), 'ultra', 'Dimensions alone cannot silently enable a postprocess');
+    }
+  }
+});
+
+test('Ultra requires advertised readiness while native quality is unaffected', () => {
+  assert.match(imageQualityProblem(undefined, 'ultra')!, /SeedVR2 7B/);
+  assert.equal(imageQualityProblem({ capabilities: { ultra: { available: false, reason: 'Connect a compatible worker.' } } }, 'ultra'), 'Connect a compatible worker.');
+  assert.equal(imageQualityProblem({ capabilities: { ultra: { available: true } } }, 'ultra'), null);
+  const separateWorkers = { capabilities: { ultra: { available: true, transparentAvailable: false } } };
+  assert.match(imageQualityProblem(separateWorkers, 'ultra', 'transparent')!, /transparent background/);
+  assert.equal(imageQualityProblem(separateWorkers, 'ultra', 'opaque'), null);
+  for (const quality of ['fast', 'standard', 'high', 'custom', undefined] as const) assert.equal(imageQualityProblem(undefined, quality), null);
 });

@@ -10,7 +10,7 @@ import { ImageQualityMenu } from './ImageQualityMenu';
 import { BackgroundMenu } from './BackgroundMenu';
 import { DockSettings } from './DockSettings';
 import { PromptAssistant } from './PromptAssistant';
-import { imageQualityForSize, imageSizeProblem, type ImageAspectRatio, type ImageQuality } from '@/lib/image-settings';
+import { imageQualityForSize, imageQualityProblem, imageSizeProblem, type ImageAspectRatio, type ImageQuality } from '@/lib/image-settings';
 import { imageBackground, imageBackgroundProblem } from '@/lib/image-background';
 import { api, errorMessage, type ImageBackground, type InputImage, type StudioModel, type Job } from '@/lib/api';
 import { imageFileProblem } from '@/lib/image-files';
@@ -42,7 +42,8 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
   const operation = draft.images.length ? model?.operations?.includes('reference') ? 'reference' : 'image-to-image' : 'text-to-image';
   const sizeError = model ? imageSizeProblem(model, draft.width, draft.height) : null;
   const backgroundError = imageBackgroundProblem(model, imageBackground(draft.background));
-  const canSubmit = connected && model?.ready && !!draft.prompt.trim() && draft.images.length <= maxImages && !sizeError && !backgroundError && !busy && !assistantBusy && !uploading;
+  const qualityError = imageQualityProblem(model, draft.quality, imageBackground(draft.background));
+  const canSubmit = connected && model?.ready && !!draft.prompt.trim() && draft.images.length <= maxImages && !sizeError && !backgroundError && !qualityError && !busy && !assistantBusy && !uploading;
   const update = (change: Partial<Draft>) => setDraft(current => ({ ...current, ...change }));
   const { dragging } = useFileIntake({ onFiles: files => { void upload(files); } });
   useEffect(() => () => { pendingUpload.current?.abort(); }, []);
@@ -100,7 +101,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
     if (!canSubmit) return;
     setBusy(true); setError('');
     try {
-      const body = JSON.stringify({ modelId: draft.modelId, operation, prompt: draft.prompt, negativePrompt: draft.negativePrompt, background: imageBackground(draft.background), width: draft.width, height: draft.height, steps: draft.steps, cfg: draft.cfg, ...(draft.seed.trim() ? { seed: Number(draft.seed) } : {}), ...(draft.images.length ? { images: draft.images.map(image => image.id) } : {}), ...(operation === 'image-to-image' ? { denoise: draft.denoise } : {}) });
+      const body = JSON.stringify({ modelId: draft.modelId, operation, prompt: draft.prompt, negativePrompt: draft.negativePrompt, background: imageBackground(draft.background), ...(draft.quality === 'ultra' ? { quality: 'ultra' } : {}), width: draft.width, height: draft.height, steps: draft.steps, cfg: draft.cfg, ...(draft.seed.trim() ? { seed: Number(draft.seed) } : {}), ...(draft.images.length ? { images: draft.images.map(image => image.id) } : {}), ...(operation === 'image-to-image' ? { denoise: draft.denoise } : {}) });
       if (lastAttempt.current?.body !== body) lastAttempt.current = { body, key: Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('') };
       const result = await api<Job | { job: Job }>('/jobs', { method: 'POST', headers: { 'Idempotency-Key': lastAttempt.current.key }, body });
       lastAttempt.current = null;
@@ -124,7 +125,7 @@ export function PromptDock({ browsing, onBrowse, onCloseAssets, models, draft, s
           <PromptAssistant draft={draft} setDraft={setDraft} model={model} connected={connected} submitting={busy || uploading} sessionIdentity={sessionIdentity} onBusyChange={setAssistantBusy} onSessionExpired={onSessionExpired} onOpenSettings={onOpenAssistantSettings} />
           <DockSettings model={model} draft={draft} busy={busy} onChange={update} onReset={() => { if (model) setDraft({ ...modelDraft(draft, model), background: 'auto' }); }} />
         </div></div>
-        {error || sizeError || (connected && backgroundError) ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError || backgroundError}</p> : connected && !model?.ready ? <p className="px-1 text-xs text-ink-2">{onOpenModels ? 'Choose a model in Models. Manage your GPUs in Settings.' : 'No generation model is ready. Ask your administrator to enable one.'}</p> : null}
+        {error || sizeError || (connected && (backgroundError || qualityError)) ? <p role="alert" className="px-1 text-xs leading-relaxed text-[#ffc3aa]">{error || sizeError || backgroundError || qualityError}</p> : connected && !model?.ready ? <p className="px-1 text-xs text-ink-2">{onOpenModels ? 'Choose a model in Models. Manage your GPUs in Settings.' : 'No generation model is ready. Ask your administrator to enable one.'}</p> : null}
       </div>
       <div className="flex shrink-0 flex-col justify-end sm:w-[188px]"><GenerateButton size="lg" busy={busy} disabled={!canSubmit} onClick={() => void submit()} className="h-16 shrink-0 sm:h-[92px]" /></div>
     </div>

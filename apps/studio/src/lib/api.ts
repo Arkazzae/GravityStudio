@@ -14,7 +14,7 @@ export interface StudioModel {
   qualityPresets?: Array<{ id: 'fast' | 'standard' | 'high'; pixels: number; minSide?: number }>;
   defaults: { width: number; height: number; steps: number; cfg: number; negativePrompt?: string };
   limits?: { width?: ParameterRange; height?: ParameterRange; steps?: ParameterRange; cfg?: ParameterRange; maxImages?: number };
-  capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string } };
+  capabilities?: { imageInput?: boolean; maxImages?: number; negativePrompt?: boolean; background?: { native: boolean; available: boolean; reason?: string }; ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string; modelId: 'seedvr2-7b'; maxDimension: 4096 } };
 }
 export interface Catalog { models: StudioModel[]; families: Array<{ id: string; name: string }> }
 export interface Hardware {
@@ -37,7 +37,7 @@ export interface LibraryModel { id: string; name: string; familyId: string; fami
 export interface ModelDownload { id: string; modelId: string; modelName: string; status: 'downloading' | 'verifying' | 'activating' | 'succeeded' | 'failed'; stage: string; filename?: string; completedFiles: number; totalFiles: number; receivedBytes: number; totalBytes: number | null; error?: string; errorCode?: string; access?: { repository: ModelRepository; status: Exclude<ModelAccessStatus, 'available'>; message: string }; startedAt: string; updatedAt: string }
 export interface ModelLibraryState { models: LibraryModel[]; download: ModelDownload | null }
 export interface InputImage { id: string; url: string; name: string; width: number; height: number }
-export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string; background?: ImageBackground; sourceWidth?: number; sourceHeight?: number; scale?: 2 | 4 }
+export interface GenerationParameters { width: number; height: number; steps: number; cfg: number; seed: number; negativePrompt?: string; background?: ImageBackground; quality?: 'ultra'; sourceWidth?: number; sourceHeight?: number; scale?: 2 | 4 }
 export interface Job {
   id: string; modelId: string; modelName?: string; prompt: string; input?: JobInput; parameters: GenerationParameters;
   status: 'queued' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';

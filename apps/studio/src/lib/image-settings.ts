@@ -1,5 +1,8 @@
-export type ImageQuality = 'fast' | 'standard' | 'high';
-export interface ImageQualityPreset { id: ImageQuality; pixels: number; minSide?: number }
+import { fitImageSize } from '../../../../packages/contracts/image-size.ts';
+export { fitImageSize, ultraOutputSize } from '../../../../packages/contracts/image-size.ts';
+
+export type ImageQuality = 'fast' | 'standard' | 'high' | 'ultra';
+export interface ImageQualityPreset { id: Exclude<ImageQuality, 'ultra'>; pixels: number; minSide?: number }
 export interface ImageSizeModel {
   defaults: { width: number; height: number };
   dimensions?: { min: number; max: number; multiple: number; maxPixels: number };
@@ -41,32 +44,6 @@ export function imageSizeForRatio(model: ImageSizeModel, aspect: ImageAspectRati
   return fitImageSize(model, x / y, pixels ?? model.defaults.width * model.defaults.height);
 }
 
-/** Search the model's grid while keeping the requested shape within 2%. */
-export function fitImageSize(model: ImageSizeModel, ratio: number, requestedPixels: number): { width: number; height: number } | null {
-  if (!Number.isFinite(ratio) || ratio <= 0 || !Number.isFinite(requestedPixels) || requestedPixels <= 0) return null;
-  const dimensions = model.dimensions ?? DEFAULT_DIMENSIONS;
-  const width = model.limits?.width ?? { min: dimensions.min, max: dimensions.max, step: dimensions.multiple };
-  const height = model.limits?.height ?? { min: dimensions.min, max: dimensions.max, step: dimensions.multiple };
-  const widthStep = width.step ?? dimensions.multiple;
-  const heightStep = height.step ?? dimensions.multiple;
-  if (widthStep <= 0 || heightStep <= 0) return null;
-  const pixels = Math.min(dimensions.maxPixels, requestedPixels, width.max ** 2 / ratio, height.max ** 2 * ratio);
-  let best: { width: number; height: number } | null = null;
-  let bestScore = Infinity;
-  for (let w = Math.ceil(width.min / widthStep) * widthStep; w <= width.max; w += widthStep) {
-    const units = w / ratio / heightStep;
-    for (const n of new Set([Math.floor(units), Math.ceil(units)])) {
-      const h = n * heightStep;
-      if (h < height.min || h > height.max || w * h > dimensions.maxPixels) continue;
-      const error = Math.abs(Math.log(w / h / ratio));
-      if (Math.abs(w / h / ratio - 1) > .02) continue;
-      const score = Math.abs(Math.log(w * h / pixels)) + 8 * error;
-      if (score < bestScore) { best = { width: w, height: h }; bestScore = score; }
-    }
-  }
-  return best;
-}
-
 /** Older catalog responses still get distinct resolution choices within their limits. */
 export function imageQualityPresets(model: ImageSizeModel): ImageQualityPreset[] {
   const dimensions = model.dimensions ?? DEFAULT_DIMENSIONS;
@@ -89,7 +66,7 @@ export function imageQualityPresets(model: ImageSizeModel): ImageQualityPreset[]
 }
 
 export function imageSizeForQuality(model: ImageSizeModel, quality: ImageQuality, aspect: ImageAspectRatio | 'custom', current?: { width: number; height: number }): { width: number; height: number } | null {
-  const preset = imageQualityPresets(model).find(preset => preset.id === quality);
+  const preset = imageQualityPresets(model).find(preset => preset.id === (quality === 'ultra' ? 'high' : quality));
   if (!preset) return null;
   const dimensions = model.dimensions ?? DEFAULT_DIMENSIONS;
   const qualityModel = preset.minSide ? {
@@ -117,6 +94,14 @@ export function imageSizeForQuality(model: ImageSizeModel, quality: ImageQuality
     size = next;
   }
   return size;
+}
+
+export function imageQualityProblem(model: { capabilities?: { ultra?: { available: boolean; transparentAvailable?: boolean; reason?: string } } } | undefined, quality: ImageQuality | 'custom' | undefined, background?: 'auto' | 'opaque' | 'transparent'): string | null {
+  if (quality !== 'ultra') return null;
+  const capability = model?.capabilities?.ultra;
+  if (!capability?.available) return capability?.reason || 'Install SeedVR2 7B in Settings → Models → Tools to use Ultra.';
+  if (background === 'transparent' && capability.transparentAvailable === false) return 'Ultra with a transparent background is unavailable on the connected workers. Check Models and GPUs in Settings.';
+  return null;
 }
 
 /** Only dimensions produced by a preset count as that quality; nearby manual sizes are custom. */

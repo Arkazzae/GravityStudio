@@ -3,6 +3,7 @@ import { Background, RatioFrame, Wand2 } from '@/components/ui/icons';
 import { Chip } from '@/components/ui/Chip';
 import { Dropdown, MenuLabel, MenuOption } from '@/components/ui/Dropdown';
 import { imageBackground, imageBackgroundLabels, imageBackgroundProblem } from '@/lib/image-background';
+import { imageQualityProblem } from '@/lib/image-settings';
 import type { ImageBackground, StudioModel } from '@/lib/api';
 import type { Draft } from './PromptDock';
 
@@ -15,7 +16,7 @@ const options = [
 export function BackgroundMenu({ model, draft, disabled = false, onChange }: { model?: StudioModel; draft: Draft; disabled?: boolean; onChange: (change: Partial<Draft>) => void }) {
   const selected = imageBackground(draft.background);
   const label = imageBackgroundLabels[selected];
-  const unavailable = imageBackgroundProblem(model, 'transparent');
+  const unavailable = imageBackgroundProblem(model, 'transparent') || imageQualityProblem(model, draft.quality, 'transparent');
   return <Dropdown width={272} trigger={({ open, triggerProps }) => <Chip {...triggerProps} disabled={!model || disabled} active={open} title={`Background: ${label}`} aria-label={`Background: ${label}`} icon={<Background />} className="max-w-[156px]">{label}</Chip>}>
     {close => <><MenuLabel>Background</MenuLabel>{options.map(({ id, icon: Icon, note }) => <MenuOption key={id} active={selected === id} disabled={id === 'transparent' && !!unavailable}
       aria-label={`Background ${imageBackgroundLabels[id]}`} icon={<Icon />} label={imageBackgroundLabels[id]} noteClassName="text-ink-2"

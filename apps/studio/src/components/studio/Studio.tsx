@@ -128,7 +128,7 @@ export function Studio({ settings: settingsPage = false, models: modelsPage = fa
   }
   function reuse(job: Job) {
     if (job.input?.operation === 'upscale') return;
-    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', quality: 'custom', ...job.parameters, background: imageBackground(job.parameters.background), negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
+    setDraft(current => ({ ...current, modelId: job.modelId, prompt: job.prompt, aspect: 'custom', ...job.parameters, quality: job.parameters.quality === 'ultra' ? 'ultra' : 'custom', background: imageBackground(job.parameters.background), negativePrompt: job.parameters.negativePrompt || '', seed: String(job.parameters.seed), images: [] }));
     document.getElementById('image-prompt')?.focus();
   }
   async function deleteOutput(job: Job, output: Job['outputs'][number]) {
