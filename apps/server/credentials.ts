@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ApiError, type IntegrationCredential, type IntegrationProviderId } from "../../packages/contracts/index.ts";
 import type { Store } from "./store.ts";
 
-export type CredentialProviderId = IntegrationProviderId | "text-openai-compatible";
+export type CredentialProviderId = IntegrationProviderId | "text-openai-compatible" | "mail-smtp" | "mail-resend" | "mail-cloudflare";
 interface CredentialRow {
   provider: CredentialProviderId;
   version: number;
@@ -14,7 +14,7 @@ interface CredentialRow {
   suffix: string;
   updated_at: string;
 }
-const providers = new Set<CredentialProviderId>(["huggingface", "civitai", "gemini", "openai", "anthropic", "nanogpt", "text-openai-compatible"]);
+const providers = new Set<CredentialProviderId>(["huggingface", "civitai", "gemini", "openai", "anthropic", "nanogpt", "text-openai-compatible", "mail-smtp", "mail-resend", "mail-cloudflare"]);
 const unreadable = () => new ApiError(503, "CREDENTIALS_UNREADABLE", "Saved integration credentials could not be unlocked. Check the original credentials key and storage.");
 const unavailable = () => new ApiError(503, "CREDENTIALS_KEY_UNAVAILABLE", "Integration credentials key is unavailable or invalid. Use a base64-encoded 32-byte key or restore the private credentials.key file.");
 
